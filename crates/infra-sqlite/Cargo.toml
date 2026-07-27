@@ -4,4 +4,9 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+rusqlite = { version = "0.32", features = ["bundled-sqlcipher-vendored-openssl"] }
 scrat-domain.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"
