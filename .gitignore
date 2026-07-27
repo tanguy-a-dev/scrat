@@ -1,0 +1,24 @@
+# Rust
+/target
+**/target
+
+# Node / frontend build
+node_modules
+frontend/build
+frontend/.svelte-kit
+frontend/package
+
+# Tauri
+src-tauri/gen/schemas
+
+# Local encrypted database — never commit user financial data
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+
+# OS / editor
+.DS_Store
+.env
+.env.*
+!.env.example

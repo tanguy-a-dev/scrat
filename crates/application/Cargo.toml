@@ -1,0 +1,8 @@
+[package]
+name = "scrat-application"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+scrat-domain.workspace = true
+thiserror.workspace = true

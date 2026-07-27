@@ -1,0 +1,7 @@
+[package]
+name = "scrat-infra-csv"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+scrat-domain.workspace = true
