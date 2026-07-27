@@ -27,4 +27,5 @@ scrat-infra-csv.workspace = true
 scrat-domain.workspace = true
 scrat-application.workspace = true
 chrono.workspace = true
+tauri-plugin-dialog = "2.7.2"
 

@@ -103,3 +103,12 @@ pub fn suggest_account_for_source(
     with_service(&state, |s| s.find_account_by_source(&source))
         .map(|found| found.map(|id| id.as_string()))
 }
+
+#[tauri::command]
+pub fn suggest_category_for_source(
+    state: State<DbState>,
+    source: String,
+) -> Result<Option<String>, String> {
+    with_service(&state, |s| s.suggest_category_for_source(&source))
+        .map(|found| found.map(|id| id.as_string()))
+}

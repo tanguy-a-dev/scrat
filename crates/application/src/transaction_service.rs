@@ -155,6 +155,48 @@ impl<'a> TransactionService<'a> {
             .find(|a| a.matches_source(source))
             .map(|a| a.id()))
     }
+
+    /// Local frequency lookup, no ML/network: finds past transactions that
+    /// share a significant word with `source`, and suggests whichever
+    /// category is most common among them.
+    pub fn suggest_category_for_source(
+        &self,
+        source: &str,
+    ) -> Result<Option<CategoryId>, ApplicationError> {
+        let query_tokens = tokenize(source);
+        if query_tokens.is_empty() {
+            return Ok(None);
+        }
+
+        let all = self
+            .transactions
+            .list_in_range(NaiveDate::MIN, NaiveDate::MAX)?;
+
+        let mut counts: std::collections::HashMap<CategoryId, usize> =
+            std::collections::HashMap::new();
+        for t in &all {
+            let candidate_tokens = tokenize(t.source().as_str());
+            if query_tokens.iter().any(|qt| candidate_tokens.contains(qt)) {
+                *counts.entry(t.category_id()).or_insert(0) += 1;
+            }
+        }
+
+        Ok(counts
+            .into_iter()
+            .max_by_key(|(_, count)| *count)
+            .map(|(id, _)| id))
+    }
+}
+
+/// Lowercases and splits on non-alphanumeric boundaries, dropping short
+/// tokens (numbers, single letters) that are more noise than signal for a
+/// source-text match.
+fn tokenize(s: &str) -> std::collections::HashSet<String> {
+    s.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| t.len() >= 3)
+        .map(|t| t.to_string())
+        .collect()
 }
 
 #[cfg(test)]
@@ -509,5 +551,74 @@ mod tests {
         let result = service.import_transactions(&[row], f.category_id, AccountId::new());
 
         assert!(matches!(result, Err(ApplicationError::AccountNotFound)));
+    }
+
+    #[test]
+    fn suggest_category_for_source_returns_most_common_category_among_matches() {
+        let f = fixture();
+        let entertainment = Category::new(
+            CategoryId::new(),
+            CategoryName::new("Entertainment").unwrap(),
+            None,
+        )
+        .unwrap();
+        f.categories.insert(&entertainment).unwrap();
+        let service = TransactionService::new(
+            &f.transactions,
+            &f.accounts,
+            &f.categories,
+            Currency::new("USD").unwrap(),
+        );
+
+        // Two past Netflix charges were (correctly) filed as Entertainment,
+        // one was miscategorized as Groceries — Entertainment should win.
+        service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                -1_500,
+                "NETFLIX.COM",
+                entertainment.id(),
+                f.account_id,
+            )
+            .unwrap();
+        service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 2, 1).unwrap(),
+                -1_500,
+                "Netflix Subscription",
+                entertainment.id(),
+                f.account_id,
+            )
+            .unwrap();
+        service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+                -1_500,
+                "netflix oops",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+
+        let suggestion = service.suggest_category_for_source("NETFLIX.COM").unwrap();
+
+        assert_eq!(suggestion, Some(entertainment.id()));
+    }
+
+    #[test]
+    fn suggest_category_for_source_returns_none_when_no_past_matches() {
+        let f = fixture();
+        let service = TransactionService::new(
+            &f.transactions,
+            &f.accounts,
+            &f.categories,
+            Currency::new("USD").unwrap(),
+        );
+
+        let suggestion = service
+            .suggest_category_for_source("Totally Unseen Merchant")
+            .unwrap();
+
+        assert_eq!(suggestion, None);
     }
 }

@@ -12,7 +12,7 @@ impl Default for DbState {
     }
 }
 
-fn db_path(app: &AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn db_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .app_data_dir()

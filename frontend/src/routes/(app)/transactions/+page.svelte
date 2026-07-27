@@ -77,12 +77,23 @@
   let categoryOptions = $derived(buildCategoryOptions(categories));
 
   async function handleSourceBlur() {
-    if (!formSource.trim() || formAccountId) return;
-    try {
-      const suggested = await api.suggestAccountForSource(formSource.trim());
-      if (suggested) formAccountId = suggested;
-    } catch {
-      // best-effort suggestion only
+    const source = formSource.trim();
+    if (!source) return;
+    if (!formAccountId) {
+      try {
+        const suggested = await api.suggestAccountForSource(source);
+        if (suggested) formAccountId = suggested;
+      } catch {
+        // best-effort suggestion only
+      }
+    }
+    if (!formCategoryId) {
+      try {
+        const suggested = await api.suggestCategoryForSource(source);
+        if (suggested) formCategoryId = suggested;
+      } catch {
+        // best-effort suggestion only
+      }
     }
   }
 

@@ -2,6 +2,7 @@ mod accounts;
 mod categories;
 mod db;
 mod import;
+mod settings;
 mod transactions;
 
 use db::DbState;
@@ -10,6 +11,7 @@ use db::DbState;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(DbState::default())
         .invoke_handler(tauri::generate_handler![
             db::is_db_initialized,
@@ -33,8 +35,12 @@ pub fn run() {
             transactions::create_transaction,
             transactions::delete_transaction,
             transactions::suggest_account_for_source,
+            transactions::suggest_category_for_source,
             import::preview_csv_import,
             import::commit_csv_import,
+            settings::get_currency,
+            settings::set_currency,
+            settings::export_database,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

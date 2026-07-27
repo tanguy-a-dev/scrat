@@ -41,17 +41,14 @@ impl From<AccountWithBalance> for AccountDto {
     }
 }
 
-/// The app-wide currency (Settings > Set currency lands in M7); until then,
-/// falls back to USD if nothing has been configured yet.
+/// The app-wide currency (set via Settings > Set currency); falls back to
+/// USD if nothing has been configured yet.
 pub(crate) fn app_currency(conn: &Connection) -> Currency {
-    conn.query_row(
-        "SELECT value FROM settings WHERE key = 'currency_code'",
-        [],
-        |row| row.get::<_, String>(0),
-    )
-    .ok()
-    .and_then(|code| Currency::new(&code).ok())
-    .unwrap_or_else(|| Currency::new("USD").expect("USD is a valid currency code"))
+    scrat_infra_sqlite::get_currency_code(conn)
+        .ok()
+        .flatten()
+        .and_then(|code| Currency::new(&code).ok())
+        .unwrap_or_else(|| Currency::new("USD").expect("USD is a valid currency code"))
 }
 
 fn parse_id(id: &str) -> Result<AccountId, String> {

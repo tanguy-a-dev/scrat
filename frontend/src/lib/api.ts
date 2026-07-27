@@ -100,6 +100,8 @@ export const api = {
   deleteTransaction: (id: string) => invoke<void>("delete_transaction", { id }),
   suggestAccountForSource: (source: string) =>
     invoke<string | null>("suggest_account_for_source", { source }),
+  suggestCategoryForSource: (source: string) =>
+    invoke<string | null>("suggest_category_for_source", { source }),
 
   previewCsvImport: (bytes: number[]) =>
     invoke<ImportPreviewDto>("preview_csv_import", { bytes }),
@@ -113,6 +115,11 @@ export const api = {
       categoryId,
       accountId,
     }),
+
+  getCurrency: () => invoke<string>("get_currency"),
+  setCurrency: (code: string) => invoke<void>("set_currency", { code }),
+  exportDatabase: (destination: string) =>
+    invoke<void>("export_database", { destination }),
 };
 
 /** Formats integer minor units (e.g. cents) as "12.34". */

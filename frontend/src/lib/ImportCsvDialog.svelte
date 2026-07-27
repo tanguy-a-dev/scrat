@@ -24,6 +24,7 @@
   let error = $state("");
   let preview = $state<ImportPreviewDto | null>(null);
   let included = $state<boolean[]>([]);
+  let suggestedCategoryNames = $state<(string | null)[]>([]);
   let selectedCategoryId = $state("");
   let selectedAccountId = $state("");
   let summary = $state<ImportSummaryDto | null>(null);
@@ -49,15 +50,34 @@
       const result = await api.previewCsvImport(bytes);
       preview = result;
       included = result.rows.map((r) => r.include_by_default);
+      suggestedCategoryNames = result.rows.map(() => null);
       if (result.rows.length > 0) {
         const suggested = await api
           .suggestAccountForSource(result.rows.find((r) => r.source)?.source ?? "")
           .catch(() => null);
         if (suggested) selectedAccountId = suggested;
       }
+      loadCategorySuggestions(result.rows.map((r) => r.source));
     } catch (e) {
       error = String(e);
     }
+  }
+
+  async function loadCategorySuggestions(sources: string[]) {
+    const results = await Promise.all(
+      sources.map(async (source) => {
+        if (!source) return null;
+        try {
+          const categoryId = await api.suggestCategoryForSource(source);
+          return categoryId
+            ? (categories.find((c) => c.id === categoryId)?.name ?? null)
+            : null;
+        } catch {
+          return null;
+        }
+      }),
+    );
+    suggestedCategoryNames = results;
   }
 
   async function handleImport() {
@@ -114,7 +134,9 @@
         Detected: date column ({Math.round(preview.date_confidence * 100)}%
         confidence), amount column ({Math.round(preview.amount_confidence * 100)}%
         confidence). Uncheck any row that isn't a real transaction (e.g. an
-        opening/closing balance line).
+        opening/closing balance line). "Suggested category" is based on how
+        you've categorized similar sources before — informational only, since
+        every imported row gets the one category chosen below.
       </p>
 
       <div class="targets">
@@ -140,6 +162,7 @@
               <th>Date</th>
               <th>Amount</th>
               <th>Source</th>
+              <th>Suggested category</th>
             </tr>
           </thead>
           <tbody>
@@ -160,6 +183,7 @@
                     : "—"}</td
                 >
                 <td>{row.source || "—"}</td>
+                <td class="suggestion">{suggestedCategoryNames[i] ?? "—"}</td>
               </tr>
             {/each}
           </tbody>
@@ -258,6 +282,11 @@
 
   tr.invalid {
     opacity: 0.5;
+  }
+
+  .suggestion {
+    font-style: italic;
+    opacity: 0.75;
   }
 
   tbody tr:not(:last-child) {
