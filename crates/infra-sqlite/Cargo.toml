@@ -7,6 +7,8 @@ edition.workspace = true
 rusqlite = { version = "0.32", features = ["bundled-sqlcipher-vendored-openssl"] }
 scrat-domain.workspace = true
 thiserror.workspace = true
+chrono.workspace = true
+uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

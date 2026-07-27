@@ -2,7 +2,10 @@ use rusqlite::Connection;
 
 /// Ordered, append-only list of migrations. Add new entries at the end;
 /// never edit or remove an existing one once it has shipped.
-const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("0001_initial.sql"))];
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("0001_initial.sql")),
+    (2, include_str!("0002_account_opening_balance.sql")),
+];
 
 /// Applies any migration whose version isn't yet recorded in
 /// `schema_migrations`, in order, each inside its own transaction. Safe to

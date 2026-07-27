@@ -97,7 +97,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(applied_version, 1);
+        assert_eq!(applied_version, 2);
     }
 
     #[test]

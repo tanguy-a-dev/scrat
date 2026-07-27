@@ -1,3 +1,4 @@
+mod accounts;
 mod db;
 
 use db::DbState;
@@ -11,6 +12,15 @@ pub fn run() {
             db::is_db_initialized,
             db::create_db_with_passphrase,
             db::unlock_db,
+            accounts::list_accounts,
+            accounts::create_account,
+            accounts::rename_account,
+            accounts::set_opening_balance,
+            accounts::add_source_pattern,
+            accounts::remove_source_pattern,
+            accounts::archive_account,
+            accounts::activate_account,
+            accounts::delete_account,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

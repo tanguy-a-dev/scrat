@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { goto } from "$app/navigation";
   import { onMount } from "svelte";
+  import { api } from "$lib/api";
 
-  type Screen = "loading" | "create" | "unlock" | "unlocked" | "fatal";
+  type Screen = "loading" | "create" | "unlock" | "fatal";
 
   let screen = $state<Screen>("loading");
   let passphrase = $state("");
@@ -12,7 +13,7 @@
 
   onMount(async () => {
     try {
-      const initialized = await invoke<boolean>("is_db_initialized");
+      const initialized = await api.isDbInitialized();
       screen = initialized ? "unlock" : "create";
     } catch (e) {
       error = String(e);
@@ -33,8 +34,8 @@
     }
     submitting = true;
     try {
-      await invoke("create_db_with_passphrase", { passphrase });
-      screen = "unlocked";
+      await api.createDb(passphrase);
+      await goto("/overview");
     } catch (e) {
       error = String(e);
     } finally {
@@ -47,8 +48,8 @@
     error = "";
     submitting = true;
     try {
-      await invoke("unlock_db", { passphrase });
-      screen = "unlocked";
+      await api.unlockDb(passphrase);
+      await goto("/overview");
     } catch (e) {
       error = String(e);
     } finally {
@@ -100,18 +101,10 @@
       {#if error}<p class="error">{error}</p>{/if}
       <button type="submit" disabled={submitting}>Unlock</button>
     </form>
-  {:else if screen === "unlocked"}
-    <p class="subtitle">Unlocked. (Accounts &amp; Overview land in M2.)</p>
   {/if}
 </main>
 
 <style>
-  :root {
-    font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-    color: #0f0f0f;
-    background-color: #f6f6f6;
-  }
-
   .container {
     margin: 0;
     padding-top: 10vh;
@@ -168,11 +161,6 @@
   }
 
   @media (prefers-color-scheme: dark) {
-    :root {
-      color: #f6f6f6;
-      background-color: #2f2f2f;
-    }
-
     input {
       background-color: #1f1f1f98;
       border-color: #444;
