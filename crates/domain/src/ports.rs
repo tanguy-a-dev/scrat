@@ -34,10 +34,18 @@ pub trait CategoryRepository {
     fn list_all(&self) -> Result<Vec<Category>, RepositoryError>;
     /// Re-parents every category whose `parent_id` is `from` to `to`
     /// (`None` promotes them to root level). A no-op when there are none.
-    fn reassign_children(&self, from: CategoryId, to: Option<CategoryId>) -> Result<(), RepositoryError>;
+    fn reassign_children(
+        &self,
+        from: CategoryId,
+        to: Option<CategoryId>,
+    ) -> Result<(), RepositoryError>;
     /// Moves every transaction referencing `from` to `to`. `to` must be a
     /// real category — a transaction's category can never be null.
-    fn reassign_transactions(&self, from: CategoryId, to: CategoryId) -> Result<(), RepositoryError>;
+    fn reassign_transactions(
+        &self,
+        from: CategoryId,
+        to: CategoryId,
+    ) -> Result<(), RepositoryError>;
     /// Count of transactions referencing this category — used to decide
     /// whether a delete requires an explicit reassignment target.
     fn transaction_count(&self, id: CategoryId) -> Result<u64, RepositoryError>;
