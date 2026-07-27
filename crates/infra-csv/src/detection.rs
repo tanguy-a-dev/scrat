@@ -162,13 +162,24 @@ pub fn parse_amount_cell(raw: &str) -> Option<i64> {
     if integer_digits.is_empty() && fraction_digits.is_empty() {
         return None;
     }
-    let integer_value: i64 = integer_digits.parse().unwrap_or(0);
+    // A column of long reference/account numbers can still fully parse as
+    // digits — reject implausibly large amounts outright rather than
+    // silently coercing an unparseable one to 0 (which previously let such
+    // a column masquerade as a perfectly valid, if wrong, amount column)
+    // or overflowing i64 on the `* 100` below.
+    const MAX_PLAUSIBLE_INTEGER: i64 = 999_999_999;
+    let integer_value: i64 = integer_digits.parse().ok()?;
+    if integer_value > MAX_PLAUSIBLE_INTEGER {
+        return None;
+    }
     let fraction_value: i64 = match fraction_digits.len() {
         0 => 0,
         1 => fraction_digits.parse::<i64>().unwrap_or(0) * 10,
         _ => fraction_digits[..2].parse().unwrap_or(0),
     };
-    let minor_units = integer_value * 100 + fraction_value;
+    let minor_units = integer_value
+        .checked_mul(100)?
+        .checked_add(fraction_value)?;
     Some(if is_negative {
         -minor_units
     } else {
@@ -454,6 +465,21 @@ mod tests {
     #[test]
     fn parse_amount_cell_rejects_garbage() {
         assert_eq!(parse_amount_cell("n/a"), None);
+    }
+
+    #[test]
+    fn parse_amount_cell_rejects_implausibly_large_reference_number_without_panicking() {
+        // A long account/reference number can still parse as a plain
+        // integer (no separators) — this must not crash, and must not be
+        // mistaken for a real amount.
+        assert_eq!(parse_amount_cell("00878020105123456789"), None);
+    }
+
+    #[test]
+    fn parse_amount_cell_does_not_overflow_on_near_i64_max_integer() {
+        // A value whose integer part alone fits i64 but overflows once
+        // multiplied by 100 (minor units) must be rejected, not panic.
+        assert_eq!(parse_amount_cell("123456789012345678"), None);
     }
 
     #[test]
