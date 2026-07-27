@@ -43,7 +43,7 @@ impl From<AccountWithBalance> for AccountDto {
 
 /// The app-wide currency (Settings > Set currency lands in M7); until then,
 /// falls back to USD if nothing has been configured yet.
-fn app_currency(conn: &Connection) -> Currency {
+pub(crate) fn app_currency(conn: &Connection) -> Currency {
     conn.query_row(
         "SELECT value FROM settings WHERE key = 'currency_code'",
         [],

@@ -1,7 +1,9 @@
+use chrono::NaiveDate;
 use thiserror::Error;
 
 use crate::account::{Account, AccountId};
 use crate::category::{Category, CategoryId};
+use crate::transaction::{Transaction, TransactionId};
 
 #[derive(Debug, Error)]
 #[error("{0}")]
@@ -49,4 +51,19 @@ pub trait CategoryRepository {
     /// Count of transactions referencing this category — used to decide
     /// whether a delete requires an explicit reassignment target.
     fn transaction_count(&self, id: CategoryId) -> Result<u64, RepositoryError>;
+}
+
+/// Port for persisting transactions (the ledger).
+pub trait TransactionRepository {
+    /// Inserts the transaction. A repeat of the same (account, date, amount,
+    /// normalized source) is rejected by the `dedup_key` unique constraint —
+    /// callers doing bulk CSV import should catch that and skip the row
+    /// rather than treat it as a hard failure.
+    fn insert(&self, transaction: &Transaction) -> Result<(), RepositoryError>;
+    fn delete(&self, id: TransactionId) -> Result<(), RepositoryError>;
+    fn list_in_range(
+        &self,
+        start: NaiveDate,
+        end: NaiveDate,
+    ) -> Result<Vec<Transaction>, RepositoryError>;
 }

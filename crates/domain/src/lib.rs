@@ -6,3 +6,4 @@ pub mod account;
 pub mod category;
 pub mod money;
 pub mod ports;
+pub mod transaction;

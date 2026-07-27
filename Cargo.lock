@@ -2896,6 +2896,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 name = "scrat"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "scrat-application",
  "scrat-domain",
  "scrat-infra-sqlite",
@@ -2910,6 +2911,7 @@ dependencies = [
 name = "scrat-application"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "scrat-domain",
  "thiserror 2.0.19",
 ]

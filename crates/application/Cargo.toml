@@ -6,3 +6,4 @@ edition.workspace = true
 [dependencies]
 scrat-domain.workspace = true
 thiserror.workspace = true
+chrono.workspace = true

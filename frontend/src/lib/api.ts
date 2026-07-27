@@ -18,6 +18,16 @@ export interface CategoryDto {
   parent_id: string | null;
 }
 
+export interface TransactionDto {
+  id: string;
+  date: string;
+  amount_minor_units: number;
+  currency: string;
+  source: string;
+  category_id: string;
+  account_id: string;
+}
+
 export const api = {
   isDbInitialized: () => invoke<boolean>("is_db_initialized"),
   createDb: (passphrase: string) =>
@@ -51,6 +61,26 @@ export const api = {
     invoke<void>("move_category", { id, parentId }),
   deleteCategory: (id: string, reassignTo: string | null) =>
     invoke<void>("delete_category", { id, reassignTo }),
+
+  listTransactions: (start: string, end: string) =>
+    invoke<TransactionDto[]>("list_transactions", { start, end }),
+  createTransaction: (
+    date: string,
+    amountMinorUnits: number,
+    source: string,
+    categoryId: string,
+    accountId: string,
+  ) =>
+    invoke<TransactionDto>("create_transaction", {
+      date,
+      amountMinorUnits,
+      source,
+      categoryId,
+      accountId,
+    }),
+  deleteTransaction: (id: string) => invoke<void>("delete_transaction", { id }),
+  suggestAccountForSource: (source: string) =>
+    invoke<string | null>("suggest_account_for_source", { source }),
 };
 
 /** Formats integer minor units (e.g. cents) as "12.34". */
@@ -63,4 +93,38 @@ export function parseToMinorUnits(input: string): number | null {
   const value = Number.parseFloat(input);
   if (Number.isNaN(value)) return null;
   return Math.round(value * 100);
+}
+
+export type RangeMode = "month" | "year" | "all" | "custom";
+
+function toIsoDate(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+export function todayIsoDate(): string {
+  return toIsoDate(new Date());
+}
+
+/** Computes the [start, end] ISO date bounds for a range mode. */
+export function computeRange(
+  mode: RangeMode,
+  custom?: { start: string; end: string },
+): { start: string; end: string } {
+  const now = new Date();
+  if (mode === "month") {
+    return {
+      start: toIsoDate(new Date(now.getFullYear(), now.getMonth(), 1)),
+      end: toIsoDate(new Date(now.getFullYear(), now.getMonth() + 1, 0)),
+    };
+  }
+  if (mode === "year") {
+    return {
+      start: toIsoDate(new Date(now.getFullYear(), 0, 1)),
+      end: toIsoDate(new Date(now.getFullYear(), 11, 31)),
+    };
+  }
+  if (mode === "all") {
+    return { start: "0001-01-01", end: "9999-12-31" };
+  }
+  return custom ?? { start: toIsoDate(now), end: toIsoDate(now) };
 }
