@@ -12,6 +12,12 @@ export interface AccountDto {
   source_patterns: string[];
 }
 
+export interface CategoryDto {
+  id: string;
+  name: string;
+  parent_id: string | null;
+}
+
 export const api = {
   isDbInitialized: () => invoke<boolean>("is_db_initialized"),
   createDb: (passphrase: string) =>
@@ -35,6 +41,16 @@ export const api = {
   archiveAccount: (id: string) => invoke<void>("archive_account", { id }),
   activateAccount: (id: string) => invoke<void>("activate_account", { id }),
   deleteAccount: (id: string) => invoke<void>("delete_account", { id }),
+
+  listCategories: () => invoke<CategoryDto[]>("list_categories"),
+  createCategory: (name: string, parentId: string | null) =>
+    invoke<CategoryDto>("create_category", { name, parentId }),
+  renameCategory: (id: string, name: string) =>
+    invoke<void>("rename_category", { id, name }),
+  moveCategory: (id: string, parentId: string | null) =>
+    invoke<void>("move_category", { id, parentId }),
+  deleteCategory: (id: string, reassignTo: string | null) =>
+    invoke<void>("delete_category", { id, reassignTo }),
 };
 
 /** Formats integer minor units (e.g. cents) as "12.34". */

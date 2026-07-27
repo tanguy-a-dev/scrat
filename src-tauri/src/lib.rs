@@ -1,4 +1,5 @@
 mod accounts;
+mod categories;
 mod db;
 
 use db::DbState;
@@ -21,6 +22,11 @@ pub fn run() {
             accounts::archive_account,
             accounts::activate_account,
             accounts::delete_account,
+            categories::list_categories,
+            categories::create_category,
+            categories::rename_category,
+            categories::move_category,
+            categories::delete_category,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,0 +1,313 @@
+use scrat_domain::category::{
+    would_create_cycle, Category, CategoryError, CategoryId, CategoryName,
+};
+use scrat_domain::ports::{CategoryRepository, RepositoryError};
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum ApplicationError {
+    #[error(transparent)]
+    Category(#[from] CategoryError),
+    #[error(transparent)]
+    Repository(#[from] RepositoryError),
+    #[error("category not found")]
+    CategoryNotFound,
+    #[error("moving this category here would create a cycle")]
+    WouldCreateCycle,
+    #[error("category still has {0} transaction(s); choose a category to reassign them to")]
+    RequiresReassignment(u64),
+}
+
+/// Constructed fresh per request against a live repository borrow — see
+/// `AccountService` for why this borrows rather than owns its repository.
+pub struct CategoryService<'a> {
+    repo: &'a dyn CategoryRepository,
+}
+
+impl<'a> CategoryService<'a> {
+    pub fn new(repo: &'a dyn CategoryRepository) -> Self {
+        Self { repo }
+    }
+
+    pub fn create_category(
+        &self,
+        name: &str,
+        parent_id: Option<CategoryId>,
+    ) -> Result<Category, ApplicationError> {
+        let name = CategoryName::new(name)?;
+        if let Some(parent) = parent_id {
+            self.get(parent)?;
+        }
+        let category = Category::new(CategoryId::new(), name, parent_id)?;
+        self.repo.insert(&category)?;
+        Ok(category)
+    }
+
+    pub fn rename_category(&self, id: CategoryId, new_name: &str) -> Result<(), ApplicationError> {
+        let mut category = self.get(id)?;
+        category.rename(CategoryName::new(new_name)?);
+        self.repo.update(&category)?;
+        Ok(())
+    }
+
+    pub fn move_category(
+        &self,
+        id: CategoryId,
+        new_parent_id: Option<CategoryId>,
+    ) -> Result<(), ApplicationError> {
+        let mut category = self.get(id)?;
+        if let Some(parent) = new_parent_id {
+            self.get(parent)?;
+            let all = self.repo.list_all()?;
+            if would_create_cycle(id, parent, &all) {
+                return Err(ApplicationError::WouldCreateCycle);
+            }
+        }
+        category.set_parent(new_parent_id)?;
+        self.repo.update(&category)?;
+        Ok(())
+    }
+
+    /// Deletes the category. Any child categories are re-parented to
+    /// `reassign_to` (`None` promotes them to root level). If the category
+    /// still has transactions, `reassign_to` must be `Some` — a
+    /// transaction's category can never be null.
+    pub fn delete_category(
+        &self,
+        id: CategoryId,
+        reassign_to: Option<CategoryId>,
+    ) -> Result<(), ApplicationError> {
+        let transaction_count = self.repo.transaction_count(id)?;
+        if transaction_count > 0 {
+            let target =
+                reassign_to.ok_or(ApplicationError::RequiresReassignment(transaction_count))?;
+            if target == id {
+                return Err(CategoryError::SelfParent.into());
+            }
+            self.get(target)?;
+            self.repo.reassign_transactions(id, target)?;
+        }
+        self.repo.reassign_children(id, reassign_to)?;
+        self.repo.delete(id)?;
+        Ok(())
+    }
+
+    pub fn list_categories(&self) -> Result<Vec<Category>, ApplicationError> {
+        Ok(self.repo.list_all()?)
+    }
+
+    fn get(&self, id: CategoryId) -> Result<Category, ApplicationError> {
+        self.repo
+            .find_by_id(id)?
+            .ok_or(ApplicationError::CategoryNotFound)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct FakeCategoryRepository {
+        categories: Mutex<Vec<Category>>,
+        transaction_counts: Mutex<std::collections::HashMap<CategoryId, u64>>,
+    }
+
+    impl CategoryRepository for FakeCategoryRepository {
+        fn insert(&self, category: &Category) -> Result<(), RepositoryError> {
+            self.categories.lock().unwrap().push(category.clone());
+            Ok(())
+        }
+
+        fn update(&self, category: &Category) -> Result<(), RepositoryError> {
+            let mut categories = self.categories.lock().unwrap();
+            let existing = categories
+                .iter_mut()
+                .find(|c| c.id() == category.id())
+                .expect("category must exist");
+            *existing = category.clone();
+            Ok(())
+        }
+
+        fn delete(&self, id: CategoryId) -> Result<(), RepositoryError> {
+            self.categories.lock().unwrap().retain(|c| c.id() != id);
+            Ok(())
+        }
+
+        fn find_by_id(&self, id: CategoryId) -> Result<Option<Category>, RepositoryError> {
+            Ok(self
+                .categories
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|c| c.id() == id)
+                .cloned())
+        }
+
+        fn list_all(&self) -> Result<Vec<Category>, RepositoryError> {
+            Ok(self.categories.lock().unwrap().clone())
+        }
+
+        fn reassign_children(
+            &self,
+            from: CategoryId,
+            to: Option<CategoryId>,
+        ) -> Result<(), RepositoryError> {
+            for category in self.categories.lock().unwrap().iter_mut() {
+                if category.parent_id() == Some(from) {
+                    category.set_parent(to).ok();
+                }
+            }
+            Ok(())
+        }
+
+        fn reassign_transactions(
+            &self,
+            from: CategoryId,
+            to: CategoryId,
+        ) -> Result<(), RepositoryError> {
+            let mut counts = self.transaction_counts.lock().unwrap();
+            let moved = counts.remove(&from).unwrap_or(0);
+            *counts.entry(to).or_insert(0) += moved;
+            Ok(())
+        }
+
+        fn transaction_count(&self, id: CategoryId) -> Result<u64, RepositoryError> {
+            Ok(*self
+                .transaction_counts
+                .lock()
+                .unwrap()
+                .get(&id)
+                .unwrap_or(&0))
+        }
+    }
+
+    #[test]
+    fn create_category_with_valid_name_succeeds() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+
+        let category = service.create_category("Hobby", None).unwrap();
+
+        assert_eq!(category.name().as_str(), "Hobby");
+        assert_eq!(category.parent_id(), None);
+    }
+
+    #[test]
+    fn create_category_with_unknown_parent_fails() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+
+        let result = service.create_category("Paint", Some(CategoryId::new()));
+
+        assert!(matches!(result, Err(ApplicationError::CategoryNotFound)));
+    }
+
+    #[test]
+    fn create_category_with_known_parent_succeeds() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+        let hobby = service.create_category("Hobby", None).unwrap();
+
+        let paint = service.create_category("Paint", Some(hobby.id())).unwrap();
+
+        assert_eq!(paint.parent_id(), Some(hobby.id()));
+    }
+
+    #[test]
+    fn move_category_rejects_cycle() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+        let root = service.create_category("Root", None).unwrap();
+        let child = service.create_category("Child", Some(root.id())).unwrap();
+
+        let result = service.move_category(root.id(), Some(child.id()));
+
+        assert!(matches!(result, Err(ApplicationError::WouldCreateCycle)));
+    }
+
+    #[test]
+    fn move_category_allows_valid_reparent() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+        let a = service.create_category("A", None).unwrap();
+        let b = service.create_category("B", None).unwrap();
+
+        service.move_category(b.id(), Some(a.id())).unwrap();
+
+        let stored = repo.find_by_id(b.id()).unwrap().unwrap();
+        assert_eq!(stored.parent_id(), Some(a.id()));
+    }
+
+    #[test]
+    fn delete_category_without_children_or_transactions_succeeds() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+        let category = service.create_category("Temp", None).unwrap();
+
+        service.delete_category(category.id(), None).unwrap();
+
+        assert!(repo.find_by_id(category.id()).unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_category_reassigns_children_to_given_target() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+        let hobby = service.create_category("Hobby", None).unwrap();
+        let paint = service.create_category("Paint", Some(hobby.id())).unwrap();
+        let other = service.create_category("Other", None).unwrap();
+
+        service
+            .delete_category(hobby.id(), Some(other.id()))
+            .unwrap();
+
+        let stored = repo.find_by_id(paint.id()).unwrap().unwrap();
+        assert_eq!(stored.parent_id(), Some(other.id()));
+    }
+
+    #[test]
+    fn delete_category_with_transactions_requires_reassignment_target() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+        let category = service.create_category("Groceries", None).unwrap();
+        repo.transaction_counts
+            .lock()
+            .unwrap()
+            .insert(category.id(), 5);
+
+        let result = service.delete_category(category.id(), None);
+
+        assert!(matches!(
+            result,
+            Err(ApplicationError::RequiresReassignment(5))
+        ));
+    }
+
+    #[test]
+    fn delete_category_with_transactions_reassigns_when_target_given() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+        let category = service.create_category("Groceries", None).unwrap();
+        let other = service.create_category("Food", None).unwrap();
+        repo.transaction_counts
+            .lock()
+            .unwrap()
+            .insert(category.id(), 5);
+
+        service
+            .delete_category(category.id(), Some(other.id()))
+            .unwrap();
+
+        assert_eq!(
+            *repo
+                .transaction_counts
+                .lock()
+                .unwrap()
+                .get(&other.id())
+                .unwrap(),
+            5
+        );
+    }
+}

@@ -3,3 +3,4 @@
 //! storage or presentation technology.
 
 pub mod account_service;
+pub mod category_service;
