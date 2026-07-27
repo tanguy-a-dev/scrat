@@ -17,6 +17,11 @@ src-tauri/gen/schemas
 *.sqlite
 *.sqlite-*
 
+# Real bank export(s) used for manual CSV-import testing — never commit
+# real personal financial data, even for test fixtures.
+/sample-data
+T_cpte_*.csv
+
 # OS / editor
 .DS_Store
 .env

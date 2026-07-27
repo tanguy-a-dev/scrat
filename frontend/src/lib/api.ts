@@ -28,6 +28,25 @@ export interface TransactionDto {
   account_id: string;
 }
 
+export interface ImportPreviewRowDto {
+  date: string | null;
+  amount_minor_units: number | null;
+  source: string;
+  include_by_default: boolean;
+  raw: string[];
+}
+
+export interface ImportPreviewDto {
+  rows: ImportPreviewRowDto[];
+  date_confidence: number;
+  amount_confidence: number;
+}
+
+export interface ImportSummaryDto {
+  imported: number;
+  skipped_duplicates: number;
+}
+
 export const api = {
   isDbInitialized: () => invoke<boolean>("is_db_initialized"),
   createDb: (passphrase: string) =>
@@ -81,6 +100,19 @@ export const api = {
   deleteTransaction: (id: string) => invoke<void>("delete_transaction", { id }),
   suggestAccountForSource: (source: string) =>
     invoke<string | null>("suggest_account_for_source", { source }),
+
+  previewCsvImport: (bytes: number[]) =>
+    invoke<ImportPreviewDto>("preview_csv_import", { bytes }),
+  commitCsvImport: (
+    rows: { date: string; amount_minor_units: number; source: string }[],
+    categoryId: string,
+    accountId: string,
+  ) =>
+    invoke<ImportSummaryDto>("commit_csv_import", {
+      rows,
+      categoryId,
+      accountId,
+    }),
 };
 
 /** Formats integer minor units (e.g. cents) as "12.34". */
@@ -93,6 +125,27 @@ export function parseToMinorUnits(input: string): number | null {
   const value = Number.parseFloat(input);
   if (Number.isNaN(value)) return null;
   return Math.round(value * 100);
+}
+
+/** Builds a flat, depth-indented option list from a category tree. */
+export function buildCategoryOptions(
+  categories: CategoryDto[],
+): { id: string; label: string }[] {
+  const byParent = new Map<string | null, CategoryDto[]>();
+  for (const c of categories) {
+    const key = c.parent_id;
+    if (!byParent.has(key)) byParent.set(key, []);
+    byParent.get(key)!.push(c);
+  }
+  const result: { id: string; label: string }[] = [];
+  function walk(parentId: string | null, depth: number) {
+    for (const c of byParent.get(parentId) ?? []) {
+      result.push({ id: c.id, label: `${"— ".repeat(depth)}${c.name}` });
+      walk(c.id, depth + 1);
+    }
+  }
+  walk(null, 0);
+  return result;
 }
 
 export type RangeMode = "month" | "year" | "all" | "custom";

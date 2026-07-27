@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import {
     api,
+    buildCategoryOptions,
     formatMinorUnits,
     parseToMinorUnits,
     computeRange,
@@ -11,6 +12,9 @@
     type TransactionDto,
     type RangeMode,
   } from "$lib/api";
+  import ImportCsvDialog from "$lib/ImportCsvDialog.svelte";
+
+  let showImportDialog = $state(false);
 
   let accounts = $state<AccountDto[]>([]);
   let categories = $state<CategoryDto[]>([]);
@@ -70,23 +74,7 @@
     return accounts.find((a) => a.id === id)?.name ?? "—";
   }
 
-  let categoryOptions = $derived.by(() => {
-    const byParent = new Map<string | null, CategoryDto[]>();
-    for (const c of categories) {
-      const key = c.parent_id;
-      if (!byParent.has(key)) byParent.set(key, []);
-      byParent.get(key)!.push(c);
-    }
-    const result: { id: string; label: string }[] = [];
-    function walk(parentId: string | null, depth: number) {
-      for (const c of byParent.get(parentId) ?? []) {
-        result.push({ id: c.id, label: `${"— ".repeat(depth)}${c.name}` });
-        walk(c.id, depth + 1);
-      }
-    }
-    walk(null, 0);
-    return result;
-  });
+  let categoryOptions = $derived(buildCategoryOptions(categories));
 
   async function handleSourceBlur() {
     if (!formSource.trim() || formAccountId) return;
@@ -254,7 +242,21 @@
     <span>to</span>
     <input type="date" bind:value={customEnd} onchange={load} />
   {/if}
+  <button
+    type="button"
+    class="import-button"
+    onclick={() => (showImportDialog = true)}>Import CSV</button
+  >
 </div>
+
+{#if showImportDialog}
+  <ImportCsvDialog
+    {accounts}
+    {categories}
+    onImported={load}
+    onClose={() => (showImportDialog = false)}
+  />
+{/if}
 
 <form class="create-form" onsubmit={handleCreate}>
   <input type="date" bind:value={formDate} required />
@@ -319,6 +321,14 @@
     align-items: center;
     gap: 0.75rem;
     margin-bottom: 1rem;
+  }
+
+  .import-button {
+    margin-left: auto;
+    background-color: #396cd8;
+    color: white;
+    border: none;
+    cursor: pointer;
   }
 
   .range-buttons {

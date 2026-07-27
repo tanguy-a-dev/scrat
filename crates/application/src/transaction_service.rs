@@ -3,7 +3,7 @@ use scrat_domain::account::AccountId;
 use scrat_domain::category::CategoryId;
 use scrat_domain::money::{Currency, Money};
 use scrat_domain::ports::{
-    AccountRepository, CategoryRepository, RepositoryError, TransactionRepository,
+    AccountRepository, CategoryRepository, InsertOutcome, RepositoryError, TransactionRepository,
 };
 use scrat_domain::transaction::{SourceText, Transaction, TransactionError, TransactionId};
 use thiserror::Error;
@@ -18,6 +18,23 @@ pub enum ApplicationError {
     AccountNotFound,
     #[error("category not found")]
     CategoryNotFound,
+}
+
+/// A single row a CSV importer has already parsed into a date/amount/source
+/// triple. Deliberately independent of any particular CSV crate's types —
+/// `scrat-infra-csv` produces its own parsed rows and the Tauri command
+/// layer maps them into this before calling [`TransactionService::import_transactions`].
+#[derive(Debug, Clone)]
+pub struct ImportRow {
+    pub date: NaiveDate,
+    pub amount_minor_units: i64,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ImportOutcome {
+    pub imported: usize,
+    pub skipped_duplicates: usize,
 }
 
 /// Constructed fresh per request against live repository borrows — see
@@ -85,6 +102,43 @@ impl<'a> TransactionService<'a> {
         end: NaiveDate,
     ) -> Result<Vec<Transaction>, ApplicationError> {
         Ok(self.transactions.list_in_range(start, end)?)
+    }
+
+    /// Imports a batch of already-parsed rows (from a CSV, say) into the
+    /// given account/category, skipping any row whose dedup key already
+    /// exists rather than erroring — makes re-importing the same file (or
+    /// an overlapping date range) idempotent.
+    pub fn import_transactions(
+        &self,
+        rows: &[ImportRow],
+        category_id: CategoryId,
+        account_id: AccountId,
+    ) -> Result<ImportOutcome, ApplicationError> {
+        self.categories
+            .find_by_id(category_id)?
+            .ok_or(ApplicationError::CategoryNotFound)?;
+        self.accounts
+            .find_by_id(account_id)?
+            .ok_or(ApplicationError::AccountNotFound)?;
+
+        let mut outcome = ImportOutcome::default();
+        for row in rows {
+            let source = SourceText::new(&row.source)?;
+            let amount = Money::from_minor_units(row.amount_minor_units, self.currency.clone());
+            let transaction = Transaction::new(
+                TransactionId::new(),
+                row.date,
+                amount,
+                source,
+                category_id,
+                account_id,
+            )?;
+            match self.transactions.insert_or_skip(&transaction)? {
+                InsertOutcome::Inserted => outcome.imported += 1,
+                InsertOutcome::DuplicateSkipped => outcome.skipped_duplicates += 1,
+            }
+        }
+        Ok(outcome)
     }
 
     /// Finds the account whose source-pattern list matches the given raw
@@ -202,6 +256,20 @@ mod tests {
         fn insert(&self, transaction: &Transaction) -> Result<(), RepositoryError> {
             self.transactions.lock().unwrap().push(transaction.clone());
             Ok(())
+        }
+        fn insert_or_skip(
+            &self,
+            transaction: &Transaction,
+        ) -> Result<scrat_domain::ports::InsertOutcome, RepositoryError> {
+            let mut transactions = self.transactions.lock().unwrap();
+            if transactions
+                .iter()
+                .any(|t| t.dedup_key() == transaction.dedup_key())
+            {
+                return Ok(scrat_domain::ports::InsertOutcome::DuplicateSkipped);
+            }
+            transactions.push(transaction.clone());
+            Ok(scrat_domain::ports::InsertOutcome::Inserted)
         }
         fn delete(&self, id: TransactionId) -> Result<(), RepositoryError> {
             self.transactions.lock().unwrap().retain(|t| t.id() != id);
@@ -381,5 +449,65 @@ mod tests {
         let found = service.find_account_by_source("WHOLE FOODS #42").unwrap();
 
         assert_eq!(found, Some(f.account_id));
+    }
+
+    #[test]
+    fn import_transactions_skips_rows_whose_dedup_key_already_exists() {
+        let f = fixture();
+        let service = TransactionService::new(
+            &f.transactions,
+            &f.accounts,
+            &f.categories,
+            Currency::new("USD").unwrap(),
+        );
+        let row = ImportRow {
+            date: NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+            amount_minor_units: -1_200,
+            source: "Whole Foods".to_string(),
+        };
+
+        let first = service
+            .import_transactions(&[row.clone(), row.clone()], f.category_id, f.account_id)
+            .unwrap();
+
+        assert_eq!(
+            first,
+            ImportOutcome {
+                imported: 1,
+                skipped_duplicates: 1
+            }
+        );
+
+        // Re-importing the same "file" again is a no-op.
+        let second = service
+            .import_transactions(&[row], f.category_id, f.account_id)
+            .unwrap();
+        assert_eq!(
+            second,
+            ImportOutcome {
+                imported: 0,
+                skipped_duplicates: 1
+            }
+        );
+    }
+
+    #[test]
+    fn import_transactions_rejects_unknown_account() {
+        let f = fixture();
+        let service = TransactionService::new(
+            &f.transactions,
+            &f.accounts,
+            &f.categories,
+            Currency::new("USD").unwrap(),
+        );
+        let row = ImportRow {
+            date: NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+            amount_minor_units: -1_200,
+            source: "Whole Foods".to_string(),
+        };
+
+        let result = service.import_transactions(&[row], f.category_id, AccountId::new());
+
+        assert!(matches!(result, Err(ApplicationError::AccountNotFound)));
     }
 }

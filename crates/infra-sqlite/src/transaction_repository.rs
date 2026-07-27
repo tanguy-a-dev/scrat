@@ -3,7 +3,7 @@ use rusqlite::{params, Connection};
 use scrat_domain::account::AccountId;
 use scrat_domain::category::CategoryId;
 use scrat_domain::money::{Currency, Money};
-use scrat_domain::ports::{RepositoryError, TransactionRepository};
+use scrat_domain::ports::{InsertOutcome, RepositoryError, TransactionRepository};
 use scrat_domain::transaction::{SourceText, Transaction, TransactionId};
 
 pub struct SqliteTransactionRepository<'a> {
@@ -48,26 +48,56 @@ fn sql_err(e: rusqlite::Error) -> RepositoryError {
     RepositoryError(e.to_string())
 }
 
+const INSERT_SQL: &str = "INSERT INTO transactions
+    (id, date, amount_minor_units, source, category_id, account_id, dedup_key, created_at)
+ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)";
+
 impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
     fn insert(&self, transaction: &Transaction) -> Result<(), RepositoryError> {
+        let date = transaction.date().format("%Y-%m-%d").to_string();
+        let now = chrono::Utc::now().to_rfc3339();
         self.conn
             .execute(
-                "INSERT INTO transactions
-                    (id, date, amount_minor_units, source, category_id, account_id, dedup_key, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                INSERT_SQL,
                 params![
                     transaction.id().as_string(),
-                    transaction.date().format("%Y-%m-%d").to_string(),
+                    date,
                     transaction.amount().minor_units(),
                     transaction.source().as_str(),
                     transaction.category_id().as_string(),
                     transaction.account_id().as_string(),
                     transaction.dedup_key().as_str(),
-                    chrono::Utc::now().to_rfc3339(),
+                    now,
                 ],
             )
             .map_err(sql_err)?;
         Ok(())
+    }
+
+    fn insert_or_skip(&self, transaction: &Transaction) -> Result<InsertOutcome, RepositoryError> {
+        let date = transaction.date().format("%Y-%m-%d").to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        let rows_changed = self
+            .conn
+            .execute(
+                &format!("{INSERT_SQL} ON CONFLICT(dedup_key) DO NOTHING"),
+                params![
+                    transaction.id().as_string(),
+                    date,
+                    transaction.amount().minor_units(),
+                    transaction.source().as_str(),
+                    transaction.category_id().as_string(),
+                    transaction.account_id().as_string(),
+                    transaction.dedup_key().as_str(),
+                    now,
+                ],
+            )
+            .map_err(sql_err)?;
+        Ok(if rows_changed == 0 {
+            InsertOutcome::DuplicateSkipped
+        } else {
+            InsertOutcome::Inserted
+        })
     }
 
     fn delete(&self, id: TransactionId) -> Result<(), RepositoryError> {
@@ -265,5 +295,37 @@ mod tests {
         let result = repo.insert(&make());
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn insert_or_skip_reports_duplicate_instead_of_erroring() {
+        let conn = test_conn();
+        let (account_id, category_id) = seed_account_and_category(&conn);
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        let date = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+        let make = || {
+            Transaction::new(
+                TransactionId::new(),
+                date,
+                Money::from_minor_units(-1_200, usd()),
+                SourceText::new("Whole Foods").unwrap(),
+                category_id,
+                account_id,
+            )
+            .unwrap()
+        };
+
+        let first = repo.insert_or_skip(&make()).unwrap();
+        let second = repo.insert_or_skip(&make()).unwrap();
+
+        assert_eq!(first, InsertOutcome::Inserted);
+        assert_eq!(second, InsertOutcome::DuplicateSkipped);
+        let results = repo
+            .list_in_range(
+                NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(results.len(), 1);
     }
 }

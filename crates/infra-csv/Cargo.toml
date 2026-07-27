@@ -4,4 +4,10 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+csv = "1.4.0"
+encoding_rs = "0.8.35"
 scrat-domain.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

@@ -37,11 +37,11 @@ impl From<Transaction> for TransactionDto {
     }
 }
 
-fn parse_date(raw: &str) -> Result<NaiveDate, String> {
+pub(crate) fn parse_date(raw: &str) -> Result<NaiveDate, String> {
     NaiveDate::parse_from_str(raw, "%Y-%m-%d").map_err(|e| e.to_string())
 }
 
-fn with_service<T>(
+pub(crate) fn with_service<T>(
     state: &State<DbState>,
     f: impl FnOnce(
         &TransactionService,

@@ -53,13 +53,24 @@ pub trait CategoryRepository {
     fn transaction_count(&self, id: CategoryId) -> Result<u64, RepositoryError>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InsertOutcome {
+    Inserted,
+    DuplicateSkipped,
+}
+
 /// Port for persisting transactions (the ledger).
 pub trait TransactionRepository {
     /// Inserts the transaction. A repeat of the same (account, date, amount,
     /// normalized source) is rejected by the `dedup_key` unique constraint —
-    /// callers doing bulk CSV import should catch that and skip the row
-    /// rather than treat it as a hard failure.
+    /// this is a hard error, appropriate for interactive single-entry where
+    /// a duplicate likely means a mistake. Bulk CSV import should use
+    /// [`insert_or_skip`](Self::insert_or_skip) instead.
     fn insert(&self, transaction: &Transaction) -> Result<(), RepositoryError>;
+    /// Like `insert`, but a duplicate `dedup_key` is reported as
+    /// `DuplicateSkipped` rather than an error — makes re-importing the same
+    /// CSV (or an overlapping date range) idempotent.
+    fn insert_or_skip(&self, transaction: &Transaction) -> Result<InsertOutcome, RepositoryError>;
     fn delete(&self, id: TransactionId) -> Result<(), RepositoryError>;
     fn list_in_range(
         &self,

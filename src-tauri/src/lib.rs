@@ -1,6 +1,7 @@
 mod accounts;
 mod categories;
 mod db;
+mod import;
 mod transactions;
 
 use db::DbState;
@@ -32,6 +33,8 @@ pub fn run() {
             transactions::create_transaction,
             transactions::delete_transaction,
             transactions::suggest_account_for_source,
+            import::preview_csv_import,
+            import::commit_csv_import,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
