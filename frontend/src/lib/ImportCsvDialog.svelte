@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { message } from "@tauri-apps/plugin-dialog";
   import {
     api,
     buildCategoryOptions,
@@ -7,7 +8,6 @@
     type AccountDto,
     type CategoryDto,
     type ImportPreviewDto,
-    type ImportSummaryDto,
   } from "./api";
 
   let {
@@ -22,12 +22,10 @@
     onClose: () => void;
   } = $props();
 
-  let error = $state("");
   let preview = $state<ImportPreviewDto | null>(null);
   let included = $state<boolean[]>([]);
   let selectedCategoryId = $state("");
   let selectedAccountId = $state("");
-  let summary = $state<ImportSummaryDto | null>(null);
   let importing = $state(false);
   let dragOver = $state(false);
 
@@ -43,8 +41,6 @@
   }
 
   async function loadBytes(bytes: number[]) {
-    error = "";
-    summary = null;
     preview = null;
     try {
       const result = await api.previewCsvImport(bytes);
@@ -57,7 +53,7 @@
         if (suggested) selectedAccountId = suggested;
       }
     } catch (e) {
-      error = String(e);
+      await message(String(e), { title: "Import CSV", kind: "error" });
     }
   }
 
@@ -93,7 +89,7 @@
   }
 
   function handlePaste(event: ClipboardEvent) {
-    if (preview || summary) return;
+    if (preview) return;
     const text = event.clipboardData?.getData("text/plain");
     if (!text?.trim()) return;
     event.preventDefault();
@@ -107,7 +103,6 @@
 
   async function handleImport() {
     if (!preview) return;
-    error = "";
     importing = true;
     try {
       const rows: {
@@ -126,14 +121,15 @@
           });
         }
       });
-      summary = await api.commitCsvImport(
+      await api.commitCsvImport(
         rows,
         selectedCategoryId || null,
         selectedAccountId || null,
       );
       onImported();
+      onClose();
     } catch (e) {
-      error = String(e);
+      await message(String(e), { title: "Import CSV", kind: "error" });
     } finally {
       importing = false;
     }
@@ -144,20 +140,7 @@
   <div class="dialog">
     <h2>Import transactions from CSV</h2>
 
-    {#if error}<p class="error">{error}</p>{/if}
-
-    {#if summary}
-      <p class="summary">
-        Imported {summary.imported} transaction{summary.imported === 1 ? "" : "s"}.
-        {#if summary.skipped_duplicates > 0}
-          Skipped {summary.skipped_duplicates} already-imported duplicate{summary.skipped_duplicates ===
-          1
-            ? ""
-            : "s"}.
-        {/if}
-      </p>
-      <button type="button" onclick={onClose}>Close</button>
-    {:else if !preview}
+    {#if !preview}
       <p class="hint">
         Pick a bank export file, drag one in, or paste CSV content (⌘V /
         Ctrl+V) — the format is detected automatically, no header row
@@ -281,17 +264,9 @@
     margin: 0;
   }
 
-  .error {
-    color: var(--color-danger);
-  }
-
   .hint {
     opacity: 0.8;
     font-size: 0.9rem;
-  }
-
-  .summary {
-    font-weight: 600;
   }
 
   .targets {
