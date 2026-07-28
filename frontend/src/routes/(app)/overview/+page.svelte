@@ -21,7 +21,7 @@
   }
 
   let activeAccounts = $derived(accounts.filter((a) => a.status === "active"));
-  let currency = $derived(activeAccounts[0]?.currency ?? "USD");
+  let currency = $derived(activeAccounts[0]?.currency ?? "EUR");
   let total = $derived(
     activeAccounts.reduce((sum, a) => sum + a.balance_minor_units, 0),
   );

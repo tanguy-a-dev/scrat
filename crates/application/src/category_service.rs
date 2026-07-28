@@ -1,6 +1,4 @@
-use scrat_domain::category::{
-    would_create_cycle, Category, CategoryError, CategoryId, CategoryName,
-};
+use scrat_domain::category::{has_children, Category, CategoryError, CategoryId, CategoryName};
 use scrat_domain::ports::{CategoryRepository, RepositoryError};
 use thiserror::Error;
 
@@ -12,8 +10,10 @@ pub enum ApplicationError {
     Repository(#[from] RepositoryError),
     #[error("category not found")]
     CategoryNotFound,
-    #[error("moving this category here would create a cycle")]
-    WouldCreateCycle,
+    #[error("a subcategory cannot itself be used as a parent")]
+    ParentIsSubcategory,
+    #[error("category has its own subcategories and cannot become one")]
+    HasSubcategories,
     #[error("category still has {0} transaction(s); choose a category to reassign them to")]
     RequiresReassignment(u64),
 }
@@ -35,8 +35,11 @@ impl<'a> CategoryService<'a> {
         parent_id: Option<CategoryId>,
     ) -> Result<Category, ApplicationError> {
         let name = CategoryName::new(name)?;
-        if let Some(parent) = parent_id {
-            self.get(parent)?;
+        if let Some(parent_id) = parent_id {
+            let parent = self.get(parent_id)?;
+            if parent.parent_id().is_some() {
+                return Err(ApplicationError::ParentIsSubcategory);
+            }
         }
         let category = Category::new(CategoryId::new(), name, parent_id)?;
         self.repo.insert(&category)?;
@@ -56,11 +59,14 @@ impl<'a> CategoryService<'a> {
         new_parent_id: Option<CategoryId>,
     ) -> Result<(), ApplicationError> {
         let mut category = self.get(id)?;
-        if let Some(parent) = new_parent_id {
-            self.get(parent)?;
+        if let Some(parent_id) = new_parent_id {
+            let parent = self.get(parent_id)?;
+            if parent.parent_id().is_some() {
+                return Err(ApplicationError::ParentIsSubcategory);
+            }
             let all = self.repo.list_all()?;
-            if would_create_cycle(id, parent, &all) {
-                return Err(ApplicationError::WouldCreateCycle);
+            if has_children(id, &all) {
+                return Err(ApplicationError::HasSubcategories);
             }
         }
         category.set_parent(new_parent_id)?;
@@ -86,6 +92,12 @@ impl<'a> CategoryService<'a> {
             }
             self.get(target)?;
             self.repo.reassign_transactions(id, target)?;
+        }
+        if let Some(target) = reassign_to {
+            let all = self.repo.list_all()?;
+            if has_children(id, &all) && self.get(target)?.parent_id().is_some() {
+                return Err(ApplicationError::ParentIsSubcategory);
+            }
         }
         self.repo.reassign_children(id, reassign_to)?;
         self.repo.delete(id)?;
@@ -216,15 +228,41 @@ mod tests {
     }
 
     #[test]
-    fn move_category_rejects_cycle() {
+    fn create_category_rejects_subcategory_as_parent() {
         let repo = FakeCategoryRepository::default();
         let service = CategoryService::new(&repo);
-        let root = service.create_category("Root", None).unwrap();
-        let child = service.create_category("Child", Some(root.id())).unwrap();
+        let hobby = service.create_category("Hobby", None).unwrap();
+        let paint = service.create_category("Paint", Some(hobby.id())).unwrap();
 
-        let result = service.move_category(root.id(), Some(child.id()));
+        let result = service.create_category("Watercolor", Some(paint.id()));
 
-        assert!(matches!(result, Err(ApplicationError::WouldCreateCycle)));
+        assert!(matches!(result, Err(ApplicationError::ParentIsSubcategory)));
+    }
+
+    #[test]
+    fn move_category_rejects_subcategory_as_parent() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+        let hobby = service.create_category("Hobby", None).unwrap();
+        let paint = service.create_category("Paint", Some(hobby.id())).unwrap();
+        let other = service.create_category("Other", None).unwrap();
+
+        let result = service.move_category(other.id(), Some(paint.id()));
+
+        assert!(matches!(result, Err(ApplicationError::ParentIsSubcategory)));
+    }
+
+    #[test]
+    fn move_category_rejects_when_category_has_children() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+        let hobby = service.create_category("Hobby", None).unwrap();
+        service.create_category("Paint", Some(hobby.id())).unwrap();
+        let other = service.create_category("Other", None).unwrap();
+
+        let result = service.move_category(hobby.id(), Some(other.id()));
+
+        assert!(matches!(result, Err(ApplicationError::HasSubcategories)));
     }
 
     #[test]
@@ -249,6 +287,22 @@ mod tests {
         service.delete_category(category.id(), None).unwrap();
 
         assert!(repo.find_by_id(category.id()).unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_category_rejects_reassigning_children_to_a_subcategory() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+        let hobby = service.create_category("Hobby", None).unwrap();
+        service.create_category("Paint", Some(hobby.id())).unwrap();
+        let sports = service.create_category("Sports", None).unwrap();
+        let football = service
+            .create_category("Football", Some(sports.id()))
+            .unwrap();
+
+        let result = service.delete_category(hobby.id(), Some(football.id()));
+
+        assert!(matches!(result, Err(ApplicationError::ParentIsSubcategory)));
     }
 
     #[test]

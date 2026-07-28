@@ -313,6 +313,12 @@ pub struct ParsedRow {
     pub date: Option<NaiveDate>,
     pub amount_minor_units: Option<i64>,
     pub source: String,
+    /// The raw text of a header column named "Category"/"Catégorie", if the
+    /// file has a header row and one exists — purely informational, shown
+    /// alongside the row but never used to pick its actual category (every
+    /// imported row still gets the one category chosen for the whole
+    /// import).
+    pub csv_category: Option<String>,
     pub raw: Vec<String>,
 }
 
@@ -332,6 +338,16 @@ pub struct ImportPreview {
     pub amount_confidence: f64,
 }
 
+/// Finds a header cell naming the category column, e.g. "Category" or the
+/// French "Catégorie" — matched loosely (substring, case-insensitive, and
+/// tolerant of the accent) since bank exports label it inconsistently.
+fn find_category_column(header: &[String]) -> Option<usize> {
+    header.iter().position(|cell| {
+        let lower = cell.trim().to_lowercase();
+        lower.contains("categ") || lower.contains("catég")
+    })
+}
+
 /// The full detection pipeline: decode → sniff delimiter → parse → detect
 /// (and drop) a header → detect Date/Amount columns → build one
 /// [`ParsedRow`] per line, concatenating every other non-empty column as
@@ -343,9 +359,12 @@ pub fn build_preview(bytes: &[u8]) -> ImportPreview {
     let delimiter = sniff_delimiter(&text);
     let mut rows = parse_rows(&text, delimiter);
 
-    if detect_header(&rows) && !rows.is_empty() {
-        rows.remove(0);
-    }
+    let category_column = if detect_header(&rows) && !rows.is_empty() {
+        let header = rows.remove(0);
+        find_category_column(&header)
+    } else {
+        None
+    };
 
     let Some(detection) = detect_columns(&rows) else {
         return ImportPreview {
@@ -366,10 +385,18 @@ pub fn build_preview(bytes: &[u8]) -> ImportPreview {
                 .get(detection.amount_column)
                 .map(|s| s.as_str())
                 .unwrap_or("");
+            let csv_category = category_column
+                .and_then(|c| raw.get(c))
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
             let source = raw
                 .iter()
                 .enumerate()
-                .filter(|(i, _)| *i != detection.date_column && *i != detection.amount_column)
+                .filter(|(i, _)| {
+                    *i != detection.date_column
+                        && *i != detection.amount_column
+                        && Some(*i) != category_column
+                })
                 .map(|(_, v)| v.trim())
                 .filter(|v| !v.is_empty())
                 .collect::<Vec<_>>()
@@ -379,6 +406,7 @@ pub fn build_preview(bytes: &[u8]) -> ImportPreview {
                 date: parse_date_cell(date_cell),
                 amount_minor_units: parse_amount_cell(amount_cell),
                 source,
+                csv_category,
                 raw: raw.clone(),
             }
         })
@@ -548,6 +576,33 @@ mod tests {
         // rather than silently trusting every parsed row.
         assert!(preview.rows[0].is_valid());
         assert!(preview.rows[4].is_valid());
+    }
+
+    #[test]
+    fn build_preview_extracts_csv_category_column_and_excludes_it_from_source() {
+        let text = "\
+Date;Amount;Description;Category
+04/04/2023;-60,80;SC-SUSHI SASHI;Food & Drinks
+04/04/2023;-20,97;LES SUPER HEROS;Books
+";
+        let preview = build_preview(text.as_bytes());
+
+        assert_eq!(preview.rows.len(), 2);
+        assert_eq!(
+            preview.rows[0].csv_category,
+            Some("Food & Drinks".to_string())
+        );
+        assert_eq!(preview.rows[0].source, "SC-SUSHI SASHI");
+        assert_eq!(preview.rows[1].csv_category, Some("Books".to_string()));
+        assert_eq!(preview.rows[1].source, "LES SUPER HEROS");
+    }
+
+    #[test]
+    fn build_preview_has_no_csv_category_without_a_matching_header() {
+        let text = "01/07/2026;10,00;STORE A\n02/07/2026;-5,00;STORE B\n";
+        let preview = build_preview(text.as_bytes());
+
+        assert!(preview.rows.iter().all(|r| r.csv_category.is_none()));
     }
 
     #[test]

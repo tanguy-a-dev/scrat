@@ -112,6 +112,9 @@
 
 {#if pendingDelete}
   {@const target = pendingDelete.category}
+  {@const targetHasChildren = categories.some(
+    (c) => c.parent_id === target.id,
+  )}
   <div class="reassign-panel">
     <p>
       "{target.name}" still has transactions. Choose a category to move them
@@ -119,7 +122,7 @@
     </p>
     <select bind:value={reassignTarget}>
       <option value="" disabled selected>Select a category…</option>
-      {#each categories.filter((c) => c.id !== target.id) as c (c.id)}
+      {#each categories.filter((c) => c.id !== target.id && (!targetHasChildren || c.parent_id === null)) as c (c.id)}
         <option value={c.id}>{c.name}</option>
       {/each}
     </select>

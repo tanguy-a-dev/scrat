@@ -96,6 +96,17 @@ pub fn delete_transaction(state: State<DbState>, id: String) -> Result<(), Strin
 }
 
 #[tauri::command]
+pub fn delete_transactions_in_range(
+    state: State<DbState>,
+    start: String,
+    end: String,
+) -> Result<u64, String> {
+    let start = parse_date(&start)?;
+    let end = parse_date(&end)?;
+    with_service(&state, |s| s.delete_transactions_in_range(start, end))
+}
+
+#[tauri::command]
 pub fn suggest_account_for_source(
     state: State<DbState>,
     source: String,

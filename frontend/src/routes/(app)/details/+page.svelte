@@ -98,7 +98,7 @@
     transactions.filter((t) => !excludedRootIds.has(rootCategoryId(t.category_id))),
   );
 
-  let currency = $derived(transactions[0]?.currency ?? "USD");
+  let currency = $derived(transactions[0]?.currency ?? "EUR");
 
   let netLeftMinorUnits = $derived(
     filteredTransactions.reduce((sum, t) => sum + t.amount_minor_units, 0),

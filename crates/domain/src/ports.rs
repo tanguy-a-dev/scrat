@@ -72,6 +72,10 @@ pub trait TransactionRepository {
     /// CSV (or an overlapping date range) idempotent.
     fn insert_or_skip(&self, transaction: &Transaction) -> Result<InsertOutcome, RepositoryError>;
     fn delete(&self, id: TransactionId) -> Result<(), RepositoryError>;
+    /// Deletes every transaction dated within `[start, end]` and returns how
+    /// many were removed — used to bulk-clear a range (e.g. leftover test
+    /// data) rather than deleting one at a time.
+    fn delete_in_range(&self, start: NaiveDate, end: NaiveDate) -> Result<u64, RepositoryError>;
     fn list_in_range(
         &self,
         start: NaiveDate,

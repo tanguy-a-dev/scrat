@@ -32,6 +32,7 @@ export interface ImportPreviewRowDto {
   date: string | null;
   amount_minor_units: number | null;
   source: string;
+  csv_category: string | null;
   include_by_default: boolean;
   raw: string[];
 }
@@ -98,6 +99,8 @@ export const api = {
       accountId,
     }),
   deleteTransaction: (id: string) => invoke<void>("delete_transaction", { id }),
+  deleteTransactionsInRange: (start: string, end: string) =>
+    invoke<number>("delete_transactions_in_range", { start, end }),
   suggestAccountForSource: (source: string) =>
     invoke<string | null>("suggest_account_for_source", { source }),
   suggestCategoryForSource: (source: string) =>
@@ -106,8 +109,13 @@ export const api = {
   previewCsvImport: (bytes: number[]) =>
     invoke<ImportPreviewDto>("preview_csv_import", { bytes }),
   commitCsvImport: (
-    rows: { date: string; amount_minor_units: number; source: string }[],
-    categoryId: string,
+    rows: {
+      date: string;
+      amount_minor_units: number;
+      source: string;
+      category: string | null;
+    }[],
+    categoryId: string | null,
     accountId: string,
   ) =>
     invoke<ImportSummaryDto>("commit_csv_import", {

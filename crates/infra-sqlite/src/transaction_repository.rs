@@ -110,6 +110,20 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
         Ok(())
     }
 
+    fn delete_in_range(&self, start: NaiveDate, end: NaiveDate) -> Result<u64, RepositoryError> {
+        let deleted = self
+            .conn
+            .execute(
+                "DELETE FROM transactions WHERE date >= ?1 AND date <= ?2",
+                params![
+                    start.format("%Y-%m-%d").to_string(),
+                    end.format("%Y-%m-%d").to_string()
+                ],
+            )
+            .map_err(sql_err)?;
+        Ok(deleted as u64)
+    }
+
     fn list_in_range(
         &self,
         start: NaiveDate,
@@ -271,6 +285,47 @@ mod tests {
             )
             .unwrap();
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn delete_in_range_removes_only_matching_rows_and_returns_count() {
+        let conn = test_conn();
+        let (account_id, category_id) = seed_account_and_category(&conn);
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        let make = |date: NaiveDate, source: &str| {
+            Transaction::new(
+                TransactionId::new(),
+                date,
+                Money::from_minor_units(-500, usd()),
+                SourceText::new(source).unwrap(),
+                category_id,
+                account_id,
+            )
+            .unwrap()
+        };
+        repo.insert(&make(NaiveDate::from_ymd_opt(2023, 4, 4).unwrap(), "In range 1"))
+            .unwrap();
+        repo.insert(&make(NaiveDate::from_ymd_opt(2023, 4, 5).unwrap(), "In range 2"))
+            .unwrap();
+        repo.insert(&make(NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(), "Out of range"))
+            .unwrap();
+
+        let deleted = repo
+            .delete_in_range(
+                NaiveDate::from_ymd_opt(2023, 1, 1).unwrap(),
+                NaiveDate::from_ymd_opt(2023, 12, 31).unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(deleted, 2);
+        let remaining = repo
+            .list_in_range(
+                NaiveDate::from_ymd_opt(2001, 1, 1).unwrap(),
+                NaiveDate::from_ymd_opt(2100, 1, 1).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].source().as_str(), "Out of range");
     }
 
     #[test]

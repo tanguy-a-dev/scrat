@@ -38,9 +38,11 @@
       value={category.name}
       onchange={(e) => onRename(category.id, e.currentTarget.value)}
     />
-    <button type="button" onclick={() => (addingChild = !addingChild)}>
-      + sub
-    </button>
+    {#if depth === 0}
+      <button type="button" onclick={() => (addingChild = !addingChild)}>
+        + sub
+      </button>
+    {/if}
     <button type="button" class="danger" onclick={() => onDelete(category)}>
       Delete
     </button>

@@ -1,5 +1,10 @@
 .PHONY: install dev build test fmt fmt-check lint check clean
 
+HELP_TARGET_COLUMN_WIDTH = 40
+
+help:
+	@grep -E '^[a-zA-Z_/-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-$(HELP_TARGET_COLUMN_WIDTH)s\033[0m %s\n", $$1, $$2}'
+
 install: ## Install root (Tauri CLI) and frontend npm dependencies
 	npm install
 	npm --prefix frontend install

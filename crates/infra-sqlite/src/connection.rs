@@ -9,6 +9,8 @@ use crate::migrations;
 pub enum DbError {
     #[error("a database already exists at {0}")]
     AlreadyExists(String),
+    #[error("passphrase cannot be empty")]
+    EmptyPassphrase,
     #[error("incorrect passphrase")]
     InvalidPassphrase,
     #[error(transparent)]
@@ -54,6 +56,9 @@ pub fn unlock_existing(path: &Path, passphrase: &str) -> Result<Connection, DbEr
 // must be embedded as a quoted SQL string literal, so we escape single
 // quotes ourselves to keep it a valid literal.
 fn key_connection(conn: &Connection, passphrase: &str) -> Result<(), DbError> {
+    if passphrase.trim().is_empty() {
+        return Err(DbError::EmptyPassphrase);
+    }
     let escaped = passphrase.replace('\'', "''");
     conn.execute_batch(&format!("PRAGMA key = '{escaped}';"))?;
     Ok(())
@@ -98,6 +103,27 @@ mod tests {
             })
             .unwrap();
         assert_eq!(applied_version, 2);
+    }
+
+    #[test]
+    fn create_new_rejects_empty_passphrase() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = db_path(&dir);
+
+        let result = create_new(&path, "");
+
+        assert!(matches!(result, Err(DbError::EmptyPassphrase)));
+    }
+
+    #[test]
+    fn unlock_existing_rejects_empty_passphrase() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = db_path(&dir);
+        create_new(&path, "correct horse").unwrap();
+
+        let result = unlock_existing(&path, "");
+
+        assert!(matches!(result, Err(DbError::EmptyPassphrase)));
     }
 
     #[test]

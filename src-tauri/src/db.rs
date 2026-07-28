@@ -23,6 +23,7 @@ pub(crate) fn db_path(app: &AppHandle) -> Result<PathBuf, String> {
 fn describe(err: DbError) -> String {
     match err {
         DbError::InvalidPassphrase => "incorrect passphrase".to_string(),
+        DbError::EmptyPassphrase => "passphrase cannot be empty".to_string(),
         DbError::AlreadyExists(_) => "a database already exists".to_string(),
         DbError::Sqlite(e) => format!("database error: {e}"),
         DbError::Io(e) => format!("filesystem error: {e}"),

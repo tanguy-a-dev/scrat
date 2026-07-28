@@ -108,25 +108,12 @@ impl Category {
     }
 }
 
-/// Domain service: would re-parenting `target` under `candidate_parent`
-/// create a cycle? Needs the whole category graph, so this can't live on
-/// the `Category` entity itself.
-pub fn would_create_cycle(
-    target: CategoryId,
-    candidate_parent: CategoryId,
-    all: &[Category],
-) -> bool {
-    let mut current = Some(candidate_parent);
-    while let Some(id) = current {
-        if id == target {
-            return true;
-        }
-        current = all
-            .iter()
-            .find(|c| c.id() == id)
-            .and_then(|c| c.parent_id());
-    }
-    false
+/// Domain rule: a subcategory cannot itself have subcategories, so a
+/// category that already has children of its own cannot become a
+/// subcategory. Needs the whole category list, so this can't live on the
+/// `Category` entity itself.
+pub fn has_children(id: CategoryId, all: &[Category]) -> bool {
+    all.iter().any(|c| c.parent_id() == Some(id))
 }
 
 #[cfg(test)]
@@ -155,50 +142,20 @@ mod tests {
     }
 
     #[test]
-    fn would_create_cycle_detects_direct_cycle() {
+    fn has_children_detects_existing_child() {
         let root = CategoryId::new();
         let child = CategoryId::new();
         let all = vec![category(root, None), category(child, Some(root))];
 
-        // Trying to make root's parent be its own child.
-        assert!(would_create_cycle(root, child, &all));
+        assert!(has_children(root, &all));
     }
 
     #[test]
-    fn would_create_cycle_detects_indirect_cycle_through_grandchild() {
-        let root = CategoryId::new();
-        let child = CategoryId::new();
-        let grandchild = CategoryId::new();
-        let all = vec![
-            category(root, None),
-            category(child, Some(root)),
-            category(grandchild, Some(child)),
-        ];
-
-        // root -> child -> grandchild; making root a child of grandchild loops.
-        assert!(would_create_cycle(root, grandchild, &all));
-    }
-
-    #[test]
-    fn would_create_cycle_allows_moving_to_unrelated_branch() {
-        let root = CategoryId::new();
-        let branch_a = CategoryId::new();
-        let branch_b = CategoryId::new();
-        let all = vec![
-            category(root, None),
-            category(branch_a, Some(root)),
-            category(branch_b, Some(root)),
-        ];
-
-        assert!(!would_create_cycle(branch_a, branch_b, &all));
-    }
-
-    #[test]
-    fn would_create_cycle_allows_reassigning_same_parent() {
+    fn has_children_false_for_leaf_category() {
         let root = CategoryId::new();
         let child = CategoryId::new();
         let all = vec![category(root, None), category(child, Some(root))];
 
-        assert!(!would_create_cycle(child, root, &all));
+        assert!(!has_children(child, &all));
     }
 }

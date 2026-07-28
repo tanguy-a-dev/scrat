@@ -1,6 +1,6 @@
 use chrono::NaiveDate;
 use scrat_domain::account::AccountId;
-use scrat_domain::category::CategoryId;
+use scrat_domain::category::{Category, CategoryError, CategoryId, CategoryName};
 use scrat_domain::money::{Currency, Money};
 use scrat_domain::ports::{
     AccountRepository, CategoryRepository, InsertOutcome, RepositoryError, TransactionRepository,
@@ -8,12 +8,18 @@ use scrat_domain::ports::{
 use scrat_domain::transaction::{SourceText, Transaction, TransactionError, TransactionId};
 use thiserror::Error;
 
+/// The category new transactions fall back to when none is explicitly
+/// chosen — e.g. a CSV import left without a "category for all rows".
+pub const DEFAULT_CATEGORY_NAME: &str = "Other";
+
 #[derive(Debug, Error)]
 pub enum ApplicationError {
     #[error(transparent)]
     Transaction(#[from] TransactionError),
     #[error(transparent)]
     Repository(#[from] RepositoryError),
+    #[error(transparent)]
+    Category(#[from] CategoryError),
     #[error("account not found")]
     AccountNotFound,
     #[error("category not found")]
@@ -21,7 +27,8 @@ pub enum ApplicationError {
 }
 
 /// A single row a CSV importer has already parsed into a date/amount/source
-/// triple. Deliberately independent of any particular CSV crate's types —
+/// triple, with the category it should be filed under already resolved.
+/// Deliberately independent of any particular CSV crate's types —
 /// `scrat-infra-csv` produces its own parsed rows and the Tauri command
 /// layer maps them into this before calling [`TransactionService::import_transactions`].
 #[derive(Debug, Clone)]
@@ -29,6 +36,7 @@ pub struct ImportRow {
     pub date: NaiveDate,
     pub amount_minor_units: i64,
     pub source: String,
+    pub category_id: CategoryId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -96,6 +104,17 @@ impl<'a> TransactionService<'a> {
         Ok(())
     }
 
+    /// Bulk-clears every transaction dated within `[start, end]` — e.g. to
+    /// discard leftover test data imported under an old date range. Returns
+    /// how many were removed.
+    pub fn delete_transactions_in_range(
+        &self,
+        start: NaiveDate,
+        end: NaiveDate,
+    ) -> Result<u64, ApplicationError> {
+        Ok(self.transactions.delete_in_range(start, end)?)
+    }
+
     pub fn list_in_range(
         &self,
         start: NaiveDate,
@@ -105,24 +124,23 @@ impl<'a> TransactionService<'a> {
     }
 
     /// Imports a batch of already-parsed rows (from a CSV, say) into the
-    /// given account/category, skipping any row whose dedup key already
-    /// exists rather than erroring — makes re-importing the same file (or
-    /// an overlapping date range) idempotent.
+    /// given account, each under its own already-resolved category, skipping
+    /// any row whose dedup key already exists rather than erroring — makes
+    /// re-importing the same file (or an overlapping date range) idempotent.
     pub fn import_transactions(
         &self,
         rows: &[ImportRow],
-        category_id: CategoryId,
         account_id: AccountId,
     ) -> Result<ImportOutcome, ApplicationError> {
-        self.categories
-            .find_by_id(category_id)?
-            .ok_or(ApplicationError::CategoryNotFound)?;
         self.accounts
             .find_by_id(account_id)?
             .ok_or(ApplicationError::AccountNotFound)?;
 
         let mut outcome = ImportOutcome::default();
         for row in rows {
+            self.categories
+                .find_by_id(row.category_id)?
+                .ok_or(ApplicationError::CategoryNotFound)?;
             let source = SourceText::new(&row.source)?;
             let amount = Money::from_minor_units(row.amount_minor_units, self.currency.clone());
             let transaction = Transaction::new(
@@ -130,7 +148,7 @@ impl<'a> TransactionService<'a> {
                 row.date,
                 amount,
                 source,
-                category_id,
+                row.category_id,
                 account_id,
             )?;
             match self.transactions.insert_or_skip(&transaction)? {
@@ -154,6 +172,31 @@ impl<'a> TransactionService<'a> {
             .into_iter()
             .find(|a| a.matches_source(source))
             .map(|a| a.id()))
+    }
+
+    /// Finds the existing default ("Other") category, creating it if this
+    /// is the first time anything has needed it.
+    pub fn get_or_create_default_category(&self) -> Result<CategoryId, ApplicationError> {
+        self.get_or_create_category_by_name(DEFAULT_CATEGORY_NAME)
+    }
+
+    /// Finds an existing top-level or subcategory matching `name`
+    /// (case-insensitive), or creates a new top-level category for it —
+    /// used to honor a CSV's own Category column during import rather than
+    /// forcing every row into one chosen category.
+    pub fn get_or_create_category_by_name(&self, name: &str) -> Result<CategoryId, ApplicationError> {
+        let trimmed = name.trim();
+        if let Some(existing) = self
+            .categories
+            .list_all()?
+            .into_iter()
+            .find(|c| c.name().as_str().eq_ignore_ascii_case(trimmed))
+        {
+            return Ok(existing.id());
+        }
+        let category = Category::new(CategoryId::new(), CategoryName::new(trimmed)?, None)?;
+        self.categories.insert(&category)?;
+        Ok(category.id())
     }
 
     /// Local frequency lookup, no ML/network: finds past transactions that
@@ -317,6 +360,12 @@ mod tests {
             self.transactions.lock().unwrap().retain(|t| t.id() != id);
             Ok(())
         }
+        fn delete_in_range(&self, start: NaiveDate, end: NaiveDate) -> Result<u64, RepositoryError> {
+            let mut transactions = self.transactions.lock().unwrap();
+            let before = transactions.len();
+            transactions.retain(|t| !(t.date() >= start && t.date() <= end));
+            Ok((before - transactions.len()) as u64)
+        }
         fn list_in_range(
             &self,
             start: NaiveDate,
@@ -475,6 +524,49 @@ mod tests {
     }
 
     #[test]
+    fn delete_transactions_in_range_removes_only_matching_rows() {
+        let f = fixture();
+        let service = TransactionService::new(
+            &f.transactions,
+            &f.accounts,
+            &f.categories,
+            Currency::new("USD").unwrap(),
+        );
+        service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2023, 4, 4).unwrap(),
+                -500,
+                "Old test data",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+        service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                -1_200,
+                "Keep me",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+
+        let deleted = service
+            .delete_transactions_in_range(
+                NaiveDate::from_ymd_opt(2023, 1, 1).unwrap(),
+                NaiveDate::from_ymd_opt(2023, 12, 31).unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(deleted, 1);
+        let remaining = service
+            .list_in_range(NaiveDate::MIN, NaiveDate::MAX)
+            .unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].source().as_str(), "Keep me");
+    }
+
+    #[test]
     fn find_account_by_source_matches_saved_pattern() {
         let f = fixture();
         let mut account = f.accounts.accounts.lock().unwrap()[0].clone();
@@ -506,10 +598,11 @@ mod tests {
             date: NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
             amount_minor_units: -1_200,
             source: "Whole Foods".to_string(),
+            category_id: f.category_id,
         };
 
         let first = service
-            .import_transactions(&[row.clone(), row.clone()], f.category_id, f.account_id)
+            .import_transactions(&[row.clone(), row.clone()], f.account_id)
             .unwrap();
 
         assert_eq!(
@@ -521,9 +614,7 @@ mod tests {
         );
 
         // Re-importing the same "file" again is a no-op.
-        let second = service
-            .import_transactions(&[row], f.category_id, f.account_id)
-            .unwrap();
+        let second = service.import_transactions(&[row], f.account_id).unwrap();
         assert_eq!(
             second,
             ImportOutcome {
@@ -546,11 +637,105 @@ mod tests {
             date: NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
             amount_minor_units: -1_200,
             source: "Whole Foods".to_string(),
+            category_id: f.category_id,
         };
 
-        let result = service.import_transactions(&[row], f.category_id, AccountId::new());
+        let result = service.import_transactions(&[row], AccountId::new());
 
         assert!(matches!(result, Err(ApplicationError::AccountNotFound)));
+    }
+
+    #[test]
+    fn import_transactions_rejects_unknown_category() {
+        let f = fixture();
+        let service = TransactionService::new(
+            &f.transactions,
+            &f.accounts,
+            &f.categories,
+            Currency::new("USD").unwrap(),
+        );
+        let row = ImportRow {
+            date: NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+            amount_minor_units: -1_200,
+            source: "Whole Foods".to_string(),
+            category_id: CategoryId::new(),
+        };
+
+        let result = service.import_transactions(&[row], f.account_id);
+
+        assert!(matches!(result, Err(ApplicationError::CategoryNotFound)));
+    }
+
+    #[test]
+    fn get_or_create_category_by_name_creates_new_top_level_category() {
+        let f = fixture();
+        let service = TransactionService::new(
+            &f.transactions,
+            &f.accounts,
+            &f.categories,
+            Currency::new("USD").unwrap(),
+        );
+
+        let id = service.get_or_create_category_by_name("Books").unwrap();
+
+        let stored = f.categories.find_by_id(id).unwrap().unwrap();
+        assert_eq!(stored.name().as_str(), "Books");
+        assert_eq!(stored.parent_id(), None);
+    }
+
+    #[test]
+    fn get_or_create_category_by_name_matches_existing_case_insensitively() {
+        let f = fixture(); // fixture already has a "Groceries" category
+        let service = TransactionService::new(
+            &f.transactions,
+            &f.accounts,
+            &f.categories,
+            Currency::new("USD").unwrap(),
+        );
+
+        let id = service.get_or_create_category_by_name("groceries").unwrap();
+
+        assert_eq!(id, f.category_id);
+        assert_eq!(f.categories.categories.lock().unwrap().len(), 1); // no duplicate created
+    }
+
+    #[test]
+    fn get_or_create_default_category_creates_it_when_missing() {
+        let f = fixture();
+        let service = TransactionService::new(
+            &f.transactions,
+            &f.accounts,
+            &f.categories,
+            Currency::new("USD").unwrap(),
+        );
+
+        let id = service.get_or_create_default_category().unwrap();
+
+        let stored = f.categories.find_by_id(id).unwrap().unwrap();
+        assert_eq!(stored.name().as_str(), DEFAULT_CATEGORY_NAME);
+    }
+
+    #[test]
+    fn get_or_create_default_category_reuses_existing_one() {
+        let f = fixture();
+        let existing = Category::new(
+            CategoryId::new(),
+            CategoryName::new(DEFAULT_CATEGORY_NAME).unwrap(),
+            None,
+        )
+        .unwrap();
+        f.categories.insert(&existing).unwrap();
+        let service = TransactionService::new(
+            &f.transactions,
+            &f.accounts,
+            &f.categories,
+            Currency::new("USD").unwrap(),
+        );
+
+        let id = service.get_or_create_default_category().unwrap();
+
+        assert_eq!(id, existing.id());
+        assert_eq!(f.categories.categories.lock().unwrap().len(), 2); // "Groceries" + "Other", not a duplicate
     }
 
     #[test]

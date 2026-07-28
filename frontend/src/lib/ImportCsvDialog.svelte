@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import {
     api,
     buildCategoryOptions,
@@ -24,11 +25,11 @@
   let error = $state("");
   let preview = $state<ImportPreviewDto | null>(null);
   let included = $state<boolean[]>([]);
-  let suggestedCategoryNames = $state<(string | null)[]>([]);
   let selectedCategoryId = $state("");
   let selectedAccountId = $state("");
   let summary = $state<ImportSummaryDto | null>(null);
   let importing = $state(false);
+  let dragOver = $state(false);
 
   let categoryOptions = $derived(buildCategoryOptions(categories));
   let activeAccounts = $derived(accounts.filter((a) => a.status === "active"));
@@ -37,65 +38,91 @@
     preview?.rows.filter((r, i) => included[i] && r.date && r.amount_minor_units).length ?? 0,
   );
 
-  async function handleFileChange(event: Event) {
+  async function loadBytes(bytes: number[]) {
     error = "";
     summary = null;
     preview = null;
-    const input = event.currentTarget as HTMLInputElement;
-    const file = input.files?.[0];
-    if (!file) return;
     try {
-      const buffer = await file.arrayBuffer();
-      const bytes = Array.from(new Uint8Array(buffer));
       const result = await api.previewCsvImport(bytes);
       preview = result;
       included = result.rows.map((r) => r.include_by_default);
-      suggestedCategoryNames = result.rows.map(() => null);
       if (result.rows.length > 0) {
         const suggested = await api
           .suggestAccountForSource(result.rows.find((r) => r.source)?.source ?? "")
           .catch(() => null);
         if (suggested) selectedAccountId = suggested;
       }
-      loadCategorySuggestions(result.rows.map((r) => r.source));
     } catch (e) {
       error = String(e);
     }
   }
 
-  async function loadCategorySuggestions(sources: string[]) {
-    const results = await Promise.all(
-      sources.map(async (source) => {
-        if (!source) return null;
-        try {
-          const categoryId = await api.suggestCategoryForSource(source);
-          return categoryId
-            ? (categories.find((c) => c.id === categoryId)?.name ?? null)
-            : null;
-        } catch {
-          return null;
-        }
-      }),
-    );
-    suggestedCategoryNames = results;
+  async function loadFile(file: File) {
+    const buffer = await file.arrayBuffer();
+    await loadBytes(Array.from(new Uint8Array(buffer)));
   }
 
+  function loadText(text: string) {
+    return loadBytes(Array.from(new TextEncoder().encode(text)));
+  }
+
+  function handleFileChange(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (file) loadFile(file);
+  }
+
+  function handleDragOver(event: DragEvent) {
+    event.preventDefault();
+    dragOver = true;
+  }
+
+  function handleDragLeave() {
+    dragOver = false;
+  }
+
+  function handleDrop(event: DragEvent) {
+    event.preventDefault();
+    dragOver = false;
+    const file = event.dataTransfer?.files?.[0];
+    if (file) loadFile(file);
+  }
+
+  function handlePaste(event: ClipboardEvent) {
+    if (preview || summary) return;
+    const text = event.clipboardData?.getData("text/plain");
+    if (!text?.trim()) return;
+    event.preventDefault();
+    loadText(text);
+  }
+
+  onMount(() => {
+    window.addEventListener("paste", handlePaste);
+    return () => window.removeEventListener("paste", handlePaste);
+  });
+
   async function handleImport() {
-    if (!preview || !selectedCategoryId || !selectedAccountId) return;
+    if (!preview || !selectedAccountId) return;
     error = "";
     importing = true;
     try {
-      const rows: { date: string; amount_minor_units: number; source: string }[] = [];
+      const rows: {
+        date: string;
+        amount_minor_units: number;
+        source: string;
+        category: string | null;
+      }[] = [];
       preview.rows.forEach((r, i) => {
         if (included[i] && r.date !== null && r.amount_minor_units !== null) {
           rows.push({
             date: r.date,
             amount_minor_units: r.amount_minor_units,
             source: r.source,
+            category: r.csv_category,
           });
         }
       });
-      summary = await api.commitCsvImport(rows, selectedCategoryId, selectedAccountId);
+      summary = await api.commitCsvImport(rows, selectedCategoryId || null, selectedAccountId);
       onImported();
     } catch (e) {
       error = String(e);
@@ -124,24 +151,37 @@
       <button type="button" onclick={onClose}>Close</button>
     {:else if !preview}
       <p class="hint">
-        Pick a bank export file — the format is detected automatically, no
-        header row required.
+        Pick a bank export file, drag one in, or paste CSV content (⌘V /
+        Ctrl+V) — the format is detected automatically, no header row
+        required.
       </p>
-      <input type="file" accept=".csv,text/csv" onchange={handleFileChange} />
+      <div
+        class="dropzone"
+        class:drag-over={dragOver}
+        role="group"
+        aria-label="CSV file drop zone"
+        ondragover={handleDragOver}
+        ondragleave={handleDragLeave}
+        ondrop={handleDrop}
+      >
+        <input type="file" accept=".csv,text/csv" onchange={handleFileChange} />
+        <p class="dropzone-hint">or drop a .csv file here</p>
+      </div>
       <button type="button" onclick={onClose}>Cancel</button>
     {:else}
       <p class="hint">
         Detected: date column ({Math.round(preview.date_confidence * 100)}%
         confidence), amount column ({Math.round(preview.amount_confidence * 100)}%
         confidence). Uncheck any row that isn't a real transaction (e.g. an
-        opening/closing balance line). "Suggested category" is based on how
-        you've categorized similar sources before — informational only, since
-        every imported row gets the one category chosen below.
+        opening/closing balance line). "Category" is the category column from
+        the file itself, if it has one — each row with one is filed under a
+        matching category (creating it if it doesn't exist yet). Rows without
+        one use the fallback chosen below, or "Other" if you leave that unset.
       </p>
 
       <div class="targets">
         <select bind:value={selectedCategoryId}>
-          <option value="" disabled selected>Category for all rows…</option>
+          <option value="">Fallback category (optional)…</option>
           {#each categoryOptions as c (c.id)}
             <option value={c.id}>{c.label}</option>
           {/each}
@@ -162,7 +202,7 @@
               <th>Date</th>
               <th>Amount</th>
               <th>Source</th>
-              <th>Suggested category</th>
+              <th>Category</th>
             </tr>
           </thead>
           <tbody>
@@ -183,7 +223,7 @@
                     : "—"}</td
                 >
                 <td>{row.source || "—"}</td>
-                <td class="suggestion">{suggestedCategoryNames[i] ?? "—"}</td>
+                <td class="suggestion">{row.csv_category ?? "—"}</td>
               </tr>
             {/each}
           </tbody>
@@ -194,10 +234,7 @@
         <button type="button" onclick={onClose}>Cancel</button>
         <button
           type="button"
-          disabled={importing ||
-            includableCount === 0 ||
-            !selectedCategoryId ||
-            !selectedAccountId}
+          disabled={importing || includableCount === 0 || !selectedAccountId}
           onclick={handleImport}
         >
           Import {includableCount} transaction{includableCount === 1 ? "" : "s"}
@@ -259,6 +296,28 @@
     border: 1px solid rgba(0, 0, 0, 0.15);
     padding: 0.4rem 0.6rem;
     font-family: inherit;
+  }
+
+  .dropzone {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 1.25rem;
+    border: 2px dashed rgba(0, 0, 0, 0.2);
+    border-radius: 10px;
+    transition: border-color 0.15s, background-color 0.15s;
+  }
+
+  .dropzone.drag-over {
+    border-color: #396cd8;
+    background-color: rgba(57, 108, 216, 0.08);
+  }
+
+  .dropzone-hint {
+    margin: 0;
+    font-size: 0.85rem;
+    opacity: 0.7;
   }
 
   .rows {
@@ -332,6 +391,15 @@
 
     tbody tr:not(:last-child) {
       border-bottom-color: rgba(255, 255, 255, 0.08);
+    }
+
+    .dropzone {
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .dropzone.drag-over {
+      border-color: #6f9bf0;
+      background-color: rgba(111, 155, 240, 0.12);
     }
   }
 </style>

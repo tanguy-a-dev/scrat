@@ -46,6 +46,10 @@
   async function handleUnlock(event: Event) {
     event.preventDefault();
     error = "";
+    if (!passphrase) {
+      error = "Passphrase cannot be empty.";
+      return;
+    }
     submitting = true;
     try {
       await api.unlockDb(passphrase);
@@ -74,12 +78,16 @@
     <form onsubmit={handleCreate}>
       <input
         type="password"
+        id="new-passphrase"
+        name="new-password"
         placeholder="Passphrase"
         bind:value={passphrase}
         autocomplete="new-password"
       />
       <input
         type="password"
+        id="confirm-passphrase"
+        name="confirm-password"
         placeholder="Confirm passphrase"
         bind:value={confirmPassphrase}
         autocomplete="new-password"
@@ -94,6 +102,8 @@
     <form onsubmit={handleUnlock}>
       <input
         type="password"
+        id="passphrase"
+        name="password"
         placeholder="Passphrase"
         bind:value={passphrase}
         autocomplete="current-password"

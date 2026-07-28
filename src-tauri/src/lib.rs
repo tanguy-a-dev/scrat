@@ -34,6 +34,7 @@ pub fn run() {
             transactions::list_transactions,
             transactions::create_transaction,
             transactions::delete_transaction,
+            transactions::delete_transactions_in_range,
             transactions::suggest_account_for_source,
             transactions::suggest_category_for_source,
             import::preview_csv_import,
