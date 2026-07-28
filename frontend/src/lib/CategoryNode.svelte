@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { CategoryDto } from "./api";
   import CategoryNode from "./CategoryNode.svelte";
+  import { Trash2, Plus, Lock, Unlock } from "@lucide/svelte";
 
   let {
     category,
@@ -41,19 +42,38 @@
       onchange={(e) => onRename(category.id, e.currentTarget.value)}
     />
     {#if category.is_default}
-      <span class="default-badge">default</span>
+      <span class="icon-button" aria-label="Default category" title="Default category">
+        <Lock size={16} />
+      </span>
     {:else}
-      <button type="button" onclick={() => onSetDefault(category.id)}>
-        Set as default
+      <button
+        type="button"
+        class="icon-button"
+        aria-label="Set as default"
+        title="Set as default"
+        onclick={() => onSetDefault(category.id)}
+      >
+        <Unlock size={16} />
       </button>
     {/if}
     {#if depth === 0}
-      <button type="button" onclick={() => (addingChild = !addingChild)}>
-        + sub
+      <button
+        type="button"
+        class="icon-button"
+        aria-label="Add subcategory"
+        title="Add subcategory"
+        onclick={() => (addingChild = !addingChild)}
+      >
+        <Plus size={16} />
       </button>
     {/if}
-    <button type="button" class="danger" onclick={() => onDelete(category)}>
-      Delete
+    <button
+      type="button"
+      class="icon-button danger"
+      aria-label="Delete category"
+      onclick={() => onDelete(category)}
+    >
+      <Trash2 size={16} />
     </button>
   </div>
   {#if addingChild}
@@ -112,7 +132,7 @@
     min-width: 12rem;
   }
 
-  button {
+  button:not(.icon-button) {
     border-radius: 6px;
     border: none;
     padding: 0.35rem 0.6rem;
@@ -120,21 +140,6 @@
     cursor: pointer;
     background-color: var(--color-accent);
     color: var(--color-accent-contrast);
-  }
-
-  button.danger {
-    background-color: var(--color-danger);
-  }
-
-  .default-badge {
-    font-size: 0.75rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
-    padding: 0.2rem 0.5rem;
-    border-radius: 999px;
-    background-color: var(--color-box-accent-bg);
-    color: var(--color-box-accent-text);
   }
 
   .add-child {

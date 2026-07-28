@@ -125,9 +125,7 @@ impl<'a> AccountRepository for SqliteAccountRepository<'a> {
     fn list_all(&self) -> Result<Vec<Account>, RepositoryError> {
         let mut stmt = self
             .conn
-            .prepare(
-                "SELECT id, name, opening_balance_minor_units FROM accounts ORDER BY name",
-            )
+            .prepare("SELECT id, name, opening_balance_minor_units FROM accounts ORDER BY name")
             .map_err(sql_err)?;
         let rows = stmt
             .query_map([], |row| self.row_to_account(row))

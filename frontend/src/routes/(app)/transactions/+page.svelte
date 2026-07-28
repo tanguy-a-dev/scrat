@@ -13,6 +13,7 @@
     type RangeMode,
   } from "$lib/api";
   import ImportCsvDialog from "$lib/ImportCsvDialog.svelte";
+  import { Trash2, FileUp } from "@lucide/svelte";
 
   let showImportDialog = $state(false);
 
@@ -234,9 +235,12 @@
             <td>
               <button
                 type="button"
-                class="danger"
-                onclick={() => handleDelete(t.id)}>Delete</button
+                class="icon-button danger"
+                aria-label="Delete transaction"
+                onclick={() => handleDelete(t.id)}
               >
+                <Trash2 size={16} />
+              </button>
             </td>
           </tr>
         {/each}
@@ -280,8 +284,11 @@
   <button
     type="button"
     class="import-button"
-    onclick={() => (showImportDialog = true)}>Import CSV</button
+    onclick={() => (showImportDialog = true)}
   >
+    <FileUp size={16} />
+    Import CSV
+  </button>
 </div>
 
 {#if showImportDialog}
@@ -360,6 +367,9 @@
 
   .import-button {
     margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
     background-color: var(--color-accent);
     color: var(--color-accent-contrast);
     border: none;
@@ -390,7 +400,7 @@
 
   input,
   select,
-  button {
+  button:not(.icon-button) {
     border-radius: 6px;
     border: 1px solid var(--color-shade-3);
     padding: 0.45rem 0.7rem;
@@ -461,14 +471,6 @@
     font-size: 0.85rem;
     font-family: inherit;
     max-width: 11rem;
-  }
-
-  button.danger {
-    background-color: var(--color-danger);
-    color: var(--color-accent-contrast);
-    border: none;
-    padding: 0.3rem 0.55rem;
-    font-size: 0.8rem;
   }
 
   @media (max-width: 900px) {

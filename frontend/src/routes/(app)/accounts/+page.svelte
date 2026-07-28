@@ -7,6 +7,7 @@
     parseToMinorUnits,
     type AccountDto,
   } from "$lib/api";
+  import { Trash2 } from "@lucide/svelte";
 
   let accounts = $state<AccountDto[]>([]);
   let loading = $state(true);
@@ -141,8 +142,13 @@
               Set as default
             </button>
           {/if}
-          <button type="button" class="danger" onclick={() => handleDelete(account)}>
-            Delete
+          <button
+            type="button"
+            class="icon-button danger"
+            aria-label="Delete account"
+            onclick={() => handleDelete(account)}
+          >
+            <Trash2 size={16} />
           </button>
         </div>
         <div class="patterns">
@@ -195,7 +201,7 @@
   }
 
   input,
-  button {
+  button:not(.icon-button) {
     border-radius: 6px;
     border: 1px solid var(--color-shade-3);
     padding: 0.45rem 0.7rem;
@@ -208,15 +214,11 @@
     color: inherit;
   }
 
-  button {
+  button:not(.icon-button) {
     cursor: pointer;
     background-color: var(--color-accent);
     color: var(--color-accent-contrast);
     border: none;
-  }
-
-  button.danger {
-    background-color: var(--color-danger);
   }
 
   .default-badge {
