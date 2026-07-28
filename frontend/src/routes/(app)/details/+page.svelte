@@ -116,7 +116,17 @@
     return categories.find((c) => c.id === id)?.name ?? "Uncategorized";
   }
 
-  let rootCategories = $derived(categories.filter((c) => c.parent_id === null));
+  // Only categories with at least one transaction in the selected date
+  // range are worth showing as a filter — an empty one is just noise.
+  let presentRootIds = $derived.by(() => {
+    const ids = new Set<string>();
+    for (const t of transactions) ids.add(rootCategoryId(t.category_id));
+    return ids;
+  });
+
+  let rootCategories = $derived(
+    categories.filter((c) => c.parent_id === null && presentRootIds.has(c.id)),
+  );
 
   let filteredTransactions = $derived(
     transactions.filter((t) => !excludedRootIds.has(rootCategoryId(t.category_id))),
@@ -230,19 +240,6 @@
 {:else}
   <div class="layout">
     <div class="graph-column">
-      <div class="tabs">
-        <button
-          type="button"
-          class:active={activeTab === "expenses"}
-          onclick={() => (activeTab = "expenses")}>Expenses</button
-        >
-        <button
-          type="button"
-          class:active={activeTab === "income"}
-          onclick={() => (activeTab = "income")}>Income</button
-        >
-      </div>
-
       <div class="donut-wrap">
         <svg viewBox="0 0 200 200" class="donut">
           <g transform="rotate(-90 100 100)">
@@ -275,6 +272,19 @@
         </div>
       </div>
 
+      <div class="tabs">
+        <button
+          type="button"
+          class:active={activeTab === "expenses"}
+          onclick={() => (activeTab = "expenses")}>Expenses</button
+        >
+        <button
+          type="button"
+          class:active={activeTab === "income"}
+          onclick={() => (activeTab = "income")}>Income</button
+        >
+      </div>
+
       {#if breakdown.length === 0}
         <p class="empty">No {activeTab} in this range.</p>
       {:else}
@@ -299,7 +309,7 @@
     </div>
 
     <aside class="filters">
-      <h2>Exclude categories</h2>
+      <h2>Categories</h2>
       {#if rootCategories.length === 0}
         <p class="empty">No categories yet.</p>
       {:else}
