@@ -5,6 +5,7 @@ mod account_repository;
 mod category_repository;
 mod connection;
 mod migrations;
+mod seed;
 mod settings_repository;
 mod transaction_repository;
 

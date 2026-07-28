@@ -13,9 +13,10 @@
     type RangeMode,
   } from "$lib/api";
   import ImportCsvDialog from "$lib/ImportCsvDialog.svelte";
-  import { Trash2, FileUp } from "@lucide/svelte";
+  import { Trash2, FileUp, Plus } from "@lucide/svelte";
 
   let showImportDialog = $state(false);
+  let showAddForm = $state(false);
 
   let accounts = $state<AccountDto[]>([]);
   let categories = $state<CategoryDto[]>([]);
@@ -281,14 +282,26 @@
     <span>to</span>
     <input type="date" bind:value={customEnd} onchange={load} />
   {/if}
-  <button
-    type="button"
-    class="import-button"
-    onclick={() => (showImportDialog = true)}
-  >
-    <FileUp size={16} />
-    Import CSV
-  </button>
+  <div class="actions">
+    <button
+      type="button"
+      class="icon-button add-button"
+      aria-label="Add transaction"
+      title="Add transaction"
+      onclick={() => (showAddForm = !showAddForm)}
+    >
+      <Plus size={18} />
+    </button>
+    <button
+      type="button"
+      class="icon-button import-button"
+      aria-label="Import CSV"
+      title="Import CSV"
+      onclick={() => (showImportDialog = true)}
+    >
+      <FileUp size={18} />
+    </button>
+  </div>
 </div>
 
 {#if showImportDialog}
@@ -300,35 +313,37 @@
   />
 {/if}
 
-<form class="create-form" onsubmit={handleCreate}>
-  <input type="date" bind:value={formDate} required />
-  <input
-    type="number"
-    step="0.01"
-    placeholder="Amount (− expense / + income)"
-    bind:value={formAmount}
-    required
-  />
-  <input
-    placeholder="Source"
-    bind:value={formSource}
-    onblur={handleSourceBlur}
-    required
-  />
-  <select bind:value={formCategoryId} required>
-    <option value="" disabled selected>Category…</option>
-    {#each categoryOptions as c (c.id)}
-      <option value={c.id}>{c.label}</option>
-    {/each}
-  </select>
-  <select bind:value={formAccountId} required>
-    <option value="" disabled selected>Account…</option>
-    {#each accounts as a (a.id)}
-      <option value={a.id}>{a.name}</option>
-    {/each}
-  </select>
-  <button type="submit">Add transaction</button>
-</form>
+{#if showAddForm}
+  <form class="create-form" onsubmit={handleCreate}>
+    <input type="date" bind:value={formDate} required />
+    <input
+      type="number"
+      step="0.01"
+      placeholder="Amount (− expense / + income)"
+      bind:value={formAmount}
+      required
+    />
+    <input
+      placeholder="Source"
+      bind:value={formSource}
+      onblur={handleSourceBlur}
+      required
+    />
+    <select bind:value={formCategoryId} required>
+      <option value="" disabled selected>Category…</option>
+      {#each categoryOptions as c (c.id)}
+        <option value={c.id}>{c.label}</option>
+      {/each}
+    </select>
+    <select bind:value={formAccountId} required>
+      <option value="" disabled selected>Account…</option>
+      {#each accounts as a (a.id)}
+        <option value={a.id}>{a.name}</option>
+      {/each}
+    </select>
+    <button type="submit">Save transaction</button>
+  </form>
+{/if}
 
 {#if loading}
   <p>Loading…</p>
@@ -365,15 +380,21 @@
     margin-bottom: 1rem;
   }
 
-  .import-button {
+  .actions {
     margin-left: auto;
-    display: inline-flex;
+    display: flex;
     align-items: center;
-    gap: 0.4rem;
+    gap: 0.5rem;
+  }
+
+  .add-button {
     background-color: var(--color-accent);
     color: var(--color-accent-contrast);
-    border: none;
-    cursor: pointer;
+  }
+
+  .import-button {
+    background-color: var(--color-accent);
+    color: var(--color-accent-contrast);
   }
 
   .range-buttons {

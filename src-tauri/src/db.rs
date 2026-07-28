@@ -27,6 +27,7 @@ pub(crate) fn describe(err: DbError) -> String {
         DbError::AlreadyExists(_) => "a database already exists".to_string(),
         DbError::Sqlite(e) => format!("database error: {e}"),
         DbError::Io(e) => format!("filesystem error: {e}"),
+        DbError::Repository(e) => format!("database error: {e}"),
     }
 }
 

@@ -1,9 +1,11 @@
 use std::path::Path;
 
 use rusqlite::Connection;
+use scrat_domain::ports::RepositoryError;
 use thiserror::Error;
 
 use crate::migrations;
+use crate::seed;
 
 #[derive(Debug, Error)]
 pub enum DbError {
@@ -17,6 +19,8 @@ pub enum DbError {
     Sqlite(#[from] rusqlite::Error),
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Repository(#[from] RepositoryError),
 }
 
 pub fn database_exists(path: &Path) -> bool {
@@ -37,6 +41,7 @@ pub fn create_new(path: &Path, passphrase: &str) -> Result<Connection, DbError> 
     let mut conn = Connection::open(path)?;
     key_connection(&conn, passphrase)?;
     migrations::run(&mut conn)?;
+    seed::seed_default_categories(&conn)?;
     Ok(conn)
 }
 
