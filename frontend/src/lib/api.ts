@@ -153,11 +153,19 @@ const CURRENCY_SYMBOLS: Record<string, string> = {
   JPY: "¥",
 };
 
-/** Formats integer minor units with a leading currency symbol, e.g. "$12.34" or "-€5.00". */
+/** Formats non-negative minor units with a space-grouped whole part and a comma decimal, e.g. "100 123,23". */
+export function formatMoney(minorUnits: number): string {
+  const whole = Math.floor(minorUnits / 100);
+  const cents = minorUnits % 100;
+  const grouped = whole.toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  return `${grouped},${cents.toString().padStart(2, "0")}`;
+}
+
+/** Formats integer minor units with a leading currency symbol, e.g. "€100 123,23" or "-$5,00". */
 export function formatCurrency(minorUnits: number, currencyCode: string): string {
   const symbol = CURRENCY_SYMBOLS[currencyCode] ?? `${currencyCode} `;
   const sign = minorUnits < 0 ? "-" : "";
-  return `${sign}${symbol}${formatMinorUnits(Math.abs(minorUnits))}`;
+  return `${sign}${symbol}${formatMoney(Math.abs(minorUnits))}`;
 }
 
 /** Parses a user-typed decimal amount ("12.34") into integer minor units. */

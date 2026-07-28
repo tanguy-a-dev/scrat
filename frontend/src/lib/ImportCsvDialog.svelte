@@ -3,7 +3,7 @@
   import {
     api,
     buildCategoryOptions,
-    formatMinorUnits,
+    formatMoney,
     type AccountDto,
     type CategoryDto,
     type ImportPreviewDto,
@@ -37,6 +37,11 @@
   let includableCount = $derived(
     preview?.rows.filter((r, i) => included[i] && r.date && r.amount_minor_units).length ?? 0,
   );
+
+  function formatSignedAmount(minorUnits: number): string {
+    const sign = minorUnits < 0 ? "-" : "";
+    return `${sign}${formatMoney(Math.abs(minorUnits))}`;
+  }
 
   async function loadBytes(bytes: number[]) {
     error = "";
@@ -224,7 +229,7 @@
                 <td>{row.date ?? "—"}</td>
                 <td
                   >{row.amount_minor_units !== null
-                    ? formatMinorUnits(row.amount_minor_units)
+                    ? formatSignedAmount(row.amount_minor_units)
                     : "—"}</td
                 >
                 <td>{row.source || "—"}</td>
