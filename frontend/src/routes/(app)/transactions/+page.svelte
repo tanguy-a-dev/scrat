@@ -27,9 +27,6 @@
   let customEnd = $state(todayIsoDate());
   let currentRange = $state({ start: todayIsoDate(), end: todayIsoDate() });
 
-  let pendingBulkDelete = $state(false);
-  let bulkDeleting = $state(false);
-
   type SortField = "date" | "amount" | "source" | "category";
   let sortField = $state<SortField>("date");
   let sortDir = $state<"asc" | "desc">("desc");
@@ -149,20 +146,6 @@
       await load();
     } catch (e) {
       error = String(e);
-    }
-  }
-
-  async function confirmBulkDelete() {
-    error = "";
-    bulkDeleting = true;
-    try {
-      await api.deleteTransactionsInRange(currentRange.start, currentRange.end);
-      pendingBulkDelete = false;
-      await load();
-    } catch (e) {
-      error = String(e);
-    } finally {
-      bulkDeleting = false;
     }
   }
 
@@ -296,44 +279,10 @@
   {/if}
   <button
     type="button"
-    class="danger bulk-delete-button"
-    disabled={transactions.length === 0}
-    onclick={() => (pendingBulkDelete = true)}
-  >
-    Delete all in range
-  </button>
-  <button
-    type="button"
     class="import-button"
     onclick={() => (showImportDialog = true)}>Import CSV</button
   >
 </div>
-
-{#if pendingBulkDelete}
-  <div class="bulk-delete-panel">
-    <p>
-      Delete all {transactions.length} transaction{transactions.length === 1
-        ? ""
-        : "s"} between {currentRange.start} and {currentRange.end}? This cannot
-      be undone.
-    </p>
-    <button
-      type="button"
-      class="danger"
-      disabled={bulkDeleting}
-      onclick={confirmBulkDelete}
-    >
-      {bulkDeleting ? "Deleting…" : `Delete ${transactions.length} transaction${transactions.length === 1 ? "" : "s"}`}
-    </button>
-    <button
-      type="button"
-      onclick={() => (pendingBulkDelete = false)}
-      disabled={bulkDeleting}
-    >
-      Cancel
-    </button>
-  </div>
-{/if}
 
 {#if showImportDialog}
   <ImportCsvDialog
@@ -367,7 +316,7 @@
   </select>
   <select bind:value={formAccountId} required>
     <option value="" disabled selected>Account…</option>
-    {#each accounts.filter((a) => a.status === "active") as a (a.id)}
+    {#each accounts as a (a.id)}
       <option value={a.id}>{a.name}</option>
     {/each}
   </select>
@@ -410,25 +359,11 @@
   }
 
   .import-button {
+    margin-left: auto;
     background-color: var(--color-accent);
     color: var(--color-accent-contrast);
     border: none;
     cursor: pointer;
-  }
-
-  .bulk-delete-button {
-    margin-left: auto;
-  }
-
-  .bulk-delete-panel {
-    margin-bottom: 1.5rem;
-    padding: 1rem;
-    border-radius: 10px;
-    background-color: color-mix(in srgb, var(--color-danger) 15%, transparent);
-    display: flex;
-    flex-direction: column;
-    gap: 0.6rem;
-    max-width: 32rem;
   }
 
   .range-buttons {

@@ -85,17 +85,10 @@ impl SourcePattern {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AccountStatus {
-    Active,
-    Archived,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Account {
     id: AccountId,
     name: AccountName,
-    status: AccountStatus,
     opening_balance: Money,
     source_patterns: Vec<SourcePattern>,
 }
@@ -105,7 +98,6 @@ impl Account {
         Self {
             id,
             name,
-            status: AccountStatus::Active,
             opening_balance,
             source_patterns: Vec::new(),
         }
@@ -114,14 +106,12 @@ impl Account {
     pub fn from_parts(
         id: AccountId,
         name: AccountName,
-        status: AccountStatus,
         opening_balance: Money,
         source_patterns: Vec<SourcePattern>,
     ) -> Self {
         Self {
             id,
             name,
-            status,
             opening_balance,
             source_patterns,
         }
@@ -133,10 +123,6 @@ impl Account {
 
     pub fn name(&self) -> &AccountName {
         &self.name
-    }
-
-    pub fn status(&self) -> AccountStatus {
-        self.status
     }
 
     pub fn opening_balance(&self) -> &Money {
@@ -153,14 +139,6 @@ impl Account {
 
     pub fn set_opening_balance(&mut self, opening_balance: Money) {
         self.opening_balance = opening_balance;
-    }
-
-    pub fn archive(&mut self) {
-        self.status = AccountStatus::Archived;
-    }
-
-    pub fn activate(&mut self) {
-        self.status = AccountStatus::Active;
     }
 
     pub fn add_source_pattern(&mut self, pattern: SourcePattern) {
@@ -228,18 +206,5 @@ mod tests {
         account.add_source_pattern(SourcePattern::new("ACME").unwrap());
 
         assert_eq!(account.source_patterns().len(), 1);
-    }
-
-    #[test]
-    fn archive_changes_status() {
-        let mut account = Account::new(
-            AccountId::new(),
-            AccountName::new("Checking").unwrap(),
-            eur(0),
-        );
-
-        account.archive();
-
-        assert_eq!(account.status(), AccountStatus::Archived);
     }
 }

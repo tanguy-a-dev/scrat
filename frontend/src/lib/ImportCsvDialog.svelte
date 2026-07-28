@@ -32,7 +32,6 @@
   let dragOver = $state(false);
 
   let categoryOptions = $derived(buildCategoryOptions(categories));
-  let activeAccounts = $derived(accounts.filter((a) => a.status === "active"));
 
   let includableCount = $derived(
     preview?.rows.filter((r, i) => included[i] && r.date && r.amount_minor_units).length ?? 0,
@@ -198,7 +197,7 @@
         </select>
         <select bind:value={selectedAccountId}>
           <option value="">Destination account (optional)…</option>
-          {#each activeAccounts as a (a.id)}
+          {#each accounts as a (a.id)}
             <option value={a.id}>{a.name}{a.is_default ? " (default)" : ""}</option>
           {/each}
         </select>

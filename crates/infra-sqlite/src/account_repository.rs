@@ -1,6 +1,6 @@
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
-use scrat_domain::account::{Account, AccountId, AccountName, AccountStatus, SourcePattern};
+use scrat_domain::account::{Account, AccountId, AccountName, SourcePattern};
 use scrat_domain::money::{Currency, Money};
 use scrat_domain::ports::{AccountRepository, RepositoryError};
 
@@ -36,22 +36,17 @@ impl<'a> SqliteAccountRepository<'a> {
             rusqlite::Error::InvalidColumnType(0, e.to_string(), rusqlite::types::Type::Text)
         })?;
         let name: String = row.get("name")?;
-        let status: String = row.get("status")?;
         let opening_balance_minor_units: i64 = row.get("opening_balance_minor_units")?;
 
         let name = AccountName::new(&name).map_err(|e| {
             rusqlite::Error::InvalidColumnType(0, e.to_string(), rusqlite::types::Type::Text)
         })?;
-        let status = match status.as_str() {
-            "archived" => AccountStatus::Archived,
-            _ => AccountStatus::Active,
-        };
         let opening_balance =
             Money::from_minor_units(opening_balance_minor_units, self.currency.clone());
 
         Ok((
             id,
-            Account::from_parts(id, name, status, opening_balance, Vec::new()),
+            Account::from_parts(id, name, opening_balance, Vec::new()),
         ))
     }
 }
@@ -60,24 +55,16 @@ fn sql_err(e: rusqlite::Error) -> RepositoryError {
     RepositoryError(e.to_string())
 }
 
-fn status_str(status: AccountStatus) -> &'static str {
-    match status {
-        AccountStatus::Active => "active",
-        AccountStatus::Archived => "archived",
-    }
-}
-
 impl<'a> AccountRepository for SqliteAccountRepository<'a> {
     fn insert(&self, account: &Account) -> Result<(), RepositoryError> {
         let now = Utc::now().to_rfc3339();
         self.conn
             .execute(
-                "INSERT INTO accounts (id, name, status, opening_balance_minor_units, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+                "INSERT INTO accounts (id, name, opening_balance_minor_units, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?4)",
                 params![
                     account.id().as_string(),
                     account.name().as_str(),
-                    status_str(account.status()),
                     account.opening_balance().minor_units(),
                     now,
                 ],
@@ -90,12 +77,11 @@ impl<'a> AccountRepository for SqliteAccountRepository<'a> {
         let now = Utc::now().to_rfc3339();
         self.conn
             .execute(
-                "UPDATE accounts SET name = ?2, status = ?3, opening_balance_minor_units = ?4, updated_at = ?5
+                "UPDATE accounts SET name = ?2, opening_balance_minor_units = ?3, updated_at = ?4
                  WHERE id = ?1",
                 params![
                     account.id().as_string(),
                     account.name().as_str(),
-                    status_str(account.status()),
                     account.opening_balance().minor_units(),
                     now,
                 ],
@@ -118,7 +104,7 @@ impl<'a> AccountRepository for SqliteAccountRepository<'a> {
         let result = self
             .conn
             .query_row(
-                "SELECT id, name, status, opening_balance_minor_units FROM accounts WHERE id = ?1",
+                "SELECT id, name, opening_balance_minor_units FROM accounts WHERE id = ?1",
                 params![id.as_string()],
                 |row| self.row_to_account(row),
             )
@@ -140,7 +126,7 @@ impl<'a> AccountRepository for SqliteAccountRepository<'a> {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, name, status, opening_balance_minor_units FROM accounts ORDER BY name",
+                "SELECT id, name, opening_balance_minor_units FROM accounts ORDER BY name",
             )
             .map_err(sql_err)?;
         let rows = stmt

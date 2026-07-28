@@ -79,14 +79,6 @@
     withErrorHandling(() => api.removeSourcePattern(account.id, pattern));
   }
 
-  function handleToggleArchive(account: AccountDto) {
-    if (account.status === "active") {
-      withErrorHandling(() => api.archiveAccount(account.id));
-    } else {
-      withErrorHandling(() => api.activateAccount(account.id));
-    }
-  }
-
   function handleDelete(account: AccountDto) {
     if (!confirm(`Delete "${account.name}"? This cannot be undone.`)) return;
     withErrorHandling(() => api.deleteAccount(account.id));
@@ -121,7 +113,7 @@
 {:else}
   <ul class="accounts">
     {#each accounts as account (account.id)}
-      <li class="account" class:archived={account.status === "archived"}>
+      <li class="account">
         <div class="row">
           <input
             class="name"
@@ -142,20 +134,13 @@
               account.currency,
             )}</span
           >
-          <span class="status">{account.status}</span>
           {#if account.is_default}
             <span class="default-badge">default</span>
-          {:else if account.status === "active"}
+          {:else}
             <button type="button" onclick={() => handleSetDefault(account)}>
               Set as default
             </button>
           {/if}
-          <button
-            type="button"
-            onclick={() => handleToggleArchive(account)}
-          >
-            {account.status === "active" ? "Archive" : "Unarchive"}
-          </button>
           <button type="button" class="danger" onclick={() => handleDelete(account)}>
             Delete
           </button>
@@ -260,10 +245,6 @@
     background-color: var(--color-shade-2);
   }
 
-  .account.archived {
-    opacity: 0.6;
-  }
-
   .row {
     display: flex;
     align-items: center;
@@ -283,12 +264,6 @@
   .computed {
     opacity: 0.8;
     font-size: 0.9rem;
-  }
-
-  .status {
-    font-size: 0.8rem;
-    text-transform: uppercase;
-    opacity: 0.6;
   }
 
   .patterns {

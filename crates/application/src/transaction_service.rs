@@ -114,17 +114,6 @@ impl<'a> TransactionService<'a> {
         Ok(())
     }
 
-    /// Bulk-clears every transaction dated within `[start, end]` — e.g. to
-    /// discard leftover test data imported under an old date range. Returns
-    /// how many were removed.
-    pub fn delete_transactions_in_range(
-        &self,
-        start: NaiveDate,
-        end: NaiveDate,
-    ) -> Result<u64, ApplicationError> {
-        Ok(self.transactions.delete_in_range(start, end)?)
-    }
-
     pub fn list_in_range(
         &self,
         start: NaiveDate,
@@ -388,16 +377,6 @@ mod tests {
             }
             Ok(())
         }
-        fn delete_in_range(
-            &self,
-            start: NaiveDate,
-            end: NaiveDate,
-        ) -> Result<u64, RepositoryError> {
-            let mut transactions = self.transactions.lock().unwrap();
-            let before = transactions.len();
-            transactions.retain(|t| !(t.date() >= start && t.date() <= end));
-            Ok((before - transactions.len()) as u64)
-        }
         fn list_in_range(
             &self,
             start: NaiveDate,
@@ -612,49 +591,6 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].source().as_str(), "In range");
-    }
-
-    #[test]
-    fn delete_transactions_in_range_removes_only_matching_rows() {
-        let f = fixture();
-        let service = TransactionService::new(
-            &f.transactions,
-            &f.accounts,
-            &f.categories,
-            Currency::new("USD").unwrap(),
-        );
-        service
-            .create_transaction(
-                NaiveDate::from_ymd_opt(2023, 4, 4).unwrap(),
-                -500,
-                "Old test data",
-                f.category_id,
-                f.account_id,
-            )
-            .unwrap();
-        service
-            .create_transaction(
-                NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
-                -1_200,
-                "Keep me",
-                f.category_id,
-                f.account_id,
-            )
-            .unwrap();
-
-        let deleted = service
-            .delete_transactions_in_range(
-                NaiveDate::from_ymd_opt(2023, 1, 1).unwrap(),
-                NaiveDate::from_ymd_opt(2023, 12, 31).unwrap(),
-            )
-            .unwrap();
-
-        assert_eq!(deleted, 1);
-        let remaining = service
-            .list_in_range(NaiveDate::MIN, NaiveDate::MAX)
-            .unwrap();
-        assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].source().as_str(), "Keep me");
     }
 
     #[test]

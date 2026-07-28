@@ -1,11 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export type AccountStatus = "active" | "archived";
-
 export interface AccountDto {
   id: string;
   name: string;
-  status: AccountStatus;
   opening_balance_minor_units: number;
   balance_minor_units: number;
   currency: string;
@@ -70,8 +67,6 @@ export const api = {
     invoke<void>("add_source_pattern", { id, pattern }),
   removeSourcePattern: (id: string, pattern: string) =>
     invoke<void>("remove_source_pattern", { id, pattern }),
-  archiveAccount: (id: string) => invoke<void>("archive_account", { id }),
-  activateAccount: (id: string) => invoke<void>("activate_account", { id }),
   deleteAccount: (id: string) => invoke<void>("delete_account", { id }),
   setDefaultAccount: (id: string) => invoke<void>("set_default_account", { id }),
 
@@ -106,8 +101,6 @@ export const api = {
   deleteTransaction: (id: string) => invoke<void>("delete_transaction", { id }),
   setTransactionCategory: (id: string, categoryId: string) =>
     invoke<void>("set_transaction_category", { id, categoryId }),
-  deleteTransactionsInRange: (start: string, end: string) =>
-    invoke<number>("delete_transactions_in_range", { start, end }),
   suggestAccountForSource: (source: string) =>
     invoke<string | null>("suggest_account_for_source", { source }),
   suggestCategoryForSource: (source: string) =>

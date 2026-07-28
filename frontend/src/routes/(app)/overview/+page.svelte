@@ -20,10 +20,9 @@
     }
   }
 
-  let activeAccounts = $derived(accounts.filter((a) => a.status === "active"));
-  let currency = $derived(activeAccounts[0]?.currency ?? "EUR");
+  let currency = $derived(accounts[0]?.currency ?? "EUR");
   let total = $derived(
-    activeAccounts.reduce((sum, a) => sum + a.balance_minor_units, 0),
+    accounts.reduce((sum, a) => sum + a.balance_minor_units, 0),
   );
 </script>
 
@@ -33,7 +32,7 @@
   <p>Loading…</p>
 {:else if error}
   <p class="error">{error}</p>
-{:else if activeAccounts.length === 0}
+{:else if accounts.length === 0}
   <p class="empty">
     No accounts yet. Head to <a href="/accounts">Accounts</a> to add one.
   </p>
@@ -43,7 +42,7 @@
       <span class="label">Total available</span>
       <span class="amount">{formatCurrency(total, currency)}</span>
     </div>
-    {#each activeAccounts as account (account.id)}
+    {#each accounts as account (account.id)}
       <div class="box">
         <span class="label">{account.name}</span>
         <span class="amount"

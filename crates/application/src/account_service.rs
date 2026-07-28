@@ -1,6 +1,4 @@
-use scrat_domain::account::{
-    Account, AccountError, AccountId, AccountName, AccountStatus, SourcePattern,
-};
+use scrat_domain::account::{Account, AccountError, AccountId, AccountName, SourcePattern};
 use scrat_domain::money::{Currency, Money, MoneyError};
 use scrat_domain::ports::{AccountRepository, RepositoryError};
 use thiserror::Error;
@@ -15,7 +13,7 @@ pub enum ApplicationError {
     Money(#[from] MoneyError),
     #[error("account not found")]
     AccountNotFound,
-    #[error("account still has {0} transaction(s); archive it instead of deleting")]
+    #[error("account still has {0} transaction(s); reassign or delete them first")]
     HasTransactions(u64),
 }
 
@@ -88,24 +86,9 @@ impl<'a> AccountService<'a> {
         Ok(())
     }
 
-    pub fn archive_account(&self, id: AccountId) -> Result<(), ApplicationError> {
-        let mut account = self.get(id)?;
-        account.archive();
-        self.repo.update(&account)?;
-        Ok(())
-    }
-
-    pub fn activate_account(&self, id: AccountId) -> Result<(), ApplicationError> {
-        let mut account = self.get(id)?;
-        account.activate();
-        self.repo.update(&account)?;
-        Ok(())
-    }
-
     /// Hard-deletes the account, unless it still has transactions — a
     /// finance app must never silently orphan or cascade-delete ledger
-    /// history, so callers get an explicit error and can offer "Archive"
-    /// instead.
+    /// history, so callers get an explicit error instead.
     pub fn delete_account(&self, id: AccountId) -> Result<(), ApplicationError> {
         let count = self.repo.transaction_count(id)?;
         if count > 0 {
@@ -136,12 +119,10 @@ impl<'a> AccountService<'a> {
     }
 }
 
-/// Overview's "total available" — the sum of every *active* account's
-/// balance. Archived accounts are excluded since they're no longer "held".
+/// Overview's "total available" — the sum of every account's balance.
 pub fn total_available(accounts: &[AccountWithBalance]) -> Option<Money> {
     accounts
         .iter()
-        .filter(|a| a.account.status() == AccountStatus::Active)
         .try_fold(None::<Money>, |acc, a| {
             let sum = match acc {
                 Some(running) => running.add(&a.balance).ok()?,
@@ -263,31 +244,6 @@ mod tests {
     }
 
     #[test]
-    fn archive_account_changes_status_without_deleting() {
-        let repo = FakeAccountRepository::default();
-        let service = AccountService::new(&repo, Currency::new("USD").unwrap());
-        let account = service.create_account("Checking", 0).unwrap();
-
-        service.archive_account(account.id()).unwrap();
-
-        let stored = repo.find_by_id(account.id()).unwrap().unwrap();
-        assert_eq!(stored.status(), AccountStatus::Archived);
-    }
-
-    #[test]
-    fn activate_account_reverses_archive() {
-        let repo = FakeAccountRepository::default();
-        let service = AccountService::new(&repo, Currency::new("USD").unwrap());
-        let account = service.create_account("Checking", 0).unwrap();
-        service.archive_account(account.id()).unwrap();
-
-        service.activate_account(account.id()).unwrap();
-
-        let stored = repo.find_by_id(account.id()).unwrap().unwrap();
-        assert_eq!(stored.status(), AccountStatus::Active);
-    }
-
-    #[test]
     fn list_accounts_with_balance_combines_opening_balance_and_ledger_sum() {
         let repo = FakeAccountRepository::default();
         let service = AccountService::new(&repo, Currency::new("USD").unwrap());
@@ -300,16 +256,15 @@ mod tests {
     }
 
     #[test]
-    fn total_available_sums_only_active_accounts() {
+    fn total_available_sums_all_accounts() {
         let repo = FakeAccountRepository::default();
         let service = AccountService::new(&repo, Currency::new("USD").unwrap());
-        let checking = service.create_account("Checking", 5_000).unwrap();
+        service.create_account("Checking", 5_000).unwrap();
         service.create_account("Savings", 2_000).unwrap();
-        service.archive_account(checking.id()).unwrap();
 
         let accounts = service.list_accounts_with_balance().unwrap();
         let total = total_available(&accounts).unwrap();
 
-        assert_eq!(total.minor_units(), 2_000);
+        assert_eq!(total.minor_units(), 7_000);
     }
 }

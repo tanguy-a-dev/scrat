@@ -1,5 +1,5 @@
 use scrat_application::account_service::{AccountService, AccountWithBalance, ApplicationError};
-use scrat_domain::account::{AccountId, AccountStatus};
+use scrat_domain::account::AccountId;
 use scrat_domain::money::Currency;
 use scrat_domain::ports::AccountRepository;
 use scrat_infra_sqlite::{Connection, SqliteAccountRepository};
@@ -12,7 +12,6 @@ use crate::db::DbState;
 pub struct AccountDto {
     pub id: String,
     pub name: String,
-    pub status: String,
     pub opening_balance_minor_units: i64,
     pub balance_minor_units: i64,
     pub currency: String,
@@ -28,11 +27,6 @@ fn to_dto(value: AccountWithBalance, default_account_id: Option<AccountId>) -> A
     AccountDto {
         id: account.id().as_string(),
         name: account.name().as_str().to_string(),
-        status: match account.status() {
-            AccountStatus::Active => "active",
-            AccountStatus::Archived => "archived",
-        }
-        .to_string(),
         opening_balance_minor_units: account.opening_balance().minor_units(),
         balance_minor_units: balance.minor_units(),
         currency: balance.currency().code().to_string(),
@@ -74,12 +68,11 @@ fn with_service<T>(
 }
 
 /// Resolves the app-wide default account id: whatever's configured in
-/// settings, as long as it's still an active account — otherwise, if
-/// there's exactly one active account, treats it as an implicit default
-/// (persisting that so future reads are stable). Returns `None` when
-/// nothing can be resolved (no accounts yet, or several with nothing
-/// chosen) — callers that need a hard default (CSV import) must handle
-/// that case explicitly.
+/// settings, as long as it still exists — otherwise, if there's exactly one
+/// account, treats it as an implicit default (persisting that so future
+/// reads are stable). Returns `None` when nothing can be resolved (no
+/// accounts yet, or several with nothing chosen) — callers that need a hard
+/// default (CSV import) must handle that case explicitly.
 pub(crate) fn resolve_default_account_id(conn: &Connection) -> Result<Option<AccountId>, String> {
     let currency = app_currency(conn);
     let repo = SqliteAccountRepository::new(conn, currency);
@@ -89,19 +82,14 @@ pub(crate) fn resolve_default_account_id(conn: &Connection) -> Result<Option<Acc
         scrat_infra_sqlite::get_default_account_id(conn).map_err(|e| e.to_string())?
     {
         if let Ok(id) = AccountId::parse(&id_str) {
-            if accounts
-                .iter()
-                .any(|a| a.id() == id && a.status() == AccountStatus::Active)
-            {
+            if accounts.iter().any(|a| a.id() == id) {
                 return Ok(Some(id));
             }
         }
     }
 
-    let mut active = accounts
-        .iter()
-        .filter(|a| a.status() == AccountStatus::Active);
-    let (Some(only), None) = (active.next(), active.next()) else {
+    let mut all = accounts.iter();
+    let (Some(only), None) = (all.next(), all.next()) else {
         return Ok(None);
     };
     let id = only.id();
@@ -161,13 +149,9 @@ pub fn set_default_account(state: State<DbState>, id: String) -> Result<(), Stri
         .ok_or_else(|| "database is locked".to_string())?;
     let currency = app_currency(conn);
     let repo = SqliteAccountRepository::new(conn, currency);
-    let account = repo
-        .find_by_id(id)
+    repo.find_by_id(id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "account not found".to_string())?;
-    if account.status() != AccountStatus::Active {
-        return Err("only an active account can be set as default".to_string());
-    }
     scrat_infra_sqlite::set_default_account_id(conn, &id.as_string()).map_err(|e| e.to_string())
 }
 
@@ -205,18 +189,6 @@ pub fn remove_source_pattern(
 ) -> Result<(), String> {
     let id = parse_id(&id)?;
     with_service(&state, |s| s.remove_source_pattern(id, &pattern))
-}
-
-#[tauri::command]
-pub fn archive_account(state: State<DbState>, id: String) -> Result<(), String> {
-    let id = parse_id(&id)?;
-    with_service(&state, |s| s.archive_account(id))
-}
-
-#[tauri::command]
-pub fn activate_account(state: State<DbState>, id: String) -> Result<(), String> {
-    let id = parse_id(&id)?;
-    with_service(&state, |s| s.activate_account(id))
 }
 
 #[tauri::command]
