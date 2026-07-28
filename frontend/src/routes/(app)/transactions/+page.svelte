@@ -3,7 +3,7 @@
   import {
     api,
     buildCategoryOptions,
-    formatMinorUnits,
+    formatCurrency,
     parseToMinorUnits,
     computeRange,
     todayIsoDate,
@@ -233,7 +233,7 @@
         {#each items as t (t.id)}
           <tr>
             <td>{t.date}</td>
-            <td>{formatMinorUnits(t.amount_minor_units)} {t.currency}</td>
+            <td>{formatCurrency(t.amount_minor_units, t.currency)}</td>
             <td>{t.source}</td>
             <td>
               <select

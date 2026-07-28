@@ -144,6 +144,22 @@ export function formatMinorUnits(minorUnits: number): string {
   return (minorUnits / 100).toFixed(2);
 }
 
+const CURRENCY_SYMBOLS: Record<string, string> = {
+  USD: "$",
+  EUR: "€",
+  GBP: "£",
+  CAD: "$",
+  AUD: "$",
+  JPY: "¥",
+};
+
+/** Formats integer minor units with a leading currency symbol, e.g. "$12.34" or "-€5.00". */
+export function formatCurrency(minorUnits: number, currencyCode: string): string {
+  const symbol = CURRENCY_SYMBOLS[currencyCode] ?? `${currencyCode} `;
+  const sign = minorUnits < 0 ? "-" : "";
+  return `${sign}${symbol}${formatMinorUnits(Math.abs(minorUnits))}`;
+}
+
 /** Parses a user-typed decimal amount ("12.34") into integer minor units. */
 export function parseToMinorUnits(input: string): number | null {
   const value = Number.parseFloat(input);

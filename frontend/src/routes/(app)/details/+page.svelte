@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import {
     api,
-    formatMinorUnits,
+    formatCurrency,
     computeRange,
     todayIsoDate,
     type CategoryDto,
@@ -225,9 +225,9 @@
           </g>
         </svg>
         <div class="donut-center">
-          <span class="total">{formatMinorUnits(totalForTabMinorUnits)} {currency}</span>
+          <span class="total">{formatCurrency(totalForTabMinorUnits, currency)}</span>
           <span class="label">{activeTab === "expenses" ? "Expenses" : "Income"}</span>
-          <span class="left">Left: {formatMinorUnits(netLeftMinorUnits)} {currency}</span>
+          <span class="left">Left: {formatCurrency(netLeftMinorUnits, currency)}</span>
         </div>
       </div>
 

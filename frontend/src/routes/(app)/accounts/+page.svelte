@@ -3,6 +3,7 @@
   import {
     api,
     formatMinorUnits,
+    formatCurrency,
     parseToMinorUnits,
     type AccountDto,
   } from "$lib/api";
@@ -136,8 +137,10 @@
               handleOpeningBalanceChange(account, e.currentTarget.value)}
           />
           <span class="computed"
-            >balance: {formatMinorUnits(account.balance_minor_units)}
-            {account.currency}</span
+            >balance: {formatCurrency(
+              account.balance_minor_units,
+              account.currency,
+            )}</span
           >
           <span class="status">{account.status}</span>
           {#if account.is_default}

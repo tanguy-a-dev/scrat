@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, formatMinorUnits, type AccountDto } from "$lib/api";
+  import { api, formatCurrency, type AccountDto } from "$lib/api";
 
   let accounts = $state<AccountDto[]>([]);
   let loading = $state(true);
@@ -41,13 +41,13 @@
   <div class="grid">
     <div class="box total">
       <span class="label">Total available</span>
-      <span class="amount">{formatMinorUnits(total)} {currency}</span>
+      <span class="amount">{formatCurrency(total, currency)}</span>
     </div>
     {#each activeAccounts as account (account.id)}
       <div class="box">
         <span class="label">{account.name}</span>
         <span class="amount"
-          >{formatMinorUnits(account.balance_minor_units)} {account.currency}</span
+          >{formatCurrency(account.balance_minor_units, account.currency)}</span
         >
       </div>
     {/each}
