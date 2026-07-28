@@ -1,24 +1,48 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use scrat_domain::ports::RepositoryError;
 
-pub fn get_currency_code(conn: &Connection) -> Result<Option<String>, RepositoryError> {
+fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>, RepositoryError> {
     conn.query_row(
-        "SELECT value FROM settings WHERE key = 'currency_code'",
-        [],
+        "SELECT value FROM settings WHERE key = ?1",
+        params![key],
         |row| row.get::<_, String>(0),
     )
     .optional()
     .map_err(|e| RepositoryError(e.to_string()))
 }
 
-pub fn set_currency_code(conn: &Connection, code: &str) -> Result<(), RepositoryError> {
+fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<(), RepositoryError> {
     conn.execute(
-        "INSERT INTO settings (key, value) VALUES ('currency_code', ?1)
+        "INSERT INTO settings (key, value) VALUES (?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![code],
+        params![key, value],
     )
     .map_err(|e| RepositoryError(e.to_string()))?;
     Ok(())
+}
+
+pub fn get_currency_code(conn: &Connection) -> Result<Option<String>, RepositoryError> {
+    get_setting(conn, "currency_code")
+}
+
+pub fn set_currency_code(conn: &Connection, code: &str) -> Result<(), RepositoryError> {
+    set_setting(conn, "currency_code", code)
+}
+
+pub fn get_default_category_id(conn: &Connection) -> Result<Option<String>, RepositoryError> {
+    get_setting(conn, "default_category_id")
+}
+
+pub fn set_default_category_id(conn: &Connection, id: &str) -> Result<(), RepositoryError> {
+    set_setting(conn, "default_category_id", id)
+}
+
+pub fn get_default_account_id(conn: &Connection) -> Result<Option<String>, RepositoryError> {
+    get_setting(conn, "default_account_id")
+}
+
+pub fn set_default_account_id(conn: &Connection, id: &str) -> Result<(), RepositoryError> {
+    set_setting(conn, "default_account_id", id)
 }
 
 #[cfg(test)]
@@ -50,5 +74,59 @@ mod tests {
         set_currency_code(&conn, "EUR").unwrap();
         set_currency_code(&conn, "GBP").unwrap();
         assert_eq!(get_currency_code(&conn).unwrap(), Some("GBP".to_string()));
+    }
+
+    #[test]
+    fn get_default_category_id_returns_none_when_unset() {
+        let conn = test_conn();
+        assert_eq!(get_default_category_id(&conn).unwrap(), None);
+    }
+
+    #[test]
+    fn set_then_get_default_category_id_roundtrips() {
+        let conn = test_conn();
+        set_default_category_id(&conn, "cat-1").unwrap();
+        assert_eq!(
+            get_default_category_id(&conn).unwrap(),
+            Some("cat-1".to_string())
+        );
+    }
+
+    #[test]
+    fn set_default_category_id_overwrites_previous_value() {
+        let conn = test_conn();
+        set_default_category_id(&conn, "cat-1").unwrap();
+        set_default_category_id(&conn, "cat-2").unwrap();
+        assert_eq!(
+            get_default_category_id(&conn).unwrap(),
+            Some("cat-2".to_string())
+        );
+    }
+
+    #[test]
+    fn get_default_account_id_returns_none_when_unset() {
+        let conn = test_conn();
+        assert_eq!(get_default_account_id(&conn).unwrap(), None);
+    }
+
+    #[test]
+    fn set_then_get_default_account_id_roundtrips() {
+        let conn = test_conn();
+        set_default_account_id(&conn, "acc-1").unwrap();
+        assert_eq!(
+            get_default_account_id(&conn).unwrap(),
+            Some("acc-1".to_string())
+        );
+    }
+
+    #[test]
+    fn set_default_account_id_overwrites_previous_value() {
+        let conn = test_conn();
+        set_default_account_id(&conn, "acc-1").unwrap();
+        set_default_account_id(&conn, "acc-2").unwrap();
+        assert_eq!(
+            get_default_account_id(&conn).unwrap(),
+            Some("acc-2".to_string())
+        );
     }
 }

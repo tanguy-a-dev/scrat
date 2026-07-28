@@ -11,14 +11,14 @@
   } from "$lib/api";
 
   const PALETTE = [
-    "#396cd8",
-    "#e07a5f",
-    "#81b29a",
+    "#228be6",
+    "#97f2d7",
     "#f2cc8f",
+    "#e07a5f",
     "#9b5de5",
-    "#00bbf9",
-    "#f15bb5",
     "#43aa8b",
+    "#f15bb5",
+    "#98abb5",
   ];
   const RADIUS = 80;
   const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
@@ -284,7 +284,7 @@
   }
 
   .error {
-    color: #d33;
+    color: var(--color-danger);
   }
 
   .empty {
@@ -306,7 +306,7 @@
 
   .range-buttons button,
   .tabs button {
-    background-color: rgba(0, 0, 0, 0.06);
+    background-color: var(--color-shade-3);
     color: inherit;
     border: none;
     border-radius: 6px;
@@ -317,13 +317,15 @@
 
   .range-buttons button.active,
   .tabs button.active {
-    background-color: #396cd8;
-    color: white;
+    background-color: var(--color-accent);
+    color: var(--color-accent-contrast);
   }
 
   input[type="date"] {
     border-radius: 6px;
-    border: 1px solid rgba(0, 0, 0, 0.15);
+    border: 1px solid var(--color-shade-3);
+    background-color: var(--color-shade-2);
+    color: inherit;
     padding: 0.4rem 0.6rem;
     font-family: inherit;
   }
@@ -352,7 +354,7 @@
   }
 
   :root {
-    --donut-track: rgba(0, 0, 0, 0.06);
+    --donut-track: var(--color-shade-3);
   }
 
   .donut-center {
@@ -417,7 +419,7 @@
   .bar-track {
     height: 0.4rem;
     border-radius: 999px;
-    background-color: rgba(0, 0, 0, 0.06);
+    background-color: var(--color-shade-3);
     overflow: hidden;
   }
 
@@ -426,7 +428,7 @@
   }
 
   .filters {
-    border-left: 1px solid rgba(0, 0, 0, 0.1);
+    border-left: 1px solid var(--color-shade-3);
     padding-left: 1.5rem;
   }
 
@@ -451,31 +453,6 @@
     cursor: pointer;
   }
 
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --donut-track: rgba(255, 255, 255, 0.08);
-    }
-
-    .range-buttons button:not(.active),
-    .tabs button:not(.active) {
-      background-color: rgba(255, 255, 255, 0.08);
-    }
-
-    input[type="date"] {
-      background-color: rgba(255, 255, 255, 0.06);
-      border-color: rgba(255, 255, 255, 0.15);
-      color: inherit;
-    }
-
-    .bar-track {
-      background-color: rgba(255, 255, 255, 0.08);
-    }
-
-    .filters {
-      border-left-color: rgba(255, 255, 255, 0.1);
-    }
-  }
-
   @media (max-width: 900px) {
     .layout {
       grid-template-columns: 1fr;
@@ -484,7 +461,7 @@
     .filters {
       border-left: none;
       padding-left: 0;
-      border-top: 1px solid rgba(0, 0, 0, 0.1);
+      border-top: 1px solid var(--color-shade-3);
       padding-top: 1rem;
     }
   }

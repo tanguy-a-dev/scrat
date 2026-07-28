@@ -72,6 +72,13 @@ pub trait TransactionRepository {
     /// CSV (or an overlapping date range) idempotent.
     fn insert_or_skip(&self, transaction: &Transaction) -> Result<InsertOutcome, RepositoryError>;
     fn delete(&self, id: TransactionId) -> Result<(), RepositoryError>;
+    /// Recategorizes an existing transaction — used when the user corrects
+    /// or updates a transaction's category after the fact.
+    fn update_category(
+        &self,
+        id: TransactionId,
+        category_id: CategoryId,
+    ) -> Result<(), RepositoryError>;
     /// Deletes every transaction dated within `[start, end]` and returns how
     /// many were removed — used to bulk-clear a range (e.g. leftover test
     /// data) rather than deleting one at a time.

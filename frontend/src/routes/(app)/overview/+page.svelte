@@ -60,7 +60,7 @@
   }
 
   .error {
-    color: #d33;
+    color: var(--color-danger);
   }
 
   .empty {
@@ -79,12 +79,12 @@
     gap: 0.4rem;
     padding: 1.25rem;
     border-radius: 10px;
-    background-color: rgba(0, 0, 0, 0.04);
+    background-color: var(--color-box);
   }
 
   .box.total {
-    background-color: #396cd8;
-    color: white;
+    background-color: var(--color-box-accent-bg);
+    color: var(--color-box-accent-text);
   }
 
   .label {
@@ -95,11 +95,5 @@
   .amount {
     font-size: 1.5rem;
     font-weight: 700;
-  }
-
-  @media (prefers-color-scheme: dark) {
-    .box {
-      background-color: rgba(255, 255, 255, 0.06);
-    }
   }
 </style>

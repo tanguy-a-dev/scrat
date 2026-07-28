@@ -1,7 +1,31 @@
 :root {
   font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  color: #0f0f0f;
-  background-color: #f6f6f6;
+
+  /* Base */
+  --color-bg: #263840;
+  --color-text: #eaddd7;
+  --color-accent: #228be6;
+  --color-accent-contrast: #ffffff;
+
+  /* Shade ramp, dark to light */
+  --color-shade-1: #263840;
+  --color-shade-2: #495c65;
+  --color-shade-3: #6f838c;
+  --color-shade-4: #98abb5;
+  --color-shade-5: #c2d6e0;
+
+  /* Boxes */
+  --color-box: #48706e;
+  --color-box-accent-bg: #97f2d7;
+  --color-box-accent-text: #8b4202;
+
+  /* Semantic, retuned to sit next to the palette above */
+  --color-danger: #d1495c;
+  --color-danger-strong: #b23a4c;
+  --color-success: #2f9e6f;
+
+  color: var(--color-text);
+  background-color: var(--color-bg);
 }
 
 * {
@@ -12,9 +36,8 @@ body {
   margin: 0;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
-  }
+h1,
+h2,
+h3 {
+  color: var(--color-accent);
 }

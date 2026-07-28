@@ -8,6 +8,7 @@
     onRename,
     onDelete,
     onAddChild,
+    onSetDefault,
     depth = 0,
   }: {
     category: CategoryDto;
@@ -15,6 +16,7 @@
     onRename: (id: string, name: string) => void;
     onDelete: (category: CategoryDto) => void;
     onAddChild: (parentId: string, name: string) => void;
+    onSetDefault: (id: string) => void;
     depth?: number;
   } = $props();
 
@@ -38,6 +40,13 @@
       value={category.name}
       onchange={(e) => onRename(category.id, e.currentTarget.value)}
     />
+    {#if category.is_default}
+      <span class="default-badge">default</span>
+    {:else}
+      <button type="button" onclick={() => onSetDefault(category.id)}>
+        Set as default
+      </button>
+    {/if}
     {#if depth === 0}
       <button type="button" onclick={() => (addingChild = !addingChild)}>
         + sub
@@ -66,6 +75,7 @@
           {onRename}
           {onDelete}
           {onAddChild}
+          {onSetDefault}
           depth={depth + 1}
         />
       {/each}
@@ -93,7 +103,9 @@
 
   .name {
     border-radius: 6px;
-    border: 1px solid rgba(0, 0, 0, 0.15);
+    border: 1px solid var(--color-shade-3);
+    background-color: var(--color-shade-2);
+    color: inherit;
     padding: 0.35rem 0.6rem;
     font-family: inherit;
     font-size: 0.95rem;
@@ -106,12 +118,23 @@
     padding: 0.35rem 0.6rem;
     font-size: 0.85rem;
     cursor: pointer;
-    background-color: #396cd8;
-    color: white;
+    background-color: var(--color-accent);
+    color: var(--color-accent-contrast);
   }
 
   button.danger {
-    background-color: #b3261e;
+    background-color: var(--color-danger);
+  }
+
+  .default-badge {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    padding: 0.2rem 0.5rem;
+    border-radius: 999px;
+    background-color: var(--color-box-accent-bg);
+    color: var(--color-box-accent-text);
   }
 
   .add-child {
@@ -122,17 +145,10 @@
 
   .add-child input {
     border-radius: 6px;
-    border: 1px solid rgba(0, 0, 0, 0.15);
+    border: 1px solid var(--color-shade-3);
+    background-color: var(--color-shade-2);
+    color: inherit;
     padding: 0.35rem 0.6rem;
     font-family: inherit;
-  }
-
-  @media (prefers-color-scheme: dark) {
-    .name,
-    .add-child input {
-      background-color: rgba(255, 255, 255, 0.06);
-      border-color: rgba(255, 255, 255, 0.15);
-      color: inherit;
-    }
   }
 </style>

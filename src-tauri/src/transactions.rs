@@ -96,6 +96,17 @@ pub fn delete_transaction(state: State<DbState>, id: String) -> Result<(), Strin
 }
 
 #[tauri::command]
+pub fn set_transaction_category(
+    state: State<DbState>,
+    id: String,
+    category_id: String,
+) -> Result<(), String> {
+    let id = TransactionId::parse(&id).map_err(|e| e.to_string())?;
+    let category_id = CategoryId::parse(&category_id).map_err(|e| e.to_string())?;
+    with_service(&state, |s| s.set_category(id, category_id))
+}
+
+#[tauri::command]
 pub fn delete_transactions_in_range(
     state: State<DbState>,
     start: String,

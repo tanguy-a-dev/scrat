@@ -1,6 +1,7 @@
 use scrat_application::account_service::{AccountService, AccountWithBalance, ApplicationError};
 use scrat_domain::account::{AccountId, AccountStatus};
 use scrat_domain::money::Currency;
+use scrat_domain::ports::AccountRepository;
 use scrat_infra_sqlite::{Connection, SqliteAccountRepository};
 use serde::Serialize;
 use tauri::State;
@@ -16,28 +17,31 @@ pub struct AccountDto {
     pub balance_minor_units: i64,
     pub currency: String,
     pub source_patterns: Vec<String>,
+    /// Whether this is the app-wide default account — used as the CSV
+    /// import destination when none is explicitly chosen. Changeable via
+    /// `set_default_account`.
+    pub is_default: bool,
 }
 
-impl From<AccountWithBalance> for AccountDto {
-    fn from(value: AccountWithBalance) -> Self {
-        let AccountWithBalance { account, balance } = value;
-        Self {
-            id: account.id().as_string(),
-            name: account.name().as_str().to_string(),
-            status: match account.status() {
-                AccountStatus::Active => "active",
-                AccountStatus::Archived => "archived",
-            }
-            .to_string(),
-            opening_balance_minor_units: account.opening_balance().minor_units(),
-            balance_minor_units: balance.minor_units(),
-            currency: balance.currency().code().to_string(),
-            source_patterns: account
-                .source_patterns()
-                .iter()
-                .map(|p| p.as_str().to_string())
-                .collect(),
+fn to_dto(value: AccountWithBalance, default_account_id: Option<AccountId>) -> AccountDto {
+    let AccountWithBalance { account, balance } = value;
+    AccountDto {
+        id: account.id().as_string(),
+        name: account.name().as_str().to_string(),
+        status: match account.status() {
+            AccountStatus::Active => "active",
+            AccountStatus::Archived => "archived",
         }
+        .to_string(),
+        opening_balance_minor_units: account.opening_balance().minor_units(),
+        balance_minor_units: balance.minor_units(),
+        currency: balance.currency().code().to_string(),
+        source_patterns: account
+            .source_patterns()
+            .iter()
+            .map(|p| p.as_str().to_string())
+            .collect(),
+        is_default: default_account_id == Some(account.id()),
     }
 }
 
@@ -69,10 +73,59 @@ fn with_service<T>(
     f(&service).map_err(|e| e.to_string())
 }
 
+/// Resolves the app-wide default account id: whatever's configured in
+/// settings, as long as it's still an active account — otherwise, if
+/// there's exactly one active account, treats it as an implicit default
+/// (persisting that so future reads are stable). Returns `None` when
+/// nothing can be resolved (no accounts yet, or several with nothing
+/// chosen) — callers that need a hard default (CSV import) must handle
+/// that case explicitly.
+pub(crate) fn resolve_default_account_id(conn: &Connection) -> Result<Option<AccountId>, String> {
+    let currency = app_currency(conn);
+    let repo = SqliteAccountRepository::new(conn, currency);
+    let accounts = repo.list_all().map_err(|e| e.to_string())?;
+
+    if let Some(id_str) =
+        scrat_infra_sqlite::get_default_account_id(conn).map_err(|e| e.to_string())?
+    {
+        if let Ok(id) = AccountId::parse(&id_str) {
+            if accounts
+                .iter()
+                .any(|a| a.id() == id && a.status() == AccountStatus::Active)
+            {
+                return Ok(Some(id));
+            }
+        }
+    }
+
+    let mut active = accounts
+        .iter()
+        .filter(|a| a.status() == AccountStatus::Active);
+    let (Some(only), None) = (active.next(), active.next()) else {
+        return Ok(None);
+    };
+    let id = only.id();
+    scrat_infra_sqlite::set_default_account_id(conn, &id.as_string()).map_err(|e| e.to_string())?;
+    Ok(Some(id))
+}
+
 #[tauri::command]
 pub fn list_accounts(state: State<DbState>) -> Result<Vec<AccountDto>, String> {
-    with_service(&state, |s| s.list_accounts_with_balance())
-        .map(|accounts| accounts.into_iter().map(AccountDto::from).collect())
+    let guard = state.0.lock().unwrap();
+    let conn = guard
+        .as_ref()
+        .ok_or_else(|| "database is locked".to_string())?;
+    let currency = app_currency(conn);
+    let repo = SqliteAccountRepository::new(conn, currency.clone());
+    let service = AccountService::new(&repo, currency);
+    let accounts = service
+        .list_accounts_with_balance()
+        .map_err(|e| e.to_string())?;
+    let default_account_id = resolve_default_account_id(conn)?;
+    Ok(accounts
+        .into_iter()
+        .map(|a| to_dto(a, default_account_id))
+        .collect())
 }
 
 #[tauri::command]
@@ -81,12 +134,41 @@ pub fn create_account(
     name: String,
     opening_balance_minor_units: i64,
 ) -> Result<AccountDto, String> {
-    with_service(&state, |s| {
-        let account = s.create_account(&name, opening_balance_minor_units)?;
-        let balance = account.opening_balance().clone();
-        Ok(AccountWithBalance { account, balance })
-    })
-    .map(AccountDto::from)
+    let guard = state.0.lock().unwrap();
+    let conn = guard
+        .as_ref()
+        .ok_or_else(|| "database is locked".to_string())?;
+    let currency = app_currency(conn);
+    let repo = SqliteAccountRepository::new(conn, currency.clone());
+    let service = AccountService::new(&repo, currency);
+    let account = service
+        .create_account(&name, opening_balance_minor_units)
+        .map_err(|e| e.to_string())?;
+    let balance = account.opening_balance().clone();
+    let default_account_id = resolve_default_account_id(conn)?;
+    Ok(to_dto(
+        AccountWithBalance { account, balance },
+        default_account_id,
+    ))
+}
+
+#[tauri::command]
+pub fn set_default_account(state: State<DbState>, id: String) -> Result<(), String> {
+    let id = parse_id(&id)?;
+    let guard = state.0.lock().unwrap();
+    let conn = guard
+        .as_ref()
+        .ok_or_else(|| "database is locked".to_string())?;
+    let currency = app_currency(conn);
+    let repo = SqliteAccountRepository::new(conn, currency);
+    let account = repo
+        .find_by_id(id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "account not found".to_string())?;
+    if account.status() != AccountStatus::Active {
+        return Err("only an active account can be set as default".to_string());
+    }
+    scrat_infra_sqlite::set_default_account_id(conn, &id.as_string()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

@@ -20,7 +20,7 @@ pub(crate) fn db_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("scrat.db"))
 }
 
-fn describe(err: DbError) -> String {
+pub(crate) fn describe(err: DbError) -> String {
     match err {
         DbError::InvalidPassphrase => "incorrect passphrase".to_string(),
         DbError::EmptyPassphrase => "passphrase cannot be empty".to_string(),

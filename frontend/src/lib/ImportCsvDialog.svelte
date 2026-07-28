@@ -102,7 +102,7 @@
   });
 
   async function handleImport() {
-    if (!preview || !selectedAccountId) return;
+    if (!preview) return;
     error = "";
     importing = true;
     try {
@@ -122,7 +122,11 @@
           });
         }
       });
-      summary = await api.commitCsvImport(rows, selectedCategoryId || null, selectedAccountId);
+      summary = await api.commitCsvImport(
+        rows,
+        selectedCategoryId || null,
+        selectedAccountId || null,
+      );
       onImported();
     } catch (e) {
       error = String(e);
@@ -177,6 +181,7 @@
         the file itself, if it has one — each row with one is filed under a
         matching category (creating it if it doesn't exist yet). Rows without
         one use the fallback chosen below, or "Other" if you leave that unset.
+        Leave the account unset to use your default account.
       </p>
 
       <div class="targets">
@@ -187,9 +192,9 @@
           {/each}
         </select>
         <select bind:value={selectedAccountId}>
-          <option value="" disabled selected>Destination account…</option>
+          <option value="">Destination account (optional)…</option>
           {#each activeAccounts as a (a.id)}
-            <option value={a.id}>{a.name}</option>
+            <option value={a.id}>{a.name}{a.is_default ? " (default)" : ""}</option>
           {/each}
         </select>
       </div>
@@ -234,7 +239,7 @@
         <button type="button" onclick={onClose}>Cancel</button>
         <button
           type="button"
-          disabled={importing || includableCount === 0 || !selectedAccountId}
+          disabled={importing || includableCount === 0}
           onclick={handleImport}
         >
           Import {includableCount} transaction{includableCount === 1 ? "" : "s"}
@@ -256,7 +261,7 @@
   }
 
   .dialog {
-    background: var(--dialog-bg, #f6f6f6);
+    background: var(--color-shade-2);
     color: inherit;
     border-radius: 12px;
     padding: 1.5rem;
@@ -273,7 +278,7 @@
   }
 
   .error {
-    color: #d33;
+    color: var(--color-danger);
   }
 
   .hint {
@@ -293,7 +298,9 @@
   select,
   input[type="file"] {
     border-radius: 6px;
-    border: 1px solid rgba(0, 0, 0, 0.15);
+    border: 1px solid var(--color-shade-3);
+    background-color: var(--color-shade-1);
+    color: inherit;
     padding: 0.4rem 0.6rem;
     font-family: inherit;
   }
@@ -304,14 +311,14 @@
     align-items: center;
     gap: 0.5rem;
     padding: 1.25rem;
-    border: 2px dashed rgba(0, 0, 0, 0.2);
+    border: 2px dashed var(--color-shade-4);
     border-radius: 10px;
     transition: border-color 0.15s, background-color 0.15s;
   }
 
   .dropzone.drag-over {
-    border-color: #396cd8;
-    background-color: rgba(57, 108, 216, 0.08);
+    border-color: var(--color-accent);
+    background-color: color-mix(in srgb, var(--color-accent) 15%, transparent);
   }
 
   .dropzone-hint {
@@ -323,7 +330,7 @@
   .rows {
     max-height: 20rem;
     overflow-y: auto;
-    border: 1px solid rgba(0, 0, 0, 0.1);
+    border: 1px solid var(--color-shade-3);
     border-radius: 8px;
   }
 
@@ -349,7 +356,7 @@
   }
 
   tbody tr:not(:last-child) {
-    border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+    border-bottom: 1px solid var(--color-shade-3);
   }
 
   .actions {
@@ -363,43 +370,13 @@
     border: none;
     padding: 0.5rem 1rem;
     cursor: pointer;
-    background-color: #396cd8;
-    color: white;
+    background-color: var(--color-accent);
+    color: var(--color-accent-contrast);
     font-size: 0.9rem;
   }
 
   button:disabled {
     opacity: 0.5;
     cursor: default;
-  }
-
-  @media (prefers-color-scheme: dark) {
-    .dialog {
-      background: #2f2f2f;
-    }
-
-    select,
-    input[type="file"] {
-      background-color: rgba(255, 255, 255, 0.06);
-      border-color: rgba(255, 255, 255, 0.15);
-      color: inherit;
-    }
-
-    .rows {
-      border-color: rgba(255, 255, 255, 0.1);
-    }
-
-    tbody tr:not(:last-child) {
-      border-bottom-color: rgba(255, 255, 255, 0.08);
-    }
-
-    .dropzone {
-      border-color: rgba(255, 255, 255, 0.2);
-    }
-
-    .dropzone.drag-over {
-      border-color: #6f9bf0;
-      background-color: rgba(111, 155, 240, 0.12);
-    }
   }
 </style>

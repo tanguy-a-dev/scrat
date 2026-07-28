@@ -8,10 +8,6 @@ use scrat_domain::ports::{
 use scrat_domain::transaction::{SourceText, Transaction, TransactionError, TransactionId};
 use thiserror::Error;
 
-/// The category new transactions fall back to when none is explicitly
-/// chosen — e.g. a CSV import left without a "category for all rows".
-pub const DEFAULT_CATEGORY_NAME: &str = "Other";
-
 #[derive(Debug, Error)]
 pub enum ApplicationError {
     #[error(transparent)]
@@ -104,6 +100,20 @@ impl<'a> TransactionService<'a> {
         Ok(())
     }
 
+    /// Recategorizes an existing transaction, e.g. after the user notices it
+    /// was filed under the wrong category.
+    pub fn set_category(
+        &self,
+        id: TransactionId,
+        category_id: CategoryId,
+    ) -> Result<(), ApplicationError> {
+        self.categories
+            .find_by_id(category_id)?
+            .ok_or(ApplicationError::CategoryNotFound)?;
+        self.transactions.update_category(id, category_id)?;
+        Ok(())
+    }
+
     /// Bulk-clears every transaction dated within `[start, end]` — e.g. to
     /// discard leftover test data imported under an old date range. Returns
     /// how many were removed.
@@ -174,17 +184,14 @@ impl<'a> TransactionService<'a> {
             .map(|a| a.id()))
     }
 
-    /// Finds the existing default ("Other") category, creating it if this
-    /// is the first time anything has needed it.
-    pub fn get_or_create_default_category(&self) -> Result<CategoryId, ApplicationError> {
-        self.get_or_create_category_by_name(DEFAULT_CATEGORY_NAME)
-    }
-
     /// Finds an existing top-level or subcategory matching `name`
     /// (case-insensitive), or creates a new top-level category for it —
     /// used to honor a CSV's own Category column during import rather than
     /// forcing every row into one chosen category.
-    pub fn get_or_create_category_by_name(&self, name: &str) -> Result<CategoryId, ApplicationError> {
+    pub fn get_or_create_category_by_name(
+        &self,
+        name: &str,
+    ) -> Result<CategoryId, ApplicationError> {
         let trimmed = name.trim();
         if let Some(existing) = self
             .categories
@@ -360,7 +367,32 @@ mod tests {
             self.transactions.lock().unwrap().retain(|t| t.id() != id);
             Ok(())
         }
-        fn delete_in_range(&self, start: NaiveDate, end: NaiveDate) -> Result<u64, RepositoryError> {
+        fn update_category(
+            &self,
+            id: TransactionId,
+            category_id: CategoryId,
+        ) -> Result<(), RepositoryError> {
+            let mut transactions = self.transactions.lock().unwrap();
+            if let Some(pos) = transactions.iter().position(|t| t.id() == id) {
+                let existing = &transactions[pos];
+                let updated = Transaction::new(
+                    existing.id(),
+                    existing.date(),
+                    existing.amount().clone(),
+                    existing.source().clone(),
+                    category_id,
+                    existing.account_id(),
+                )
+                .expect("recategorizing preserves validity");
+                transactions[pos] = updated;
+            }
+            Ok(())
+        }
+        fn delete_in_range(
+            &self,
+            start: NaiveDate,
+            end: NaiveDate,
+        ) -> Result<u64, RepositoryError> {
             let mut transactions = self.transactions.lock().unwrap();
             let before = transactions.len();
             transactions.retain(|t| !(t.date() >= start && t.date() <= end));
@@ -482,6 +514,65 @@ mod tests {
         );
 
         assert!(matches!(result, Err(ApplicationError::AccountNotFound)));
+    }
+
+    #[test]
+    fn set_category_updates_transaction_to_new_known_category() {
+        let f = fixture();
+        let service = TransactionService::new(
+            &f.transactions,
+            &f.accounts,
+            &f.categories,
+            Currency::new("USD").unwrap(),
+        );
+        let transaction = service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                -1_200,
+                "Whole Foods",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+        let dining = Category::new(
+            CategoryId::new(),
+            CategoryName::new("Dining").unwrap(),
+            None,
+        )
+        .unwrap();
+        f.categories.insert(&dining).unwrap();
+
+        service.set_category(transaction.id(), dining.id()).unwrap();
+
+        let stored = service
+            .list_in_range(NaiveDate::MIN, NaiveDate::MAX)
+            .unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].category_id(), dining.id());
+    }
+
+    #[test]
+    fn set_category_rejects_unknown_category() {
+        let f = fixture();
+        let service = TransactionService::new(
+            &f.transactions,
+            &f.accounts,
+            &f.categories,
+            Currency::new("USD").unwrap(),
+        );
+        let transaction = service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                -1_200,
+                "Whole Foods",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+
+        let result = service.set_category(transaction.id(), CategoryId::new());
+
+        assert!(matches!(result, Err(ApplicationError::CategoryNotFound)));
     }
 
     #[test]
@@ -697,45 +788,6 @@ mod tests {
 
         assert_eq!(id, f.category_id);
         assert_eq!(f.categories.categories.lock().unwrap().len(), 1); // no duplicate created
-    }
-
-    #[test]
-    fn get_or_create_default_category_creates_it_when_missing() {
-        let f = fixture();
-        let service = TransactionService::new(
-            &f.transactions,
-            &f.accounts,
-            &f.categories,
-            Currency::new("USD").unwrap(),
-        );
-
-        let id = service.get_or_create_default_category().unwrap();
-
-        let stored = f.categories.find_by_id(id).unwrap().unwrap();
-        assert_eq!(stored.name().as_str(), DEFAULT_CATEGORY_NAME);
-    }
-
-    #[test]
-    fn get_or_create_default_category_reuses_existing_one() {
-        let f = fixture();
-        let existing = Category::new(
-            CategoryId::new(),
-            CategoryName::new(DEFAULT_CATEGORY_NAME).unwrap(),
-            None,
-        )
-        .unwrap();
-        f.categories.insert(&existing).unwrap();
-        let service = TransactionService::new(
-            &f.transactions,
-            &f.accounts,
-            &f.categories,
-            Currency::new("USD").unwrap(),
-        );
-
-        let id = service.get_or_create_default_category().unwrap();
-
-        assert_eq!(id, existing.id());
-        assert_eq!(f.categories.categories.lock().unwrap().len(), 2); // "Groceries" + "Other", not a duplicate
     }
 
     #[test]

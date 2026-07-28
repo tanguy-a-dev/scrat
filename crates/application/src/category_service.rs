@@ -1,4 +1,6 @@
-use scrat_domain::category::{has_children, Category, CategoryError, CategoryId, CategoryName};
+use scrat_domain::category::{
+    has_children, Category, CategoryError, CategoryId, CategoryName, DEFAULT_CATEGORY_NAME,
+};
 use scrat_domain::ports::{CategoryRepository, RepositoryError};
 use thiserror::Error;
 
@@ -108,6 +110,21 @@ impl<'a> CategoryService<'a> {
         Ok(self.repo.list_all()?)
     }
 
+    /// Finds the category named "Other" (case-insensitive), creating it if
+    /// this is the first time anything has needed a fallback default —
+    /// used to bootstrap the app-wide default category setting the first
+    /// time it's read, and by CSV import as its own per-row fallback.
+    pub fn get_or_create_default_category(&self) -> Result<Category, ApplicationError> {
+        if let Some(existing) = self.repo.list_all()?.into_iter().find(|c| {
+            c.name()
+                .as_str()
+                .eq_ignore_ascii_case(DEFAULT_CATEGORY_NAME)
+        }) {
+            return Ok(existing);
+        }
+        self.create_category(DEFAULT_CATEGORY_NAME, None)
+    }
+
     fn get(&self, id: CategoryId) -> Result<Category, ApplicationError> {
         self.repo
             .find_by_id(id)?
@@ -193,6 +210,28 @@ mod tests {
                 .get(&id)
                 .unwrap_or(&0))
         }
+    }
+
+    #[test]
+    fn get_or_create_default_category_creates_it_when_missing() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+
+        let category = service.get_or_create_default_category().unwrap();
+
+        assert_eq!(category.name().as_str(), DEFAULT_CATEGORY_NAME);
+    }
+
+    #[test]
+    fn get_or_create_default_category_reuses_existing_one_case_insensitively() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+        let existing = service.create_category("other", None).unwrap();
+
+        let category = service.get_or_create_default_category().unwrap();
+
+        assert_eq!(category.id(), existing.id());
+        assert_eq!(repo.categories.lock().unwrap().len(), 1);
     }
 
     #[test]

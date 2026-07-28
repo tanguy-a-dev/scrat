@@ -26,14 +26,17 @@ pub fn run() {
             accounts::archive_account,
             accounts::activate_account,
             accounts::delete_account,
+            accounts::set_default_account,
             categories::list_categories,
             categories::create_category,
             categories::rename_category,
             categories::move_category,
             categories::delete_category,
+            categories::set_default_category,
             transactions::list_transactions,
             transactions::create_transaction,
             transactions::delete_transaction,
+            transactions::set_transaction_category,
             transactions::delete_transactions_in_range,
             transactions::suggest_account_for_source,
             transactions::suggest_category_for_source,
@@ -42,6 +45,7 @@ pub fn run() {
             settings::get_currency,
             settings::set_currency,
             settings::export_database,
+            settings::import_database,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

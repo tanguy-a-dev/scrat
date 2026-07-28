@@ -48,8 +48,8 @@
     display: flex;
     flex-direction: column;
     gap: 1.5rem;
-    background-color: rgba(0, 0, 0, 0.03);
-    border-right: 1px solid rgba(0, 0, 0, 0.08);
+    background-color: var(--color-shade-2);
+    border-right: 1px solid var(--color-shade-3);
   }
 
   .brand {
@@ -86,29 +86,18 @@
 
   a:hover {
     opacity: 1;
-    background-color: rgba(0, 0, 0, 0.05);
+    background-color: var(--color-shade-3);
   }
 
   a.active {
     opacity: 1;
-    background-color: #396cd8;
-    color: white;
+    background-color: var(--color-accent);
+    color: var(--color-accent-contrast);
   }
 
   main {
     flex: 1;
     padding: 2rem;
     overflow-y: auto;
-  }
-
-  @media (prefers-color-scheme: dark) {
-    nav {
-      background-color: rgba(255, 255, 255, 0.04);
-      border-right-color: rgba(255, 255, 255, 0.08);
-    }
-
-    a:hover {
-      background-color: rgba(255, 255, 255, 0.08);
-    }
   }
 </style>

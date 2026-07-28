@@ -110,6 +110,20 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
         Ok(())
     }
 
+    fn update_category(
+        &self,
+        id: TransactionId,
+        category_id: CategoryId,
+    ) -> Result<(), RepositoryError> {
+        self.conn
+            .execute(
+                "UPDATE transactions SET category_id = ?1 WHERE id = ?2",
+                params![category_id.as_string(), id.as_string()],
+            )
+            .map_err(sql_err)?;
+        Ok(())
+    }
+
     fn delete_in_range(&self, start: NaiveDate, end: NaiveDate) -> Result<u64, RepositoryError> {
         let deleted = self
             .conn
@@ -288,6 +302,44 @@ mod tests {
     }
 
     #[test]
+    fn update_category_changes_the_stored_row() {
+        let conn = test_conn();
+        let (account_id, category_id) = seed_account_and_category(&conn);
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        let transaction = Transaction::new(
+            TransactionId::new(),
+            NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+            Money::from_minor_units(-1_200, usd()),
+            SourceText::new("Whole Foods").unwrap(),
+            category_id,
+            account_id,
+        )
+        .unwrap();
+        repo.insert(&transaction).unwrap();
+
+        let category_repo = crate::SqliteCategoryRepository::new(&conn);
+        let other_category = Category::new(
+            CategoryId::new(),
+            CategoryName::new("Dining").unwrap(),
+            None,
+        )
+        .unwrap();
+        category_repo.insert(&other_category).unwrap();
+
+        repo.update_category(transaction.id(), other_category.id())
+            .unwrap();
+
+        let results = repo
+            .list_in_range(
+                NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].category_id(), other_category.id());
+    }
+
+    #[test]
     fn delete_in_range_removes_only_matching_rows_and_returns_count() {
         let conn = test_conn();
         let (account_id, category_id) = seed_account_and_category(&conn);
@@ -303,12 +355,21 @@ mod tests {
             )
             .unwrap()
         };
-        repo.insert(&make(NaiveDate::from_ymd_opt(2023, 4, 4).unwrap(), "In range 1"))
-            .unwrap();
-        repo.insert(&make(NaiveDate::from_ymd_opt(2023, 4, 5).unwrap(), "In range 2"))
-            .unwrap();
-        repo.insert(&make(NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(), "Out of range"))
-            .unwrap();
+        repo.insert(&make(
+            NaiveDate::from_ymd_opt(2023, 4, 4).unwrap(),
+            "In range 1",
+        ))
+        .unwrap();
+        repo.insert(&make(
+            NaiveDate::from_ymd_opt(2023, 4, 5).unwrap(),
+            "In range 2",
+        ))
+        .unwrap();
+        repo.insert(&make(
+            NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+            "Out of range",
+        ))
+        .unwrap();
 
         let deleted = repo
             .delete_in_range(

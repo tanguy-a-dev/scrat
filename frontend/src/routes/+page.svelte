@@ -147,16 +147,21 @@
   input,
   button {
     border-radius: 8px;
-    border: 1px solid #ccc;
+    border: 1px solid var(--color-shade-3);
     padding: 0.6em 1em;
     font-size: 1em;
     font-family: inherit;
   }
 
+  input {
+    background-color: var(--color-shade-2);
+    color: inherit;
+  }
+
   button {
     cursor: pointer;
-    background-color: #396cd8;
-    color: white;
+    background-color: var(--color-accent);
+    color: var(--color-accent-contrast);
     border: none;
   }
 
@@ -166,15 +171,7 @@
   }
 
   .error {
-    color: #d33;
+    color: var(--color-danger);
     margin: 0;
-  }
-
-  @media (prefers-color-scheme: dark) {
-    input {
-      background-color: #1f1f1f98;
-      border-color: #444;
-      color: #f6f6f6;
-    }
   }
 </style>

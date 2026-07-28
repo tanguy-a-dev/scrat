@@ -55,6 +55,10 @@
     withErrorHandling(() => api.createCategory(name, parentId));
   }
 
+  function handleSetDefault(id: string) {
+    withErrorHandling(() => api.setDefaultCategory(id));
+  }
+
   async function handleDelete(category: CategoryDto) {
     error = "";
     try {
@@ -105,6 +109,7 @@
         onRename={handleRename}
         onDelete={handleDelete}
         onAddChild={handleAddChild}
+        onSetDefault={handleSetDefault}
       />
     {/each}
   </ul>
@@ -145,7 +150,7 @@
   }
 
   .error {
-    color: #d33;
+    color: var(--color-danger);
   }
 
   .empty {
@@ -161,17 +166,22 @@
   input,
   button {
     border-radius: 6px;
-    border: 1px solid rgba(0, 0, 0, 0.15);
+    border: 1px solid var(--color-shade-3);
     padding: 0.45rem 0.7rem;
     font-size: 0.95rem;
     font-family: inherit;
   }
 
+  input {
+    background-color: var(--color-shade-2);
+    color: inherit;
+  }
+
   .create-form button,
   .reassign-panel button {
     cursor: pointer;
-    background-color: #396cd8;
-    color: white;
+    background-color: var(--color-accent);
+    color: var(--color-accent-contrast);
     border: none;
   }
 
@@ -184,7 +194,7 @@
     margin-top: 1.5rem;
     padding: 1rem;
     border-radius: 10px;
-    background-color: rgba(179, 38, 30, 0.1);
+    background-color: color-mix(in srgb, var(--color-danger) 15%, transparent);
     display: flex;
     flex-direction: column;
     gap: 0.6rem;
@@ -193,22 +203,10 @@
 
   .reassign-panel select {
     border-radius: 6px;
-    border: 1px solid rgba(0, 0, 0, 0.15);
+    border: 1px solid var(--color-shade-3);
+    background-color: var(--color-shade-2);
+    color: inherit;
     padding: 0.4rem 0.6rem;
     font-family: inherit;
-  }
-
-  @media (prefers-color-scheme: dark) {
-    input {
-      background-color: rgba(255, 255, 255, 0.06);
-      border-color: rgba(255, 255, 255, 0.15);
-      color: inherit;
-    }
-
-    .reassign-panel select {
-      background-color: rgba(255, 255, 255, 0.06);
-      border-color: rgba(255, 255, 255, 0.15);
-      color: inherit;
-    }
   }
 </style>

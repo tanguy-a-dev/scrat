@@ -10,12 +10,14 @@ export interface AccountDto {
   balance_minor_units: number;
   currency: string;
   source_patterns: string[];
+  is_default: boolean;
 }
 
 export interface CategoryDto {
   id: string;
   name: string;
   parent_id: string | null;
+  is_default: boolean;
 }
 
 export interface TransactionDto {
@@ -71,6 +73,7 @@ export const api = {
   archiveAccount: (id: string) => invoke<void>("archive_account", { id }),
   activateAccount: (id: string) => invoke<void>("activate_account", { id }),
   deleteAccount: (id: string) => invoke<void>("delete_account", { id }),
+  setDefaultAccount: (id: string) => invoke<void>("set_default_account", { id }),
 
   listCategories: () => invoke<CategoryDto[]>("list_categories"),
   createCategory: (name: string, parentId: string | null) =>
@@ -81,6 +84,8 @@ export const api = {
     invoke<void>("move_category", { id, parentId }),
   deleteCategory: (id: string, reassignTo: string | null) =>
     invoke<void>("delete_category", { id, reassignTo }),
+  setDefaultCategory: (id: string) =>
+    invoke<void>("set_default_category", { id }),
 
   listTransactions: (start: string, end: string) =>
     invoke<TransactionDto[]>("list_transactions", { start, end }),
@@ -99,6 +104,8 @@ export const api = {
       accountId,
     }),
   deleteTransaction: (id: string) => invoke<void>("delete_transaction", { id }),
+  setTransactionCategory: (id: string, categoryId: string) =>
+    invoke<void>("set_transaction_category", { id, categoryId }),
   deleteTransactionsInRange: (start: string, end: string) =>
     invoke<number>("delete_transactions_in_range", { start, end }),
   suggestAccountForSource: (source: string) =>
@@ -116,7 +123,7 @@ export const api = {
       category: string | null;
     }[],
     categoryId: string | null,
-    accountId: string,
+    accountId: string | null,
   ) =>
     invoke<ImportSummaryDto>("commit_csv_import", {
       rows,
@@ -128,6 +135,8 @@ export const api = {
   setCurrency: (code: string) => invoke<void>("set_currency", { code }),
   exportDatabase: (destination: string) =>
     invoke<void>("export_database", { destination }),
+  importDatabase: (source: string, passphrase: string) =>
+    invoke<void>("import_database", { source, passphrase }),
 };
 
 /** Formats integer minor units (e.g. cents) as "12.34". */
@@ -155,7 +164,8 @@ export function buildCategoryOptions(
   const result: { id: string; label: string }[] = [];
   function walk(parentId: string | null, depth: number) {
     for (const c of byParent.get(parentId) ?? []) {
-      result.push({ id: c.id, label: `${"— ".repeat(depth)}${c.name}` });
+      const suffix = c.is_default ? " (default)" : "";
+      result.push({ id: c.id, label: `${"— ".repeat(depth)}${c.name}${suffix}` });
       walk(c.id, depth + 1);
     }
   }

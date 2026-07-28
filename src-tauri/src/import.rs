@@ -84,12 +84,14 @@ pub fn commit_csv_import(
     state: State<DbState>,
     rows: Vec<ImportCommitRowDto>,
     category_id: Option<String>,
-    account_id: String,
+    account_id: Option<String>,
 ) -> Result<ImportSummaryDto, String> {
     let category_id = category_id
         .map(|id| CategoryId::parse(&id).map_err(|e| e.to_string()))
         .transpose()?;
-    let account_id = AccountId::parse(&account_id).map_err(|e| e.to_string())?;
+    let account_id = account_id
+        .map(|id| AccountId::parse(&id).map_err(|e| e.to_string()))
+        .transpose()?;
     let parsed_rows = rows
         .into_iter()
         .map(|row| {
@@ -102,11 +104,25 @@ pub fn commit_csv_import(
         })
         .collect::<Result<Vec<_>, String>>()?;
 
-    with_service(&state, |s| {
+    let (default_category_id, account_id) = {
+        let guard = state.0.lock().unwrap();
+        let conn = guard
+            .as_ref()
+            .ok_or_else(|| "database is locked".to_string())?;
         let default_category_id = match category_id {
             Some(id) => id,
-            None => s.get_or_create_default_category()?,
+            None => crate::categories::resolve_default_category_id(conn)?,
         };
+        let account_id = match account_id {
+            Some(id) => id,
+            None => crate::accounts::resolve_default_account_id(conn)?.ok_or_else(|| {
+                "no destination account chosen, and no default account is set — pick one, or set a default in Accounts".to_string()
+            })?,
+        };
+        (default_category_id, account_id)
+    };
+
+    with_service(&state, |s| {
         let import_rows = parsed_rows
             .into_iter()
             .map(|row| {
@@ -121,7 +137,8 @@ pub fn commit_csv_import(
                     category_id,
                 })
             })
-            .collect::<Result<Vec<_>, scrat_application::transaction_service::ApplicationError>>()?;
+            .collect::<Result<Vec<_>, scrat_application::transaction_service::ApplicationError>>(
+            )?;
         s.import_transactions(&import_rows, account_id)
     })
     .map(|outcome| ImportSummaryDto {

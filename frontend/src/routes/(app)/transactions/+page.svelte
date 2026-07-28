@@ -131,6 +131,17 @@
     }
   }
 
+  async function handleCategoryChange(t: TransactionDto, categoryId: string) {
+    if (categoryId === t.category_id) return;
+    error = "";
+    try {
+      await api.setTransactionCategory(t.id, categoryId);
+      await load();
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
   async function handleDelete(id: string) {
     error = "";
     try {
@@ -224,7 +235,18 @@
             <td>{t.date}</td>
             <td>{formatMinorUnits(t.amount_minor_units)} {t.currency}</td>
             <td>{t.source}</td>
-            <td>{categoryName(t.category_id)}</td>
+            <td>
+              <select
+                class="category-select"
+                value={t.category_id}
+                onchange={(e) =>
+                  handleCategoryChange(t, e.currentTarget.value)}
+              >
+                {#each categoryOptions as c (c.id)}
+                  <option value={c.id}>{c.label}</option>
+                {/each}
+              </select>
+            </td>
             <td>{accountName(t.account_id)}</td>
             <td>
               <button
@@ -373,7 +395,7 @@
   }
 
   .error {
-    color: #d33;
+    color: var(--color-danger);
   }
 
   .empty {
@@ -388,8 +410,8 @@
   }
 
   .import-button {
-    background-color: #396cd8;
-    color: white;
+    background-color: var(--color-accent);
+    color: var(--color-accent-contrast);
     border: none;
     cursor: pointer;
   }
@@ -402,7 +424,7 @@
     margin-bottom: 1.5rem;
     padding: 1rem;
     border-radius: 10px;
-    background-color: rgba(179, 38, 30, 0.1);
+    background-color: color-mix(in srgb, var(--color-danger) 15%, transparent);
     display: flex;
     flex-direction: column;
     gap: 0.6rem;
@@ -415,13 +437,13 @@
   }
 
   .range-buttons button {
-    background-color: rgba(0, 0, 0, 0.06);
+    background-color: var(--color-shade-3);
     color: inherit;
   }
 
   .range-buttons button.active {
-    background-color: #396cd8;
-    color: white;
+    background-color: var(--color-accent);
+    color: var(--color-accent-contrast);
   }
 
   .create-form {
@@ -435,10 +457,16 @@
   select,
   button {
     border-radius: 6px;
-    border: 1px solid rgba(0, 0, 0, 0.15);
+    border: 1px solid var(--color-shade-3);
     padding: 0.45rem 0.7rem;
     font-size: 0.9rem;
     font-family: inherit;
+  }
+
+  input,
+  select {
+    background-color: var(--color-shade-2);
+    color: inherit;
   }
 
   .create-form button,
@@ -448,8 +476,8 @@
   }
 
   .create-form button {
-    background-color: #396cd8;
-    color: white;
+    background-color: var(--color-accent);
+    color: var(--color-accent-contrast);
   }
 
   .lists {
@@ -471,7 +499,7 @@
   th {
     text-align: left;
     padding: 0.4rem 0.5rem;
-    border-bottom: 1px solid rgba(0, 0, 0, 0.15);
+    border-bottom: 1px solid var(--color-shade-3);
   }
 
   th button {
@@ -486,36 +514,26 @@
 
   td {
     padding: 0.4rem 0.5rem;
-    border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+    border-bottom: 1px solid var(--color-shade-2);
+  }
+
+  .category-select {
+    border-radius: 4px;
+    border: 1px solid var(--color-shade-3);
+    background-color: var(--color-shade-2);
+    color: inherit;
+    padding: 0.2rem 0.4rem;
+    font-size: 0.85rem;
+    font-family: inherit;
+    max-width: 11rem;
   }
 
   button.danger {
-    background-color: #b3261e;
-    color: white;
+    background-color: var(--color-danger);
+    color: var(--color-accent-contrast);
     border: none;
     padding: 0.3rem 0.55rem;
     font-size: 0.8rem;
-  }
-
-  @media (prefers-color-scheme: dark) {
-    input,
-    select {
-      background-color: rgba(255, 255, 255, 0.06);
-      border-color: rgba(255, 255, 255, 0.15);
-      color: inherit;
-    }
-
-    .range-buttons button:not(.active) {
-      background-color: rgba(255, 255, 255, 0.08);
-    }
-
-    th {
-      border-bottom-color: rgba(255, 255, 255, 0.15);
-    }
-
-    td {
-      border-bottom-color: rgba(255, 255, 255, 0.08);
-    }
   }
 
   @media (max-width: 900px) {

@@ -90,6 +90,10 @@
     if (!confirm(`Delete "${account.name}"? This cannot be undone.`)) return;
     withErrorHandling(() => api.deleteAccount(account.id));
   }
+
+  function handleSetDefault(account: AccountDto) {
+    withErrorHandling(() => api.setDefaultAccount(account.id));
+  }
 </script>
 
 <h1>Accounts</h1>
@@ -136,6 +140,13 @@
             {account.currency}</span
           >
           <span class="status">{account.status}</span>
+          {#if account.is_default}
+            <span class="default-badge">default</span>
+          {:else if account.status === "active"}
+            <button type="button" onclick={() => handleSetDefault(account)}>
+              Set as default
+            </button>
+          {/if}
           <button
             type="button"
             onclick={() => handleToggleArchive(account)}
@@ -182,7 +193,7 @@
   }
 
   .error {
-    color: #d33;
+    color: var(--color-danger);
   }
 
   .empty {
@@ -198,21 +209,37 @@
   input,
   button {
     border-radius: 6px;
-    border: 1px solid rgba(0, 0, 0, 0.15);
+    border: 1px solid var(--color-shade-3);
     padding: 0.45rem 0.7rem;
     font-size: 0.95rem;
     font-family: inherit;
   }
 
+  input {
+    background-color: var(--color-shade-2);
+    color: inherit;
+  }
+
   button {
     cursor: pointer;
-    background-color: #396cd8;
-    color: white;
+    background-color: var(--color-accent);
+    color: var(--color-accent-contrast);
     border: none;
   }
 
   button.danger {
-    background-color: #b3261e;
+    background-color: var(--color-danger);
+  }
+
+  .default-badge {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    padding: 0.2rem 0.5rem;
+    border-radius: 999px;
+    background-color: var(--color-box-accent-bg);
+    color: var(--color-box-accent-text);
   }
 
   .accounts {
@@ -227,7 +254,7 @@
   .account {
     padding: 1rem;
     border-radius: 10px;
-    background-color: rgba(0, 0, 0, 0.03);
+    background-color: var(--color-shade-2);
   }
 
   .account.archived {
@@ -273,7 +300,7 @@
     display: inline-flex;
     align-items: center;
     gap: 0.3rem;
-    background-color: rgba(0, 0, 0, 0.08);
+    background-color: var(--color-shade-3);
     border-radius: 999px;
     padding: 0.15rem 0.3rem 0.15rem 0.7rem;
     font-size: 0.85rem;
@@ -291,25 +318,5 @@
   .pattern-input {
     flex: 1;
     min-width: 10rem;
-  }
-
-  @media (prefers-color-scheme: dark) {
-    input,
-    button:not(.danger) {
-      border-color: rgba(255, 255, 255, 0.15);
-    }
-
-    input {
-      background-color: rgba(255, 255, 255, 0.06);
-      color: inherit;
-    }
-
-    .account {
-      background-color: rgba(255, 255, 255, 0.05);
-    }
-
-    .chip {
-      background-color: rgba(255, 255, 255, 0.12);
-    }
   }
 </style>
