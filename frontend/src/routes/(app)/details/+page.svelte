@@ -35,7 +35,31 @@
   let activeTab = $state<"expenses" | "income">("expenses");
   let excludedRootIds = $state<Set<string>>(new Set());
 
+  // Animates the donut/bars filling up from empty whenever the breakdown
+  // they're drawn from changes (initial load, range/tab switch, category
+  // filter toggle) rather than snapping straight to the final shape.
+  let fillProgress = $state(0);
+  let fillFrame: number | undefined;
+
+  function animateFill() {
+    if (fillFrame !== undefined) cancelAnimationFrame(fillFrame);
+    const duration = 700;
+    const start = performance.now();
+    fillProgress = 0;
+    function tick(now: number) {
+      const t = Math.min((now - start) / duration, 1);
+      fillProgress = 1 - Math.pow(1 - t, 3);
+      fillFrame = t < 1 ? requestAnimationFrame(tick) : undefined;
+    }
+    fillFrame = requestAnimationFrame(tick);
+  }
+
   onMount(load);
+  onMount(() => {
+    return () => {
+      if (fillFrame !== undefined) cancelAnimationFrame(fillFrame);
+    };
+  });
 
   async function load() {
     loading = true;
@@ -145,6 +169,26 @@
       };
     });
   });
+
+  // Scales each slice's arc length/offset and each bar's width by
+  // `fillProgress`, so the whole donut sweeps in from empty together rather
+  // than each slice animating independently out of sync with the others.
+  let animatedDonutSlices = $derived(
+    donutSlices.map((slice) => {
+      const animatedLength = (slice.percent / 100) * CIRCUMFERENCE * fillProgress;
+      return {
+        ...slice,
+        animatedDasharray: `${animatedLength} ${CIRCUMFERENCE - animatedLength}`,
+        animatedDashoffset: slice.dashoffset * fillProgress,
+        animatedPercent: slice.percent * fillProgress,
+      };
+    }),
+  );
+
+  $effect(() => {
+    breakdown;
+    if (!loading) animateFill();
+  });
 </script>
 
 <h1>Details</h1>
@@ -210,7 +254,7 @@
               stroke="var(--donut-track)"
               stroke-width="24"
             />
-            {#each donutSlices as slice (slice.categoryId)}
+            {#each animatedDonutSlices as slice (slice.categoryId)}
               <circle
                 cx="100"
                 cy="100"
@@ -218,8 +262,8 @@
                 fill="none"
                 stroke={slice.color}
                 stroke-width="24"
-                stroke-dasharray={slice.dasharray}
-                stroke-dashoffset={slice.dashoffset}
+                stroke-dasharray={slice.animatedDasharray}
+                stroke-dashoffset={slice.animatedDashoffset}
               />
             {/each}
           </g>
@@ -235,7 +279,7 @@
         <p class="empty">No {activeTab} in this range.</p>
       {:else}
         <ul class="breakdown">
-          {#each donutSlices as slice (slice.categoryId)}
+          {#each animatedDonutSlices as slice (slice.categoryId)}
             <li>
               <div class="row">
                 <span class="dot" style={`background-color:${slice.color}`}></span>
@@ -245,7 +289,7 @@
               <div class="bar-track">
                 <div
                   class="bar-fill"
-                  style={`width:${slice.percent}%;background-color:${slice.color}`}
+                  style={`width:${slice.animatedPercent}%;background-color:${slice.color}`}
                 ></div>
               </div>
             </li>

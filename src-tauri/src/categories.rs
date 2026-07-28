@@ -51,7 +51,7 @@ fn with_service<T>(
 
 /// Resolves the app-wide default category id: whatever's configured in
 /// settings, as long as it still exists — otherwise (nothing configured
-/// yet, or it was since deleted) falls back to the "Other" category,
+/// yet, or it was since deleted) falls back to the "Other Income" category,
 /// creating it if needed, and persists that as the new default so future
 /// reads are stable.
 pub(crate) fn resolve_default_category_id(conn: &Connection) -> Result<CategoryId, String> {

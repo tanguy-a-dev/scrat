@@ -68,3 +68,16 @@ h3 {
 .icon-button.danger:hover {
   background-color: color-mix(in srgb, var(--color-danger) 20%, transparent);
 }
+
+/* Painted by the CSS Custom Highlight API from FindInPage.svelte — these
+   ranges aren't real DOM elements, so they can't be scoped/styled from a
+   component's own <style> block. */
+::highlight(find-in-page-all) {
+  background-color: rgba(255, 213, 0, 0.55);
+  color: #1a1a1a;
+}
+
+::highlight(find-in-page-current) {
+  background-color: rgba(255, 140, 0, 0.9);
+  color: #1a1a1a;
+}

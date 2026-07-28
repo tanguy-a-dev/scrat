@@ -1,6 +1,7 @@
 <script lang="ts">
   import { page } from "$app/state";
   import type { Snippet } from "svelte";
+  import FindInPage from "$lib/FindInPage.svelte";
 
   let { children }: { children: Snippet } = $props();
 
@@ -34,6 +35,8 @@
     {@render children()}
   </main>
 </div>
+
+<FindInPage />
 
 <style>
   .shell {

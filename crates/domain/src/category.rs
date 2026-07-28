@@ -18,8 +18,10 @@ const MAX_NAME_LEN: usize = 100;
 /// The category new transactions fall back to when none is explicitly
 /// chosen (e.g. a CSV import left without a "category for all rows"). Also
 /// guaranteed to always exist wherever categories are listed, so it's never
-/// missing from a category picker.
-pub const DEFAULT_CATEGORY_NAME: &str = "Other";
+/// missing from a category picker. Matches the seeded "Other Income"
+/// top-level category (see `scrat_infra_sqlite::seed`) so the fallback
+/// reuses it instead of creating a separate duplicate.
+pub const DEFAULT_CATEGORY_NAME: &str = "Other Income";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CategoryId(Uuid);

@@ -110,8 +110,8 @@ impl<'a> CategoryService<'a> {
         Ok(self.repo.list_all()?)
     }
 
-    /// Finds the category named "Other" (case-insensitive), creating it if
-    /// this is the first time anything has needed a fallback default —
+    /// Finds the category named "Other Income" (case-insensitive), creating
+    /// it if this is the first time anything has needed a fallback default —
     /// used to bootstrap the app-wide default category setting the first
     /// time it's read, and by CSV import as its own per-row fallback.
     pub fn get_or_create_default_category(&self) -> Result<Category, ApplicationError> {
@@ -226,7 +226,7 @@ mod tests {
     fn get_or_create_default_category_reuses_existing_one_case_insensitively() {
         let repo = FakeCategoryRepository::default();
         let service = CategoryService::new(&repo);
-        let existing = service.create_category("other", None).unwrap();
+        let existing = service.create_category("other income", None).unwrap();
 
         let category = service.get_or_create_default_category().unwrap();
 
