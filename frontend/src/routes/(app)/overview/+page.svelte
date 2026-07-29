@@ -1,6 +1,13 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { scale } from "svelte/transition";
   import { api, formatCurrency, type AccountDto, type TransactionDto } from "$lib/api";
+
+  // Matches .bar.income / .dot.savings / etc in the stylesheet below — kept
+  // in sync by hand since the tooltip needs the same colors as swatch values.
+  const INCOME_COLOR = "#17b8c4";
+  const EXPENSE_COLOR = "var(--color-danger)";
+  const SAVINGS_COLOR = "var(--color-accent)";
 
   const MONTHS_SHOWN = 6;
   const MONTH_LABELS = [
@@ -130,12 +137,39 @@
 
   // Custom tooltip driven by pointer events instead of the native SVG
   // <title> (which has a built-in hover delay before it appears).
-  let tooltip = $state<{ x: number; y: number; text: string } | null>(null);
+  const TOOLTIP_MARGIN = 55;
+  const TOOLTIP_FLIP_THRESHOLD = 40;
 
-  function showTooltip(e: PointerEvent, text: string) {
+  let tooltip = $state<{
+    x: number;
+    y: number;
+    below: boolean;
+    month: string;
+    seriesLabel: string;
+    amount: string;
+    color: string;
+  } | null>(null);
+
+  function showTooltip(
+    e: PointerEvent,
+    month: string,
+    seriesLabel: string,
+    amount: string,
+    color: string,
+  ) {
     const wrap = (e.currentTarget as Element).closest(".chart-wrap") as HTMLElement;
     const rect = wrap.getBoundingClientRect();
-    tooltip = { x: e.clientX - rect.left, y: e.clientY - rect.top, text };
+    const rawX = e.clientX - rect.left;
+    const rawY = e.clientY - rect.top;
+    tooltip = {
+      x: Math.min(Math.max(rawX, TOOLTIP_MARGIN), rect.width - TOOLTIP_MARGIN),
+      y: rawY,
+      below: rawY < TOOLTIP_FLIP_THRESHOLD,
+      month,
+      seriesLabel,
+      amount,
+      color,
+    };
   }
 
   function hideTooltip() {
@@ -186,8 +220,8 @@
         <svg viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} class="monthly-chart">
           {#each monthlyTotals as month, i (month.key)}
             {@const groupX = i * groupWidth}
-            {@const incomeLabel = `${month.label} income: ${formatCurrency(month.income, currency)}`}
-            {@const expenseLabel = `${month.label} expenses: ${formatCurrency(month.expense, currency)}`}
+            {@const incomeText = formatCurrency(month.income, currency)}
+            {@const expenseText = formatCurrency(month.expense, currency)}
             <rect
               x={groupX + groupWidth / 2 - barWidth - 2}
               y={barY(month.income)}
@@ -196,9 +230,9 @@
               rx="2"
               class="bar income"
               role="img"
-              aria-label={incomeLabel}
-              onpointerenter={(e) => showTooltip(e, incomeLabel)}
-              onpointermove={(e) => showTooltip(e, incomeLabel)}
+              aria-label={`${month.label} income: ${incomeText}`}
+              onpointerenter={(e) => showTooltip(e, month.label, "Income", incomeText, INCOME_COLOR)}
+              onpointermove={(e) => showTooltip(e, month.label, "Income", incomeText, INCOME_COLOR)}
               onpointerleave={hideTooltip}
             />
             <rect
@@ -209,9 +243,9 @@
               rx="2"
               class="bar expense"
               role="img"
-              aria-label={expenseLabel}
-              onpointerenter={(e) => showTooltip(e, expenseLabel)}
-              onpointermove={(e) => showTooltip(e, expenseLabel)}
+              aria-label={`${month.label} expenses: ${expenseText}`}
+              onpointerenter={(e) => showTooltip(e, month.label, "Expenses", expenseText, EXPENSE_COLOR)}
+              onpointermove={(e) => showTooltip(e, month.label, "Expenses", expenseText, EXPENSE_COLOR)}
               onpointerleave={hideTooltip}
             />
             <text
@@ -224,16 +258,16 @@
 
           <polyline points={savingsLinePoints} class="savings-line" />
           {#each savingsPoints as p, i (monthlyTotals[i].key)}
-            {@const savingsLabel = `${monthlyTotals[i].label}: ${formatCurrency(p.value, currency)}`}
+            {@const savingsText = formatCurrency(p.value, currency)}
             <circle
               cx={p.x}
               cy={p.y}
               r="7"
               class="savings-hit"
               role="img"
-              aria-label={savingsLabel}
-              onpointerenter={(e) => showTooltip(e, savingsLabel)}
-              onpointermove={(e) => showTooltip(e, savingsLabel)}
+              aria-label={`${monthlyTotals[i].label} savings: ${savingsText}`}
+              onpointerenter={(e) => showTooltip(e, monthlyTotals[i].label, "Savings", savingsText, SAVINGS_COLOR)}
+              onpointermove={(e) => showTooltip(e, monthlyTotals[i].label, "Savings", savingsText, SAVINGS_COLOR)}
               onpointerleave={hideTooltip}
             />
             <circle cx={p.x} cy={p.y} r="3" class="savings-dot" />
@@ -241,8 +275,18 @@
         </svg>
 
         {#if tooltip}
-          <div class="chart-tooltip" style={`left:${tooltip.x}px; top:${tooltip.y}px;`}>
-            {tooltip.text}
+          <div
+            class="chart-tooltip"
+            class:below={tooltip.below}
+            style={`left:${tooltip.x}px; top:${tooltip.y}px;`}
+            transition:scale={{ duration: 90, start: 0.9 }}
+          >
+            <div class="tooltip-month">{tooltip.month}</div>
+            <div class="tooltip-row">
+              <span class="tooltip-dot" style={`background-color:${tooltip.color}`}></span>
+              <span class="tooltip-series">{tooltip.seriesLabel}</span>
+              <span class="tooltip-amount">{tooltip.amount}</span>
+            </div>
           </div>
         {/if}
       </div>
@@ -360,17 +404,48 @@
 
   .chart-tooltip {
     position: absolute;
-    transform: translate(-50%, -100%);
-    margin-top: -10px;
+    transform: translate(-50%, calc(-100% - 10px));
     background-color: var(--color-shade-1);
     color: var(--color-text);
     border: 1px solid var(--color-shade-3);
     border-radius: 6px;
-    padding: 0.3rem 0.55rem;
+    padding: 0.4rem 0.6rem;
     font-size: 0.75rem;
     white-space: nowrap;
     pointer-events: none;
     z-index: 10;
+  }
+
+  .chart-tooltip.below {
+    transform: translate(-50%, 10px);
+  }
+
+  .tooltip-month {
+    font-size: 0.7rem;
+    opacity: 0.7;
+    text-transform: uppercase;
+    margin-bottom: 0.2rem;
+  }
+
+  .tooltip-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  .tooltip-dot {
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .tooltip-series {
+    opacity: 0.85;
+  }
+
+  .tooltip-amount {
+    font-weight: 700;
   }
 
   .bar {
