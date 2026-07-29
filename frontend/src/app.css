@@ -22,10 +22,12 @@
   /* Icons: round, cyan circle, glyph cut out to show what's behind it */
   --color-icon-circle: #03fce3;
 
-  /* Semantic, retuned to sit next to the palette above */
-  --color-danger: #d1495c;
-  --color-danger-strong: #b23a4c;
-  --color-success: #2f9e6f;
+  /* Semantic, retuned to sit next to the palette above.
+     Danger uses a lighter teal than --color-box so it still reads against
+     chart cards, which are filled with --color-box itself. */
+  --color-danger: #5eb8a6;
+  --color-danger-strong: #3d8a7c;
+  --color-success: var(--color-accent);
 
   color: var(--color-text);
   background-color: var(--color-bg);

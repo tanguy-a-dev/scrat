@@ -56,7 +56,13 @@
    * with no transactions still shows up as an empty bar rather than a gap. */
   let monthlyTotals = $derived.by(() => {
     const now = new Date();
-    const months: { key: string; label: string; income: number; expense: number }[] = [];
+    const months: {
+      key: string;
+      label: string;
+      income: number;
+      expense: number;
+      savings: number;
+    }[] = [];
     for (let i = MONTHS_SHOWN - 1; i >= 0; i--) {
       const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
       months.push({
@@ -64,6 +70,7 @@
         label: MONTH_LABELS[d.getMonth()],
         income: 0,
         expense: 0,
+        savings: 0,
       });
     }
     const byKey = new Map(months.map((m) => [m.key, m]));
@@ -73,14 +80,9 @@
       if (t.amount_minor_units < 0) bucket.expense += -t.amount_minor_units;
       else bucket.income += t.amount_minor_units;
     }
+    for (const m of months) m.savings = m.income - m.expense;
     return months;
   });
-
-  /** Average monthly spending across the displayed window — the reference
-   * line plotted over the bars. */
-  let averageExpenseMinorUnits = $derived(
-    monthlyTotals.reduce((sum, m) => sum + m.expense, 0) / (monthlyTotals.length || 1),
-  );
 
   const CHART_WIDTH = 560;
   const CHART_HEIGHT = 220;
@@ -89,7 +91,7 @@
 
   let plotHeight = $derived(CHART_HEIGHT - PADDING_TOP - PADDING_BOTTOM);
   let maxValueMinorUnits = $derived(
-    Math.max(1, averageExpenseMinorUnits, ...monthlyTotals.flatMap((m) => [m.income, m.expense])),
+    Math.max(1, ...monthlyTotals.flatMap((m) => [m.income, m.expense])),
   );
   let groupWidth = $derived(CHART_WIDTH / (monthlyTotals.length || 1));
   let barWidth = $derived(groupWidth * 0.28);
@@ -102,7 +104,25 @@
     return CHART_HEIGHT - PADDING_BOTTOM - barHeight(valueMinorUnits);
   }
 
-  let averageLineY = $derived(CHART_HEIGHT - PADDING_BOTTOM - barHeight(averageExpenseMinorUnits));
+  /** Point for a signed value (savings can go negative). Uses the same
+   * baseline/scale as the bars, but clamped so the line never dips below the
+   * zero baseline visually — a negative month still reads as flat at zero,
+   * with the real (possibly negative) figure available on hover. */
+  function pointY(valueMinorUnits: number): number {
+    const baseline = CHART_HEIGHT - PADDING_BOTTOM;
+    const raw = baseline - (valueMinorUnits / maxValueMinorUnits) * plotHeight;
+    return Math.min(raw, baseline);
+  }
+
+  let savingsPoints = $derived(
+    monthlyTotals.map((m, i) => ({
+      x: i * groupWidth + groupWidth / 2,
+      y: pointY(m.savings),
+      value: m.savings,
+    })),
+  );
+
+  let savingsLinePoints = $derived(savingsPoints.map((p) => `${p.x},${p.y}`).join(" "));
 
   let hasAnyMonthlyActivity = $derived(
     monthlyTotals.some((m) => m.income > 0 || m.expense > 0),
@@ -141,12 +161,7 @@
       <div class="legend">
         <span class="legend-item"><span class="dot income"></span>Income</span>
         <span class="legend-item"><span class="dot expense"></span>Expenses</span>
-        <span class="legend-item"
-          ><span class="dot average"></span>Avg. spending: {formatCurrency(
-            averageExpenseMinorUnits,
-            currency,
-          )}</span
-        >
+        <span class="legend-item"><span class="dot savings"></span>Savings</span>
       </div>
     </div>
 
@@ -154,13 +169,6 @@
       <p class="empty">No transactions in the last {MONTHS_SHOWN} months.</p>
     {:else}
       <svg viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} class="monthly-chart">
-        <line
-          x1="0"
-          x2={CHART_WIDTH}
-          y1={averageLineY}
-          y2={averageLineY}
-          class="average-line"
-        />
         {#each monthlyTotals as month, i (month.key)}
           {@const groupX = i * groupWidth}
           <rect
@@ -185,6 +193,14 @@
             class="month-label"
             text-anchor="middle">{month.label}</text
           >
+        {/each}
+
+        <polyline points={savingsLinePoints} class="savings-line" />
+        {#each savingsPoints as p, i (monthlyTotals[i].key)}
+          <circle cx={p.x} cy={p.y} r="7" class="savings-hit">
+            <title>{monthlyTotals[i].label}: {formatCurrency(p.value, currency)}</title>
+          </circle>
+          <circle cx={p.x} cy={p.y} r="3" class="savings-dot" />
         {/each}
       </svg>
     {/if}
@@ -275,15 +291,17 @@
     flex-shrink: 0;
   }
 
+  /* A distinct cyan shade from --color-accent, so the Income bars don't
+     blend visually with the savings line/dots drawn over them. */
   .dot.income {
-    background-color: var(--color-success);
+    background-color: #17b8c4;
   }
 
   .dot.expense {
     background-color: var(--color-danger);
   }
 
-  .dot.average {
+  .dot.savings {
     background-color: var(--color-accent);
   }
 
@@ -294,17 +312,30 @@
   }
 
   .bar.income {
-    fill: var(--color-success);
+    fill: #17b8c4;
   }
 
   .bar.expense {
     fill: var(--color-danger);
   }
 
-  .average-line {
+  .savings-line {
+    fill: none;
     stroke: var(--color-accent);
-    stroke-width: 1.5;
-    stroke-dasharray: 5 4;
+    stroke-width: 2;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+  }
+
+  .savings-hit {
+    fill: transparent;
+    pointer-events: all;
+    cursor: default;
+  }
+
+  .savings-dot {
+    fill: var(--color-accent);
+    pointer-events: none;
   }
 
   .month-label {

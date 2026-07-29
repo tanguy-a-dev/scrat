@@ -518,6 +518,10 @@
     cursor: pointer;
   }
 
+  .filters input[type="checkbox"] {
+    accent-color: var(--color-accent);
+  }
+
   @media (max-width: 1100px) {
     .layout {
       grid-template-columns: 1fr 1fr;
