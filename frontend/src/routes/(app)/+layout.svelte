@@ -49,14 +49,26 @@
   }
 
   nav {
-    width: 12rem;
-    flex-shrink: 0;
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 3.5rem;
+    overflow: hidden;
+    z-index: 100;
     padding: 1.25rem 0.75rem;
     display: flex;
     flex-direction: column;
     gap: 1.5rem;
     background-color: var(--color-shade-2);
     border-right: 1px solid var(--color-shade-3);
+    transition: width 0.15s ease;
+  }
+
+  nav:hover,
+  nav:focus-within {
+    width: 12rem;
+    box-shadow: 2px 0 12px rgba(0, 0, 0, 0.4);
   }
 
   .brand {
@@ -70,7 +82,19 @@
   .brand img {
     width: 1.75rem;
     height: 1.75rem;
+    flex-shrink: 0;
     image-rendering: pixelated;
+  }
+
+  .brand span {
+    white-space: nowrap;
+    opacity: 0;
+    transition: opacity 0.1s ease;
+  }
+
+  nav:hover .brand span,
+  nav:focus-within .brand span {
+    opacity: 1;
   }
 
   ul {
@@ -88,22 +112,35 @@
     border-radius: 6px;
     text-decoration: none;
     color: inherit;
+    opacity: 0;
+    white-space: nowrap;
+    transition: opacity 0.1s ease;
+  }
+
+  nav:hover a,
+  nav:focus-within a {
     opacity: 0.75;
   }
 
-  a:hover {
+  nav:hover a:hover,
+  nav:hover a.active,
+  nav:focus-within a:hover,
+  nav:focus-within a.active {
     opacity: 1;
+  }
+
+  a:hover {
     background-color: var(--color-shade-3);
   }
 
   a.active {
-    opacity: 1;
     background-color: var(--color-accent);
     color: var(--color-accent-contrast);
   }
 
   main {
     flex: 1;
+    margin-left: 3.5rem;
     padding: 2rem;
     overflow-y: auto;
   }
