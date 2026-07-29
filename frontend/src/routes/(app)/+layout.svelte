@@ -60,14 +60,19 @@
     display: flex;
     flex-direction: column;
     gap: 1.5rem;
-    background-color: var(--color-shade-2);
-    border-right: 1px solid var(--color-shade-3);
-    transition: width 0.15s ease;
+    background-color: transparent;
+    border-right: 1px solid transparent;
+    transition:
+      width 0.15s ease,
+      background-color 0.15s ease,
+      border-color 0.15s ease;
   }
 
   nav:hover,
   nav:focus-within {
     width: 12rem;
+    background-color: var(--color-shade-2);
+    border-right: 1px solid var(--color-shade-3);
     box-shadow: 2px 0 12px rgba(0, 0, 0, 0.4);
   }
 
