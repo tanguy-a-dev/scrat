@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { CategoryDto } from "./api";
   import CategoryNode from "./CategoryNode.svelte";
-  import { Trash2, Plus, Lock, Unlock } from "@lucide/svelte";
+  import DeleteButton from "./DeleteButton.svelte";
+  import { Plus, Lock, Unlock } from "@lucide/svelte";
 
   let {
     category,
@@ -67,14 +68,7 @@
         <Plus size={16} />
       </button>
     {/if}
-    <button
-      type="button"
-      class="icon-button danger"
-      aria-label="Delete category"
-      onclick={() => onDelete(category)}
-    >
-      <Trash2 size={16} />
-    </button>
+    <DeleteButton label="Delete category" onConfirm={() => onDelete(category)} />
   </div>
   {#if addingChild}
     <form

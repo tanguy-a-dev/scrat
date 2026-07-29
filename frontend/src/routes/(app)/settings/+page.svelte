@@ -3,22 +3,19 @@
   import { goto } from "$app/navigation";
   import { save, open } from "@tauri-apps/plugin-dialog";
   import { api } from "$lib/api";
+  import { toast } from "$lib/toasts.svelte";
 
   const COMMON_CURRENCIES = ["USD", "EUR", "GBP", "CAD", "AUD", "CHF", "JPY"];
 
   let currentCurrency = $state("");
   let selectedCurrency = $state("");
-  let currencyError = $state("");
-  let currencySaved = $state(false);
+  let loadError = $state("");
   let loadingCurrency = $state(true);
 
-  let exportError = $state("");
-  let exportSuccess = $state("");
   let exporting = $state(false);
 
   let importPath = $state<string | null>(null);
   let importPassword = $state("");
-  let importError = $state("");
   let importing = $state(false);
   let importFileName = $derived(importPath?.split(/[\\/]/).pop() ?? "");
 
@@ -27,7 +24,7 @@
       currentCurrency = await api.getCurrency();
       selectedCurrency = currentCurrency;
     } catch (e) {
-      currencyError = String(e);
+      loadError = String(e);
     } finally {
       loadingCurrency = false;
     }
@@ -35,20 +32,16 @@
 
   async function handleSaveCurrency(event: Event) {
     event.preventDefault();
-    currencyError = "";
-    currencySaved = false;
     try {
       await api.setCurrency(selectedCurrency);
       currentCurrency = selectedCurrency;
-      currencySaved = true;
+      toast.success(`Currency set to ${selectedCurrency}.`);
     } catch (e) {
-      currencyError = String(e);
+      toast.error(String(e));
     }
   }
 
   async function handleExport() {
-    exportError = "";
-    exportSuccess = "";
     exporting = true;
     try {
       const destination = await save({
@@ -57,16 +50,15 @@
       });
       if (!destination) return;
       await api.exportDatabase(destination);
-      exportSuccess = `Exported to ${destination}`;
+      toast.success(`Exported to ${destination}`);
     } catch (e) {
-      exportError = String(e);
+      toast.error(String(e));
     } finally {
       exporting = false;
     }
   }
 
   async function handleChooseImportFile() {
-    importError = "";
     try {
       const selected = await open({
         filters: [{ name: "Scrat Database", extensions: ["db"] }],
@@ -75,26 +67,25 @@
       importPath = selected;
       importPassword = "";
     } catch (e) {
-      importError = String(e);
+      toast.error(String(e));
     }
   }
 
   function cancelImport() {
     importPath = null;
     importPassword = "";
-    importError = "";
   }
 
   async function handleConfirmImport(event: Event) {
     event.preventDefault();
     if (!importPath) return;
-    importError = "";
     importing = true;
     try {
       await api.importDatabase(importPath, importPassword);
+      toast.success("Database imported.");
       await goto("/overview");
     } catch (e) {
-      importError = String(e);
+      toast.error(String(e));
     } finally {
       importing = false;
     }
@@ -111,6 +102,8 @@
   </p>
   {#if loadingCurrency}
     <p>Loading…</p>
+  {:else if loadError}
+    <p class="error">{loadError}</p>
   {:else}
     <form onsubmit={handleSaveCurrency}>
       <select bind:value={selectedCurrency}>
@@ -121,9 +114,7 @@
       <button type="submit" disabled={selectedCurrency === currentCurrency}
         >Save</button
       >
-      {#if currencySaved}<span class="success">Saved.</span>{/if}
     </form>
-    {#if currencyError}<p class="error">{currencyError}</p>{/if}
   {/if}
 </section>
 
@@ -136,8 +127,6 @@
   <button type="button" onclick={handleExport} disabled={exporting}>
     {exporting ? "Exporting…" : "Export"}
   </button>
-  {#if exportSuccess}<p class="success">{exportSuccess}</p>{/if}
-  {#if exportError}<p class="error">{exportError}</p>{/if}
 </section>
 
 <section>
@@ -176,7 +165,6 @@
       </form>
     </div>
   {/if}
-  {#if importError}<p class="error">{importError}</p>{/if}
 </section>
 
 <section>
@@ -213,10 +201,6 @@
 
   .error {
     color: var(--color-danger);
-  }
-
-  .success {
-    color: var(--color-success);
   }
 
   form {

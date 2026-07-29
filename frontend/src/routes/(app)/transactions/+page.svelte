@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { page } from "$app/state";
+  import { replaceState } from "$app/navigation";
   import {
     api,
     buildCategoryOptions,
@@ -13,10 +15,25 @@
     type RangeMode,
   } from "$lib/api";
   import ImportCsvDialog from "$lib/ImportCsvDialog.svelte";
-  import { Trash2, FileUp, Plus } from "@lucide/svelte";
+  import DeleteButton from "$lib/DeleteButton.svelte";
+  import { toast } from "$lib/toasts.svelte";
+  import { FileUp, Plus } from "@lucide/svelte";
 
   let showImportDialog = $state(false);
   let showAddForm = $state(false);
+
+  // The Cmd/Ctrl+K command palette navigates here with ?action=... to
+  // trigger these directly instead of just landing on the page.
+  $effect(() => {
+    const action = page.url.searchParams.get("action");
+    if (action === "add-transaction") {
+      showAddForm = true;
+      replaceState(page.url.pathname, {});
+    } else if (action === "import-csv") {
+      showImportDialog = true;
+      replaceState(page.url.pathname, {});
+    }
+  });
 
   let accounts = $state<AccountDto[]>([]);
   let categories = $state<CategoryDto[]>([]);
@@ -103,15 +120,15 @@
 
   async function handleCreate(event: Event) {
     event.preventDefault();
-    error = "";
     const minorUnits = parseToMinorUnits(formAmount);
     if (minorUnits === null || minorUnits === 0) {
-      error =
-        "Amount must be a non-zero number (negative for expense, positive for income).";
+      toast.error(
+        "Amount must be a non-zero number (negative for expense, positive for income).",
+      );
       return;
     }
     if (!formCategoryId || !formAccountId) {
-      error = "Choose a category and an account.";
+      toast.error("Choose a category and an account.");
       return;
     }
     try {
@@ -126,28 +143,27 @@
       formSource = "";
       await load();
     } catch (e) {
-      error = String(e);
+      toast.error(String(e));
     }
   }
 
   async function handleCategoryChange(t: TransactionDto, categoryId: string) {
     if (categoryId === t.category_id) return;
-    error = "";
     try {
       await api.setTransactionCategory(t.id, categoryId);
       await load();
     } catch (e) {
-      error = String(e);
+      toast.error(String(e));
     }
   }
 
   async function handleDelete(id: string) {
-    error = "";
     try {
       await api.deleteTransaction(id);
       await load();
+      toast.success("Transaction deleted.");
     } catch (e) {
-      error = String(e);
+      toast.error(String(e));
     }
   }
 
@@ -234,14 +250,10 @@
             </td>
             <td>{accountName(t.account_id)}</td>
             <td>
-              <button
-                type="button"
-                class="icon-button danger"
-                aria-label="Delete transaction"
-                onclick={() => handleDelete(t.id)}
-              >
-                <Trash2 size={16} />
-              </button>
+              <DeleteButton
+                label="Delete transaction"
+                onConfirm={() => handleDelete(t.id)}
+              />
             </td>
           </tr>
         {/each}

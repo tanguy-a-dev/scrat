@@ -2,6 +2,8 @@
   import { page } from "$app/state";
   import type { Snippet } from "svelte";
   import FindInPage from "$lib/FindInPage.svelte";
+  import Toast from "$lib/Toast.svelte";
+  import CommandPalette from "$lib/CommandPalette.svelte";
 
   let { children }: { children: Snippet } = $props();
 
@@ -37,6 +39,8 @@
 </div>
 
 <FindInPage />
+<Toast />
+<CommandPalette />
 
 <style>
   .shell {

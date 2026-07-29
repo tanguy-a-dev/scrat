@@ -7,7 +7,8 @@
     parseToMinorUnits,
     type AccountDto,
   } from "$lib/api";
-  import { Trash2 } from "@lucide/svelte";
+  import DeleteButton from "$lib/DeleteButton.svelte";
+  import { toast } from "$lib/toasts.svelte";
 
   let accounts = $state<AccountDto[]>([]);
   let loading = $state(true);
@@ -32,12 +33,24 @@
   }
 
   async function withErrorHandling(action: () => Promise<unknown>) {
-    error = "";
     try {
       await action();
       await load();
     } catch (e) {
-      error = String(e);
+      toast.error(String(e));
+    }
+  }
+
+  async function withDeleteConfirmation(
+    action: () => Promise<unknown>,
+    successMessage: string,
+  ) {
+    try {
+      await action();
+      await load();
+      toast.success(successMessage);
+    } catch (e) {
+      toast.error(String(e));
     }
   }
 
@@ -45,7 +58,7 @@
     event.preventDefault();
     const minorUnits = parseToMinorUnits(newOpeningBalance || "0");
     if (minorUnits === null) {
-      error = "Opening balance must be a number.";
+      toast.error("Opening balance must be a number.");
       return;
     }
     withErrorHandling(async () => {
@@ -81,8 +94,10 @@
   }
 
   function handleDelete(account: AccountDto) {
-    if (!confirm(`Delete "${account.name}"? This cannot be undone.`)) return;
-    withErrorHandling(() => api.deleteAccount(account.id));
+    withDeleteConfirmation(
+      () => api.deleteAccount(account.id),
+      `"${account.name}" deleted.`,
+    );
   }
 
   function handleSetDefault(account: AccountDto) {
@@ -142,14 +157,10 @@
               Set as default
             </button>
           {/if}
-          <button
-            type="button"
-            class="icon-button danger"
-            aria-label="Delete account"
-            onclick={() => handleDelete(account)}
-          >
-            <Trash2 size={16} />
-          </button>
+          <DeleteButton
+            label="Delete account"
+            onConfirm={() => handleDelete(account)}
+          />
         </div>
         <div class="patterns">
           {#each account.source_patterns as pattern (pattern)}

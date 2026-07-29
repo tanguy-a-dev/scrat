@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { api, type CategoryDto } from "$lib/api";
   import CategoryNode from "$lib/CategoryNode.svelte";
+  import { toast } from "$lib/toasts.svelte";
 
   let categories = $state<CategoryDto[]>([]);
   let loading = $state(true);
@@ -28,12 +29,11 @@
   }
 
   async function withErrorHandling(action: () => Promise<unknown>) {
-    error = "";
     try {
       await action();
       await load();
     } catch (e) {
-      error = String(e);
+      toast.error(String(e));
     }
   }
 
@@ -60,17 +60,17 @@
   }
 
   async function handleDelete(category: CategoryDto) {
-    error = "";
     try {
       await api.deleteCategory(category.id, null);
       await load();
+      toast.success(`"${category.name}" deleted.`);
     } catch (e) {
       const message = String(e);
       if (message.includes("reassign")) {
         pendingDelete = { category, message };
         reassignTarget = "";
       } else {
-        error = message;
+        toast.error(message);
       }
     }
   }
@@ -78,10 +78,14 @@
   async function confirmReassignDelete() {
     if (!pendingDelete || !reassignTarget) return;
     const { category } = pendingDelete;
-    await withErrorHandling(() =>
-      api.deleteCategory(category.id, reassignTarget),
-    );
-    pendingDelete = null;
+    try {
+      await api.deleteCategory(category.id, reassignTarget);
+      await load();
+      toast.success(`"${category.name}" deleted.`);
+      pendingDelete = null;
+    } catch (e) {
+      toast.error(String(e));
+    }
   }
 
   let rootCategories = $derived(categories.filter((c) => c.parent_id === null));
