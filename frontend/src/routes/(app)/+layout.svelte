@@ -53,13 +53,13 @@
     top: 0;
     left: 0;
     bottom: 0;
-    width: 3.5rem;
+    width: 4.75rem;
     overflow: hidden;
     z-index: 100;
     padding: 1.25rem 0.75rem;
     display: flex;
     flex-direction: column;
-    gap: 1.5rem;
+    gap: 0.25rem;
     background-color: transparent;
     border-right: 1px solid transparent;
     transition:
@@ -80,15 +80,24 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0 0.5rem;
+    padding: 0.5rem 0.75rem;
     font-weight: 700;
   }
 
   .brand img {
-    width: 1.75rem;
-    height: 1.75rem;
+    width: 2.625rem;
+    height: 2.625rem;
     flex-shrink: 0;
     image-rendering: pixelated;
+    transition:
+      width 0.15s ease,
+      height 0.15s ease;
+  }
+
+  nav:hover .brand img,
+  nav:focus-within .brand img {
+    width: 1.75rem;
+    height: 1.75rem;
   }
 
   .brand span {
@@ -145,7 +154,7 @@
 
   main {
     flex: 1;
-    margin-left: 3.5rem;
+    margin-left: 4.75rem;
     padding: 2rem;
     overflow-y: auto;
   }
