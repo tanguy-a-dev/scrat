@@ -32,7 +32,6 @@
   let customStart = $state(todayIsoDate());
   let customEnd = $state(todayIsoDate());
 
-  let activeTab = $state<"expenses" | "income">("expenses");
   let excludedRootIds = $state<Set<string>>(new Set());
 
   // Animates the donut/bars filling up from empty whenever the breakdown
@@ -138,34 +137,33 @@
     filteredTransactions.reduce((sum, t) => sum + t.amount_minor_units, 0),
   );
 
-  let activeTransactions = $derived(
-    filteredTransactions.filter((t) =>
-      activeTab === "expenses" ? t.amount_minor_units < 0 : t.amount_minor_units > 0,
-    ),
+  let expenseTransactions = $derived(
+    filteredTransactions.filter((t) => t.amount_minor_units < 0),
+  );
+  let incomeTransactions = $derived(
+    filteredTransactions.filter((t) => t.amount_minor_units > 0),
   );
 
-  let totalForTabMinorUnits = $derived(
-    activeTransactions.reduce((sum, t) => sum + Math.abs(t.amount_minor_units), 0),
-  );
-
-  let breakdown = $derived.by(() => {
+  function buildBreakdown(txns: TransactionDto[]) {
+    const total = txns.reduce((sum, t) => sum + Math.abs(t.amount_minor_units), 0);
     const sums = new Map<string, number>();
-    for (const t of activeTransactions) {
+    for (const t of txns) {
       const root = rootCategoryId(t.category_id);
       sums.set(root, (sums.get(root) ?? 0) + Math.abs(t.amount_minor_units));
     }
-    const total = totalForTabMinorUnits || 1;
-    return [...sums.entries()]
+    const totalOrOne = total || 1;
+    const breakdown = [...sums.entries()]
       .map(([categoryId, amountMinorUnits]) => ({
         categoryId,
         name: categoryName(categoryId),
         amountMinorUnits,
-        percent: (amountMinorUnits / total) * 100,
+        percent: (amountMinorUnits / totalOrOne) * 100,
       }))
       .sort((a, b) => b.amountMinorUnits - a.amountMinorUnits);
-  });
+    return { total, breakdown };
+  }
 
-  let donutSlices = $derived.by(() => {
+  function withDonutSlices(breakdown: ReturnType<typeof buildBreakdown>["breakdown"]) {
     let cumulative = 0;
     return breakdown.map((slice, i) => {
       const length = (slice.percent / 100) * CIRCUMFERENCE;
@@ -178,13 +176,13 @@
         dashoffset,
       };
     });
-  });
+  }
 
   // Scales each slice's arc length/offset and each bar's width by
   // `fillProgress`, so the whole donut sweeps in from empty together rather
   // than each slice animating independently out of sync with the others.
-  let animatedDonutSlices = $derived(
-    donutSlices.map((slice) => {
+  function withAnimatedSlices(slices: ReturnType<typeof withDonutSlices>) {
+    return slices.map((slice) => {
       const animatedLength = (slice.percent / 100) * CIRCUMFERENCE * fillProgress;
       return {
         ...slice,
@@ -192,11 +190,22 @@
         animatedDashoffset: slice.dashoffset * fillProgress,
         animatedPercent: slice.percent * fillProgress,
       };
-    }),
+    });
+  }
+
+  let expenseData = $derived.by(() => buildBreakdown(expenseTransactions));
+  let incomeData = $derived.by(() => buildBreakdown(incomeTransactions));
+
+  let animatedExpenseSlices = $derived(
+    withAnimatedSlices(withDonutSlices(expenseData.breakdown)),
+  );
+  let animatedIncomeSlices = $derived(
+    withAnimatedSlices(withDonutSlices(incomeData.breakdown)),
   );
 
   $effect(() => {
-    breakdown;
+    expenseData;
+    incomeData;
     if (!loading) animateFill();
   });
 </script>
@@ -235,79 +244,77 @@
   {/if}
 </div>
 
-{#if loading}
-  <p>Loading…</p>
-{:else}
-  <div class="layout">
-    <div class="graph-column">
-      <div class="donut-wrap">
-        <svg viewBox="0 0 200 200" class="donut">
-          <g transform="rotate(-90 100 100)">
+{#snippet donutPanel(
+  label: string,
+  total: number,
+  slices: typeof animatedExpenseSlices,
+)}
+  <div class="graph-column">
+    <h2 class="panel-title">{label}</h2>
+    <div class="donut-wrap">
+      <svg viewBox="0 0 200 200" class="donut">
+        <g transform="rotate(-90 100 100)">
+          <circle
+            cx="100"
+            cy="100"
+            r={RADIUS}
+            fill="none"
+            stroke="var(--donut-track)"
+            stroke-width="24"
+          />
+          {#each slices as slice (slice.categoryId)}
             <circle
               cx="100"
               cy="100"
               r={RADIUS}
               fill="none"
-              stroke="var(--donut-track)"
+              stroke={slice.color}
               stroke-width="24"
+              stroke-dasharray={slice.animatedDasharray}
+              stroke-dashoffset={slice.animatedDashoffset}
             />
-            {#each animatedDonutSlices as slice (slice.categoryId)}
-              <circle
-                cx="100"
-                cy="100"
-                r={RADIUS}
-                fill="none"
-                stroke={slice.color}
-                stroke-width="24"
-                stroke-dasharray={slice.animatedDasharray}
-                stroke-dashoffset={slice.animatedDashoffset}
-              />
-            {/each}
-          </g>
-        </svg>
-        <div class="donut-center">
-          <span class="total">{formatCurrency(totalForTabMinorUnits, currency)}</span>
-          <span class="label">{activeTab === "expenses" ? "Expenses" : "Income"}</span>
-          <span class="left">Left: {formatCurrency(netLeftMinorUnits, currency)}</span>
-        </div>
-      </div>
-
-      <div class="tabs">
-        <button
-          type="button"
-          class:active={activeTab === "expenses"}
-          onclick={() => (activeTab = "expenses")}>Expenses</button
-        >
-        <button
-          type="button"
-          class:active={activeTab === "income"}
-          onclick={() => (activeTab = "income")}>Income</button
-        >
-      </div>
-
-      {#if breakdown.length === 0}
-        <p class="empty">No {activeTab} in this range.</p>
-      {:else}
-        <ul class="breakdown">
-          {#each animatedDonutSlices as slice (slice.categoryId)}
-            <li>
-              <div class="row">
-                <span class="dot" style={`background-color:${slice.color}`}></span>
-                <span class="name">{slice.name}</span>
-                <span class="amount">{formatCurrency(slice.amountMinorUnits, currency)}</span>
-                <span class="percent">{slice.percent.toFixed(1)}%</span>
-              </div>
-              <div class="bar-track">
-                <div
-                  class="bar-fill"
-                  style={`width:${slice.animatedPercent}%;background-color:${slice.color}`}
-                ></div>
-              </div>
-            </li>
           {/each}
-        </ul>
-      {/if}
+        </g>
+      </svg>
+      <div class="donut-center">
+        <span class="total">{formatCurrency(total, currency)}</span>
+        <span class="label">{label}</span>
+      </div>
     </div>
+
+    {#if slices.length === 0}
+      <p class="empty">No {label.toLowerCase()} in this range.</p>
+    {:else}
+      <ul class="breakdown">
+        {#each slices as slice (slice.categoryId)}
+          <li>
+            <div class="row">
+              <span class="dot" style={`background-color:${slice.color}`}></span>
+              <span class="name">{slice.name}</span>
+              <span class="amount">{formatCurrency(slice.amountMinorUnits, currency)}</span>
+              <span class="percent">{slice.percent.toFixed(1)}%</span>
+            </div>
+            <div class="bar-track">
+              <div
+                class="bar-fill"
+                style={`width:${slice.animatedPercent}%;background-color:${slice.color}`}
+              ></div>
+            </div>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </div>
+{/snippet}
+
+{#if loading}
+  <p>Loading…</p>
+{:else}
+  <p class="net-summary">Left this period: <strong>{formatCurrency(netLeftMinorUnits, currency)}</strong></p>
+
+  <div class="layout">
+    {@render donutPanel("Expenses", expenseData.total, animatedExpenseSlices)}
+    {@render donutPanel("Income", incomeData.total, animatedIncomeSlices)}
 
     <aside class="filters">
       <h2>Categories</h2>
@@ -353,14 +360,12 @@
     margin-bottom: 1.5rem;
   }
 
-  .range-buttons,
-  .tabs {
+  .range-buttons {
     display: flex;
     gap: 0.4rem;
   }
 
-  .range-buttons button,
-  .tabs button {
+  .range-buttons button {
     background-color: var(--color-shade-3);
     color: inherit;
     border: none;
@@ -370,10 +375,15 @@
     cursor: pointer;
   }
 
-  .range-buttons button.active,
-  .tabs button.active {
+  .range-buttons button.active {
     background-color: var(--color-accent);
     color: var(--color-accent-contrast);
+  }
+
+  .net-summary {
+    font-size: 0.95rem;
+    opacity: 0.85;
+    margin: 0 0 1.5rem;
   }
 
   input[type="date"] {
@@ -387,13 +397,15 @@
 
   .layout {
     display: grid;
-    grid-template-columns: 1fr 16rem;
+    grid-template-columns: 1fr 1fr 16rem;
     gap: 2rem;
     align-items: start;
   }
 
-  .tabs {
-    margin-bottom: 1rem;
+  .panel-title {
+    text-align: center;
+    font-size: 1rem;
+    margin-top: 0;
   }
 
   .donut-wrap {
@@ -432,12 +444,6 @@
     font-size: 0.8rem;
     opacity: 0.7;
     text-transform: uppercase;
-  }
-
-  .donut-center .left {
-    font-size: 0.85rem;
-    opacity: 0.85;
-    margin-top: 0.3rem;
   }
 
   .breakdown {
@@ -512,16 +518,23 @@
     cursor: pointer;
   }
 
-  @media (max-width: 900px) {
+  @media (max-width: 1100px) {
     .layout {
-      grid-template-columns: 1fr;
+      grid-template-columns: 1fr 1fr;
     }
 
     .filters {
+      grid-column: 1 / -1;
       border-left: none;
       padding-left: 0;
       border-top: 1px solid var(--color-shade-3);
       padding-top: 1rem;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .layout {
+      grid-template-columns: 1fr;
     }
   }
 </style>
