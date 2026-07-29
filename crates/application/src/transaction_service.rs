@@ -122,6 +122,10 @@ impl<'a> TransactionService<'a> {
         Ok(self.transactions.list_in_range(start, end)?)
     }
 
+    pub fn list_all(&self) -> Result<Vec<Transaction>, ApplicationError> {
+        Ok(self.transactions.list_all()?)
+    }
+
     /// Imports a batch of already-parsed rows (from a CSV, say) into the
     /// given account, each under its own already-resolved category, skipping
     /// any row whose dedup key already exists rather than erroring — makes
@@ -207,9 +211,7 @@ impl<'a> TransactionService<'a> {
             return Ok(None);
         }
 
-        let all = self
-            .transactions
-            .list_in_range(NaiveDate::MIN, NaiveDate::MAX)?;
+        let all = self.transactions.list_all()?;
 
         let mut counts: std::collections::HashMap<CategoryId, usize> =
             std::collections::HashMap::new();
@@ -391,6 +393,9 @@ mod tests {
                 .cloned()
                 .collect())
         }
+        fn list_all(&self) -> Result<Vec<Transaction>, RepositoryError> {
+            Ok(self.transactions.lock().unwrap().clone())
+        }
     }
 
     struct Fixture {
@@ -523,9 +528,7 @@ mod tests {
 
         service.set_category(transaction.id(), dining.id()).unwrap();
 
-        let stored = service
-            .list_in_range(NaiveDate::MIN, NaiveDate::MAX)
-            .unwrap();
+        let stored = service.list_all().unwrap();
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].category_id(), dining.id());
     }

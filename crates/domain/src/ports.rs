@@ -84,4 +84,9 @@ pub trait TransactionRepository {
         start: NaiveDate,
         end: NaiveDate,
     ) -> Result<Vec<Transaction>, RepositoryError>;
+    /// Every transaction, unfiltered. Not `list_in_range(NaiveDate::MIN,
+    /// NaiveDate::MAX)` — those extremes format with a leading sign
+    /// (`+262142-12-31`) that sorts before ordinary years in a TEXT
+    /// comparison, so that combination silently matches nothing.
+    fn list_all(&self) -> Result<Vec<Transaction>, RepositoryError>;
 }

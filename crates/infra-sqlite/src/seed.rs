@@ -11,27 +11,13 @@ use crate::category_repository::SqliteCategoryRepository;
 type CategoryTree = &'static [(&'static str, &'static [&'static str])];
 
 const EXPENSE_CATEGORIES: CategoryTree = &[
-    (
-        "Food & Drink",
-        &[
-            "Restaurants",
-            "Fast Food",
-            "Cafés",
-            "Bars",
-            "Delivery",
-            "Snacks",
-        ],
-    ),
-    (
-        "Groceries",
-        &["Supermarket", "Farmers Market", "Household Supplies"],
-    ),
+    ("Food & Drink", &[]),
+    ("Groceries", &[]),
     (
         "Housing",
         &[
             "Rent",
             "Mortgage",
-            "HOA Fees",
             "Maintenance",
             "Furniture",
             "Appliances",
@@ -47,7 +33,6 @@ const EXPENSE_CATEGORIES: CategoryTree = &[
             "Internet",
             "Mobile Phone",
             "TV & Streaming",
-            "Waste Collection",
         ],
     ),
     (
@@ -60,21 +45,9 @@ const EXPENSE_CATEGORIES: CategoryTree = &[
             "Tolls",
             "Vehicle Maintenance",
             "Vehicle Insurance",
-            "Registration",
         ],
     ),
-    (
-        "Healthcare",
-        &[
-            "Doctor",
-            "Pharmacy",
-            "Dental",
-            "Vision",
-            "Therapy",
-            "Health Insurance",
-            "Medical Equipment",
-        ],
-    ),
+    ("Healthcare", &["Doctor", "Pharmacy"]),
     (
         "Personal Care",
         &["Haircuts", "Cosmetics", "Skincare", "Hygiene"],
@@ -91,14 +64,8 @@ const EXPENSE_CATEGORIES: CategoryTree = &[
             "Streaming Services",
         ],
     ),
-    (
-        "Sports & Fitness",
-        &["Gym", "Sports Club", "Equipment", "Classes"],
-    ),
-    (
-        "Education",
-        &["Books", "Courses", "Tuition", "Certifications", "Supplies"],
-    ),
+    ("Sports & Fitness", &["Gym"]),
+    ("Education", &["Books", "Courses"]),
     (
         "Travel",
         &[
@@ -110,17 +77,8 @@ const EXPENSE_CATEGORIES: CategoryTree = &[
             "Travel Insurance",
         ],
     ),
-    ("Gifts & Donations", &["Gifts", "Charity", "Tips"]),
-    (
-        "Financial",
-        &[
-            "Bank Fees",
-            "Loan Payments",
-            "Credit Card Interest",
-            "Investment Contributions",
-            "Investment Fees",
-        ],
-    ),
+    ("Gifts & Donations", &["Gifts"]),
+    ("Financial", &["Bank Fees", "Loan Payments"]),
     (
         "Taxes & Government",
         &[
@@ -134,21 +92,7 @@ const EXPENSE_CATEGORIES: CategoryTree = &[
         "Insurance",
         &["Health", "Home", "Vehicle", "Life", "Travel"],
     ),
-    ("Pets", &["Food", "Veterinary", "Grooming", "Supplies"]),
-    (
-        "Children & Family",
-        &["Childcare", "School", "Activities", "Allowance"],
-    ),
-    (
-        "Business",
-        &[
-            "Office Supplies",
-            "Software",
-            "Professional Services",
-            "Business Travel",
-        ],
-    ),
-    ("Miscellaneous", &["Uncategorized"]),
+    ("Uncategorized", &[]),
 ];
 
 const INCOME_CATEGORIES: CategoryTree = &[
@@ -160,7 +104,7 @@ const INCOME_CATEGORIES: CategoryTree = &[
     ),
     (
         "Investment Income",
-        &["Dividends", "Interest", "Capital Gains", "Crypto Rewards"],
+        &["Dividends", "Interest", "Capital Gains"],
     ),
     ("Rental Income", &["Property Rent"]),
     (

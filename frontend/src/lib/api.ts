@@ -105,6 +105,8 @@ export const api = {
     invoke<string | null>("suggest_account_for_source", { source }),
   suggestCategoryForSource: (source: string) =>
     invoke<string | null>("suggest_category_for_source", { source }),
+  exportTransactionsCsv: (destination: string) =>
+    invoke<void>("export_transactions_csv", { destination }),
 
   previewCsvImport: (bytes: number[]) =>
     invoke<ImportPreviewDto>("preview_csv_import", { bytes }),

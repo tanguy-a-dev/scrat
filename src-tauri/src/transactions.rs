@@ -1,7 +1,10 @@
+use std::collections::HashMap;
+
 use chrono::NaiveDate;
 use scrat_application::transaction_service::TransactionService;
 use scrat_domain::account::AccountId;
 use scrat_domain::category::CategoryId;
+use scrat_domain::ports::{AccountRepository, CategoryRepository};
 use scrat_domain::transaction::{Transaction, TransactionId};
 use scrat_infra_sqlite::{
     SqliteAccountRepository, SqliteCategoryRepository, SqliteTransactionRepository,
@@ -122,4 +125,78 @@ pub fn suggest_category_for_source(
 ) -> Result<Option<String>, String> {
     with_service(&state, |s| s.suggest_category_for_source(&source))
         .map(|found| found.map(|id| id.as_string()))
+}
+
+/// Formats minor units as a decimal string with a comma separator (e.g.
+/// `1234` -> `"12,34"`), matching both the app's own on-screen formatting
+/// and the decimal-comma convention `infra-csv` already expects on import —
+/// deliberately not "." so a re-import of this file's output round-trips.
+fn format_amount_for_csv(minor_units: i64) -> String {
+    let sign = if minor_units < 0 { "-" } else { "" };
+    let abs = minor_units.unsigned_abs();
+    format!("{sign}{},{:02}", abs / 100, abs % 100)
+}
+
+/// Quotes a CSV field only if it contains the delimiter, a quote, or a
+/// newline — doubling any embedded quotes, per the usual CSV escaping rule.
+fn csv_field(value: &str) -> String {
+    if value.contains(';') || value.contains('"') || value.contains('\n') || value.contains('\r') {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
+/// Exports every transaction in the app as a semicolon-separated CSV,
+/// resolving account/category ids to their display names since those (not
+/// raw ids) are what makes the file useful outside Scrat.
+#[tauri::command]
+pub fn export_transactions_csv(state: State<DbState>, destination: String) -> Result<(), String> {
+    let guard = state.0.lock().unwrap();
+    let conn = guard
+        .as_ref()
+        .ok_or_else(|| "database is locked".to_string())?;
+    let currency = app_currency(conn);
+    let transactions = SqliteTransactionRepository::new(conn, currency.clone());
+    let accounts = SqliteAccountRepository::new(conn, currency.clone());
+    let categories = SqliteCategoryRepository::new(conn);
+    let service = TransactionService::new(&transactions, &accounts, &categories, currency);
+
+    let all = service.list_all().map_err(|e| e.to_string())?;
+
+    let account_names: HashMap<AccountId, String> = accounts
+        .list_all()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|a| (a.id(), a.name().as_str().to_string()))
+        .collect();
+    let category_names: HashMap<CategoryId, String> = categories
+        .list_all()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|c| (c.id(), c.name().as_str().to_string()))
+        .collect();
+
+    let mut csv = String::from("Date;Amount;Currency;Source;Category;Account\n");
+    for t in &all {
+        let category = category_names
+            .get(&t.category_id())
+            .map(String::as_str)
+            .unwrap_or("");
+        let account = account_names
+            .get(&t.account_id())
+            .map(String::as_str)
+            .unwrap_or("");
+        csv.push_str(&format!(
+            "{};{};{};{};{};{}\n",
+            t.date().format("%Y-%m-%d"),
+            format_amount_for_csv(t.amount().minor_units()),
+            t.amount().currency().code(),
+            csv_field(t.source().as_str()),
+            csv_field(category),
+            csv_field(account),
+        ));
+    }
+
+    std::fs::write(&destination, csv).map_err(|e| e.to_string())
 }

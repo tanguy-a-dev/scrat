@@ -13,6 +13,7 @@
   let loadingCurrency = $state(true);
 
   let exporting = $state(false);
+  let exportingCsv = $state(false);
 
   let importPath = $state<string | null>(null);
   let importPassword = $state("");
@@ -55,6 +56,30 @@
       toast.error(String(e));
     } finally {
       exporting = false;
+    }
+  }
+
+  function timestampedFileName(prefix: string, extension: string): string {
+    const now = new Date();
+    const pad = (n: number) => n.toString().padStart(2, "0");
+    const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+    return `${prefix}-${stamp}.${extension}`;
+  }
+
+  async function handleExportCsv() {
+    exportingCsv = true;
+    try {
+      const destination = await save({
+        defaultPath: timestampedFileName("scrat-transactions", "csv"),
+        filters: [{ name: "CSV", extensions: ["csv"] }],
+      });
+      if (!destination) return;
+      await api.exportTransactionsCsv(destination);
+      toast.success(`Exported to ${destination}`);
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      exportingCsv = false;
     }
   }
 
@@ -126,6 +151,18 @@
   </p>
   <button type="button" onclick={handleExport} disabled={exporting}>
     {exporting ? "Exporting…" : "Export"}
+  </button>
+</section>
+
+<section>
+  <h2>Export transaction CSV</h2>
+  <p class="hint">
+    Saves every transaction as a plain-text CSV file, with ";" as the
+    separator — account and category names are included so the file is
+    readable outside Scrat.
+  </p>
+  <button type="button" onclick={handleExportCsv} disabled={exportingCsv}>
+    {exportingCsv ? "Exporting…" : "Export CSV"}
   </button>
 </section>
 

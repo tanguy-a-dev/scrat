@@ -37,6 +37,7 @@ pub fn run() {
             transactions::set_transaction_category,
             transactions::suggest_account_for_source,
             transactions::suggest_category_for_source,
+            transactions::export_transactions_csv,
             import::preview_csv_import,
             import::commit_csv_import,
             settings::get_currency,

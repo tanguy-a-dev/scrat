@@ -100,6 +100,9 @@
     if (event.key === "Escape") {
       event.preventDefault();
       onClose();
+    } else if (event.key === "Enter" && preview && !importing && includableCount > 0) {
+      event.preventDefault();
+      handleImport();
     }
   }
 

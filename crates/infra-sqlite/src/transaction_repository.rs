@@ -149,6 +149,22 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
             .map_err(sql_err)?;
         Ok(rows)
     }
+
+    fn list_all(&self) -> Result<Vec<Transaction>, RepositoryError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, date, amount_minor_units, source, category_id, account_id
+                 FROM transactions ORDER BY date DESC",
+            )
+            .map_err(sql_err)?;
+        let rows = stmt
+            .query_map([], |row| self.row_to_transaction(row))
+            .map_err(sql_err)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sql_err)?;
+        Ok(rows)
+    }
 }
 
 #[cfg(test)]
@@ -258,6 +274,47 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].source().as_str(), "In range");
+    }
+
+    /// Regression test: `list_in_range(NaiveDate::MIN, NaiveDate::MAX)` was
+    /// previously used as an "all transactions" query elsewhere in the app,
+    /// but chrono formats those extreme years with a leading sign
+    /// (`+262142-12-31`) that sorts before ordinary years in SQLite's TEXT
+    /// comparison, so it silently matched nothing against a real database
+    /// even with rows present. `list_all` must not have that problem.
+    #[test]
+    fn list_all_returns_every_transaction_regardless_of_date() {
+        let conn = test_conn();
+        let (account_id, category_id) = seed_account_and_category(&conn);
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        repo.insert(
+            &Transaction::new(
+                TransactionId::new(),
+                NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                Money::from_minor_units(-1_200, usd()),
+                SourceText::new("Whole Foods").unwrap(),
+                category_id,
+                account_id,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        repo.insert(
+            &Transaction::new(
+                TransactionId::new(),
+                NaiveDate::from_ymd_opt(2030, 6, 1).unwrap(),
+                Money::from_minor_units(-500, usd()),
+                SourceText::new("Far future").unwrap(),
+                category_id,
+                account_id,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let results = repo.list_all().unwrap();
+
+        assert_eq!(results.len(), 2);
     }
 
     #[test]
