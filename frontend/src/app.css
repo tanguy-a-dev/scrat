@@ -2,22 +2,25 @@
   font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
 
   /* Base */
-  --color-bg: #263840;
-  --color-text: #eaddd7;
-  --color-accent: #228be6;
-  --color-accent-contrast: #ffffff;
+  --color-bg: #000000;
+  --color-text: #ffffff;
+  --color-accent: #03fce3;
+  --color-accent-contrast: #000000;
 
   /* Shade ramp, dark to light */
-  --color-shade-1: #263840;
-  --color-shade-2: #495c65;
-  --color-shade-3: #6f838c;
-  --color-shade-4: #98abb5;
-  --color-shade-5: #c2d6e0;
+  --color-shade-1: #000000;
+  --color-shade-2: #1a1a1a;
+  --color-shade-3: #333333;
+  --color-shade-4: #4d4d4d;
+  --color-shade-5: #666666;
 
   /* Boxes */
-  --color-box: #48706e;
-  --color-box-accent-bg: #97f2d7;
-  --color-box-accent-text: #8b4202;
+  --color-box: #2b6e67;
+  --color-box-accent-bg: #03fce3;
+  --color-box-accent-text: #000000;
+
+  /* Icons: round, cyan circle, glyph cut out to show what's behind it */
+  --color-icon-circle: #03fce3;
 
   /* Semantic, retuned to sit next to the palette above */
   --color-danger: #d1495c;
@@ -50,23 +53,23 @@ h3 {
   height: 2rem;
   padding: 0;
   border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: inherit;
+  border-radius: 50%;
+  background-color: var(--color-icon-circle);
+  color: var(--color-bg);
   cursor: pointer;
   flex-shrink: 0;
 }
 
 .icon-button:hover {
-  background-color: var(--color-shade-3);
+  background-color: color-mix(in srgb, var(--color-icon-circle) 80%, black);
 }
 
 .icon-button.danger {
-  color: var(--color-danger);
+  background-color: var(--color-danger);
 }
 
 .icon-button.danger:hover {
-  background-color: color-mix(in srgb, var(--color-danger) 20%, transparent);
+  background-color: var(--color-danger-strong);
 }
 
 /* Painted by the CSS Custom Highlight API from FindInPage.svelte — these

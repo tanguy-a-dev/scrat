@@ -294,6 +294,7 @@
               <div class="row">
                 <span class="dot" style={`background-color:${slice.color}`}></span>
                 <span class="name">{slice.name}</span>
+                <span class="amount">{formatCurrency(slice.amountMinorUnits, currency)}</span>
                 <span class="percent">{slice.percent.toFixed(1)}%</span>
               </div>
               <div class="bar-track">
@@ -464,6 +465,10 @@
 
   .name {
     flex: 1;
+  }
+
+  .amount {
+    opacity: 0.75;
   }
 
   .percent {

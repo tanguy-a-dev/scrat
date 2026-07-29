@@ -1,30 +1,22 @@
 # Application palette
 
 ## Background color
-#263840
+#000000
 
 ## Text
-### Titles
-#228be6
-
-### Other texts
-#eaddd7
+#ffffff
 
 ## Boxes
+#2b6e67
 
-### Default box
-#48706e
+## Boxes in boxes
+#03fce3
 
-### Box in box and graph
-#97f2d7
+### Graph
+#03fce3
 
-#### Text with box color #97f2d7
-#8b4202
-
-
-## Shades
-#263840
-#495c65
-#6f838c
-#98abb5
-#c2d6e0
+## Icons
+Icons are round.
+Circle of icon: #03fce3
+Text of icon: transparent
+Example: A Plus has a circle around it and the sign + matches the background color it's on
