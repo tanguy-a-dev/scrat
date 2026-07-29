@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use chrono::NaiveDate;
 use scrat_application::transaction_service::TransactionService;
-use scrat_domain::account::AccountId;
-use scrat_domain::category::CategoryId;
+use scrat_domain::account::{Account, AccountId};
+use scrat_domain::category::{Category, CategoryId};
 use scrat_domain::ports::{AccountRepository, CategoryRepository};
 use scrat_domain::transaction::{Transaction, TransactionId};
 use scrat_infra_sqlite::{
@@ -147,6 +147,65 @@ fn csv_field(value: &str) -> String {
     }
 }
 
+/// Resolves the `(Category, Subcategory)` pair a transaction exports as.
+/// Categories are a strict two-level hierarchy, so a transaction filed under
+/// a subcategory reports its parent under `Category` and itself under
+/// `Subcategory`; one filed directly under a top-level category leaves
+/// `Subcategory` empty. Splitting them into two columns (rather than emitting
+/// `"Parent / Child"` in one) keeps the file pivot-table-friendly and lets a
+/// re-import read the `Category` column exactly as it did before.
+fn category_columns<'a>(
+    id: CategoryId,
+    by_id: &HashMap<CategoryId, &'a Category>,
+) -> (&'a str, &'a str) {
+    let Some(category) = by_id.get(&id) else {
+        return ("", "");
+    };
+    match category.parent_id().and_then(|parent| by_id.get(&parent)) {
+        Some(parent) => (parent.name().as_str(), category.name().as_str()),
+        // Either a top-level category, or — defensively — a subcategory whose
+        // parent is missing from the list. Either way the category itself is
+        // the most specific name available, so it belongs in `Category`.
+        None => (category.name().as_str(), ""),
+    }
+}
+
+/// Renders the export file body. Kept separate from the Tauri command (which
+/// only wires up repositories) so the formatting and hierarchy-resolution
+/// rules are unit-testable without a database or a Tauri runtime.
+fn build_csv(
+    transactions: &[Transaction],
+    accounts: &[Account],
+    categories: &[Category],
+) -> String {
+    let account_names: HashMap<AccountId, &str> = accounts
+        .iter()
+        .map(|a| (a.id(), a.name().as_str()))
+        .collect();
+    let categories_by_id: HashMap<CategoryId, &Category> =
+        categories.iter().map(|c| (c.id(), c)).collect();
+
+    let mut csv = String::from("Date;Amount;Currency;Source;Category;Subcategory;Account\n");
+    for t in transactions {
+        let (category, subcategory) = category_columns(t.category_id(), &categories_by_id);
+        let account = account_names
+            .get(&t.account_id())
+            .copied()
+            .unwrap_or_default();
+        csv.push_str(&format!(
+            "{};{};{};{};{};{};{}\n",
+            t.date().format("%Y-%m-%d"),
+            format_amount_for_csv(t.amount().minor_units()),
+            t.amount().currency().code(),
+            csv_field(t.source().as_str()),
+            csv_field(category),
+            csv_field(subcategory),
+            csv_field(account),
+        ));
+    }
+    csv
+}
+
 /// Exports every transaction in the app as a semicolon-separated CSV,
 /// resolving account/category ids to their display names since those (not
 /// raw ids) are what makes the file useful outside Scrat.
@@ -163,40 +222,195 @@ pub fn export_transactions_csv(state: State<DbState>, destination: String) -> Re
     let service = TransactionService::new(&transactions, &accounts, &categories, currency);
 
     let all = service.list_all().map_err(|e| e.to_string())?;
+    let all_accounts = accounts.list_all().map_err(|e| e.to_string())?;
+    let all_categories = categories.list_all().map_err(|e| e.to_string())?;
 
-    let account_names: HashMap<AccountId, String> = accounts
-        .list_all()
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .map(|a| (a.id(), a.name().as_str().to_string()))
-        .collect();
-    let category_names: HashMap<CategoryId, String> = categories
-        .list_all()
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .map(|c| (c.id(), c.name().as_str().to_string()))
-        .collect();
-
-    let mut csv = String::from("Date;Amount;Currency;Source;Category;Account\n");
-    for t in &all {
-        let category = category_names
-            .get(&t.category_id())
-            .map(String::as_str)
-            .unwrap_or("");
-        let account = account_names
-            .get(&t.account_id())
-            .map(String::as_str)
-            .unwrap_or("");
-        csv.push_str(&format!(
-            "{};{};{};{};{};{}\n",
-            t.date().format("%Y-%m-%d"),
-            format_amount_for_csv(t.amount().minor_units()),
-            t.amount().currency().code(),
-            csv_field(t.source().as_str()),
-            csv_field(category),
-            csv_field(account),
-        ));
-    }
+    let csv = build_csv(&all, &all_accounts, &all_categories);
 
     std::fs::write(&destination, csv).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use scrat_domain::account::AccountName;
+    use scrat_domain::category::CategoryName;
+    use scrat_domain::money::{Currency, Money};
+    use scrat_domain::transaction::SourceText;
+
+    use super::*;
+
+    const HEADER: &str = "Date;Amount;Currency;Source;Category;Subcategory;Account\n";
+
+    fn eur() -> Currency {
+        Currency::new("EUR").unwrap()
+    }
+
+    fn account(name: &str) -> Account {
+        Account::new(
+            AccountId::new(),
+            AccountName::new(name).unwrap(),
+            Money::zero(eur()),
+        )
+    }
+
+    fn category(name: &str, parent_id: Option<CategoryId>) -> Category {
+        Category::new(
+            CategoryId::new(),
+            CategoryName::new(name).unwrap(),
+            parent_id,
+        )
+        .unwrap()
+    }
+
+    fn transaction(
+        minor_units: i64,
+        source: &str,
+        category_id: CategoryId,
+        account_id: AccountId,
+    ) -> Transaction {
+        Transaction::new(
+            TransactionId::new(),
+            NaiveDate::from_ymd_opt(2026, 3, 14).unwrap(),
+            Money::from_minor_units(minor_units, eur()),
+            SourceText::new(source).unwrap(),
+            category_id,
+            account_id,
+        )
+        .unwrap()
+    }
+
+    /// Returns an export's data rows, asserting the header along the way.
+    fn rows(csv: &str) -> Vec<&str> {
+        csv.strip_prefix(HEADER)
+            .expect("export must start with the documented header")
+            .lines()
+            .collect()
+    }
+
+    #[test]
+    fn export_of_nothing_is_header_only() {
+        assert_eq!(build_csv(&[], &[], &[]), HEADER);
+    }
+
+    #[test]
+    fn subcategory_reports_parent_in_category_column() {
+        let acc = account("Checking");
+        let parent = category("Food", None);
+        let child = category("Groceries", Some(parent.id()));
+        let tx = transaction(-1250, "SUPERMARKET", child.id(), acc.id());
+
+        let csv = build_csv(&[tx], &[acc], &[parent, child]);
+
+        assert_eq!(
+            rows(&csv),
+            vec!["2026-03-14;-12,50;EUR;SUPERMARKET;Food;Groceries;Checking"]
+        );
+    }
+
+    #[test]
+    fn top_level_category_leaves_subcategory_empty() {
+        let acc = account("Checking");
+        let cat = category("Salary", None);
+        let tx = transaction(250_000, "ACME PAYROLL", cat.id(), acc.id());
+
+        let csv = build_csv(&[tx], &[acc], &[cat]);
+
+        assert_eq!(
+            rows(&csv),
+            vec!["2026-03-14;2500,00;EUR;ACME PAYROLL;Salary;;Checking"]
+        );
+    }
+
+    #[test]
+    fn category_column_still_holds_the_top_level_name_after_adding_subcategory() {
+        // Guards the compatibility promise in `category_columns`: whichever
+        // level a transaction is filed at, column 5 is always a top-level
+        // category name, so a re-import reading that column is unaffected.
+        let acc = account("Checking");
+        let parent = category("Food", None);
+        let child = category("Groceries", Some(parent.id()));
+        let deep = transaction(-500, "SHOP", child.id(), acc.id());
+        let shallow = transaction(-700, "MARKET", parent.id(), acc.id());
+
+        let csv = build_csv(&[deep, shallow], &[acc], &[parent, child]);
+
+        let categories: Vec<&str> = rows(&csv)
+            .iter()
+            .map(|row| row.split(';').nth(4).unwrap())
+            .collect();
+        assert_eq!(categories, vec!["Food", "Food"]);
+    }
+
+    #[test]
+    fn unknown_category_and_account_export_as_empty_fields() {
+        // A dangling id shouldn't lose the row — the rest of it is still
+        // valid ledger history.
+        let tx = transaction(-100, "MYSTERY", CategoryId::new(), AccountId::new());
+
+        let csv = build_csv(&[tx], &[], &[]);
+
+        assert_eq!(rows(&csv), vec!["2026-03-14;-1,00;EUR;MYSTERY;;;"]);
+    }
+
+    #[test]
+    fn orphaned_subcategory_falls_back_to_its_own_name() {
+        let acc = account("Checking");
+        let missing_parent = CategoryId::new();
+        let child = category("Groceries", Some(missing_parent));
+        let tx = transaction(-100, "SHOP", child.id(), acc.id());
+
+        let csv = build_csv(&[tx], &[acc], &[child]);
+
+        assert_eq!(
+            rows(&csv),
+            vec!["2026-03-14;-1,00;EUR;SHOP;Groceries;;Checking"]
+        );
+    }
+
+    #[test]
+    fn category_names_containing_the_delimiter_are_quoted() {
+        let acc = account("Checking");
+        let parent = category("Bills; utilities", None);
+        let child = category("Water \"meter\"", Some(parent.id()));
+        let tx = transaction(-4200, "CITY; WATER", child.id(), acc.id());
+
+        let csv = build_csv(&[tx], &[acc], &[parent, child]);
+
+        assert_eq!(
+            rows(&csv),
+            vec![
+                "2026-03-14;-42,00;EUR;\"CITY; WATER\";\"Bills; utilities\";\"Water \"\"meter\"\"\";Checking"
+            ]
+        );
+    }
+
+    #[test]
+    fn amounts_keep_two_decimals_and_a_comma_separator() {
+        assert_eq!(format_amount_for_csv(0), "0,00");
+        assert_eq!(format_amount_for_csv(5), "0,05");
+        assert_eq!(format_amount_for_csv(-5), "-0,05");
+        assert_eq!(format_amount_for_csv(-1_234), "-12,34");
+        assert_eq!(format_amount_for_csv(100_000), "1000,00");
+    }
+
+    #[test]
+    fn amount_formatting_survives_the_most_negative_amount() {
+        // `-i64::MIN` overflows a naive `abs()`; `unsigned_abs` is why this
+        // doesn't panic. Cheap regression guard, since the value is reachable
+        // from a bad CSV import rather than only from a synthetic test.
+        assert_eq!(format_amount_for_csv(i64::MIN), "-92233720368547758,08");
+    }
+
+    #[test]
+    fn csv_field_leaves_ordinary_values_untouched() {
+        assert_eq!(csv_field("Groceries"), "Groceries");
+        assert_eq!(csv_field(""), "");
+        assert_eq!(csv_field("Caf\u{e9}, Bar"), "Caf\u{e9}, Bar");
+    }
+
+    #[test]
+    fn csv_field_quotes_embedded_newlines() {
+        assert_eq!(csv_field("two\nlines"), "\"two\nlines\"");
+        assert_eq!(csv_field("crlf\r\nline"), "\"crlf\r\nline\"");
+    }
 }

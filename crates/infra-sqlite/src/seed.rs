@@ -188,7 +188,7 @@ mod tests {
 
         let all = repo.list_all().unwrap();
 
-        assert_eq!(all.len(), 157);
+        assert_eq!(all.len(), 112);
     }
 
     #[test]
@@ -197,17 +197,11 @@ mod tests {
         let repo = SqliteCategoryRepository::new(&conn);
         let all = repo.list_all().unwrap();
 
-        let groceries = all
-            .iter()
-            .find(|c| c.name().as_str() == "Groceries")
-            .unwrap();
-        let supermarket = all
-            .iter()
-            .find(|c| c.name().as_str() == "Supermarket")
-            .unwrap();
+        let housing = all.iter().find(|c| c.name().as_str() == "Housing").unwrap();
+        let rent = all.iter().find(|c| c.name().as_str() == "Rent").unwrap();
 
-        assert_eq!(groceries.parent_id(), None);
-        assert_eq!(supermarket.parent_id(), Some(groceries.id()));
+        assert_eq!(housing.parent_id(), None);
+        assert_eq!(rent.parent_id(), Some(housing.id()));
     }
 
     #[test]
