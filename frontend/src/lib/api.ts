@@ -172,6 +172,7 @@ export function parseToMinorUnits(input: string): number | null {
 export function buildCategoryOptions(
   categories: CategoryDto[],
 ): { id: string; label: string }[] {
+  const byId = new Map(categories.map((c) => [c.id, c]));
   const byParent = new Map<string | null, CategoryDto[]>();
   for (const c of categories) {
     const key = c.parent_id;
@@ -179,14 +180,16 @@ export function buildCategoryOptions(
     byParent.get(key)!.push(c);
   }
   const result: { id: string; label: string }[] = [];
-  function walk(parentId: string | null, depth: number) {
+  function walk(parentId: string | null) {
     for (const c of byParent.get(parentId) ?? []) {
       const suffix = c.is_default ? " (default)" : "";
-      result.push({ id: c.id, label: `${"— ".repeat(depth)}${c.name}${suffix}` });
-      walk(c.id, depth + 1);
+      const parentName = c.parent_id ? byId.get(c.parent_id)?.name : undefined;
+      const label = parentName ? `${parentName} > ${c.name}${suffix}` : `${c.name}${suffix}`;
+      result.push({ id: c.id, label });
+      walk(c.id);
     }
   }
-  walk(null, 0);
+  walk(null);
   return result;
 }
 
