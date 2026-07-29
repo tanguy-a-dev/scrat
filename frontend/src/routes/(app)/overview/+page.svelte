@@ -95,13 +95,42 @@
   const CHART_HEIGHT = 220;
   const PADDING_TOP = 12;
   const PADDING_BOTTOM = 26;
+  const PADDING_LEFT = 54;
 
   let plotHeight = $derived(CHART_HEIGHT - PADDING_TOP - PADDING_BOTTOM);
   let maxValueMinorUnits = $derived(
     Math.max(1, ...monthlyTotals.flatMap((m) => [m.income, m.expense])),
   );
-  let groupWidth = $derived(CHART_WIDTH / (monthlyTotals.length || 1));
+  let groupWidth = $derived((CHART_WIDTH - PADDING_LEFT) / (monthlyTotals.length || 1));
   let barWidth = $derived(groupWidth * 0.28);
+
+  /** Rounds a raw axis step up to a "nice" 1/2/5 × 10^n value, so the scale
+   * reads as round numbers (e.g. 500, 1000) rather than awkward fractions. */
+  function niceStep(rawStep: number): number {
+    if (rawStep <= 0) return 1;
+    const magnitude = 10 ** Math.floor(Math.log10(rawStep));
+    const residual = rawStep / magnitude;
+    const niceResidual = residual <= 1 ? 1 : residual <= 2 ? 2 : residual <= 5 ? 5 : 10;
+    return niceResidual * magnitude;
+  }
+
+  const AXIS_TICK_COUNT = 4;
+
+  /** Y-axis scale, in the same minor-units domain as maxValueMinorUnits —
+   * shared by income, expenses, and the savings line, so all three read off
+   * the same scale on the left. */
+  let axisTicks = $derived.by(() => {
+    const step = niceStep(maxValueMinorUnits / AXIS_TICK_COUNT);
+    const ticks: number[] = [];
+    for (let v = 0; v <= maxValueMinorUnits + step * 0.001; v += step) {
+      ticks.push(Math.round(v));
+    }
+    return ticks;
+  });
+
+  function axisY(valueMinorUnits: number): number {
+    return CHART_HEIGHT - PADDING_BOTTOM - (valueMinorUnits / maxValueMinorUnits) * plotHeight;
+  }
 
   function barHeight(valueMinorUnits: number): number {
     return (valueMinorUnits / maxValueMinorUnits) * plotHeight;
@@ -123,7 +152,7 @@
 
   let savingsPoints = $derived(
     monthlyTotals.map((m, i) => ({
-      x: i * groupWidth + groupWidth / 2,
+      x: PADDING_LEFT + i * groupWidth + groupWidth / 2,
       y: pointY(m.savings),
       value: m.savings,
     })),
@@ -218,8 +247,16 @@
     {:else}
       <div class="chart-wrap">
         <svg viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} class="monthly-chart">
+          {#each axisTicks as tick (tick)}
+            {@const y = axisY(tick)}
+            <line x1={PADDING_LEFT} x2={CHART_WIDTH} y1={y} y2={y} class="axis-gridline" />
+            <text x={PADDING_LEFT - 8} y={y} class="axis-label" text-anchor="end"
+              >{formatCurrency(tick, currency)}</text
+            >
+          {/each}
+
           {#each monthlyTotals as month, i (month.key)}
-            {@const groupX = i * groupWidth}
+            {@const groupX = PADDING_LEFT + i * groupWidth}
             {@const incomeText = formatCurrency(month.income, currency)}
             {@const expenseText = formatCurrency(month.expense, currency)}
             <rect
@@ -496,5 +533,18 @@
     fill: var(--color-text);
     opacity: 0.7;
     font-size: 9px;
+  }
+
+  .axis-gridline {
+    stroke: var(--color-text);
+    stroke-opacity: 0.12;
+    stroke-width: 1;
+  }
+
+  .axis-label {
+    fill: var(--color-text);
+    opacity: 0.6;
+    font-size: 8px;
+    dominant-baseline: middle;
   }
 </style>
