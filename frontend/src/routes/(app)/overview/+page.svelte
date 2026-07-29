@@ -127,6 +127,20 @@
   let hasAnyMonthlyActivity = $derived(
     monthlyTotals.some((m) => m.income > 0 || m.expense > 0),
   );
+
+  // Custom tooltip driven by pointer events instead of the native SVG
+  // <title> (which has a built-in hover delay before it appears).
+  let tooltip = $state<{ x: number; y: number; text: string } | null>(null);
+
+  function showTooltip(e: PointerEvent, text: string) {
+    const wrap = (e.currentTarget as Element).closest(".chart-wrap") as HTMLElement;
+    const rect = wrap.getBoundingClientRect();
+    tooltip = { x: e.clientX - rect.left, y: e.clientY - rect.top, text };
+  }
+
+  function hideTooltip() {
+    tooltip = null;
+  }
 </script>
 
 <h1>Overview</h1>
@@ -168,41 +182,70 @@
     {#if !hasAnyMonthlyActivity}
       <p class="empty">No transactions in the last {MONTHS_SHOWN} months.</p>
     {:else}
-      <svg viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} class="monthly-chart">
-        {#each monthlyTotals as month, i (month.key)}
-          {@const groupX = i * groupWidth}
-          <rect
-            x={groupX + groupWidth / 2 - barWidth - 2}
-            y={barY(month.income)}
-            width={barWidth}
-            height={barHeight(month.income)}
-            rx="2"
-            class="bar income"
-          />
-          <rect
-            x={groupX + groupWidth / 2 + 2}
-            y={barY(month.expense)}
-            width={barWidth}
-            height={barHeight(month.expense)}
-            rx="2"
-            class="bar expense"
-          />
-          <text
-            x={groupX + groupWidth / 2}
-            y={CHART_HEIGHT - 6}
-            class="month-label"
-            text-anchor="middle">{month.label}</text
-          >
-        {/each}
+      <div class="chart-wrap">
+        <svg viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} class="monthly-chart">
+          {#each monthlyTotals as month, i (month.key)}
+            {@const groupX = i * groupWidth}
+            {@const incomeLabel = `${month.label} income: ${formatCurrency(month.income, currency)}`}
+            {@const expenseLabel = `${month.label} expenses: ${formatCurrency(month.expense, currency)}`}
+            <rect
+              x={groupX + groupWidth / 2 - barWidth - 2}
+              y={barY(month.income)}
+              width={barWidth}
+              height={barHeight(month.income)}
+              rx="2"
+              class="bar income"
+              role="img"
+              aria-label={incomeLabel}
+              onpointerenter={(e) => showTooltip(e, incomeLabel)}
+              onpointermove={(e) => showTooltip(e, incomeLabel)}
+              onpointerleave={hideTooltip}
+            />
+            <rect
+              x={groupX + groupWidth / 2 + 2}
+              y={barY(month.expense)}
+              width={barWidth}
+              height={barHeight(month.expense)}
+              rx="2"
+              class="bar expense"
+              role="img"
+              aria-label={expenseLabel}
+              onpointerenter={(e) => showTooltip(e, expenseLabel)}
+              onpointermove={(e) => showTooltip(e, expenseLabel)}
+              onpointerleave={hideTooltip}
+            />
+            <text
+              x={groupX + groupWidth / 2}
+              y={CHART_HEIGHT - 6}
+              class="month-label"
+              text-anchor="middle">{month.label}</text
+            >
+          {/each}
 
-        <polyline points={savingsLinePoints} class="savings-line" />
-        {#each savingsPoints as p, i (monthlyTotals[i].key)}
-          <circle cx={p.x} cy={p.y} r="7" class="savings-hit">
-            <title>{monthlyTotals[i].label}: {formatCurrency(p.value, currency)}</title>
-          </circle>
-          <circle cx={p.x} cy={p.y} r="3" class="savings-dot" />
-        {/each}
-      </svg>
+          <polyline points={savingsLinePoints} class="savings-line" />
+          {#each savingsPoints as p, i (monthlyTotals[i].key)}
+            {@const savingsLabel = `${monthlyTotals[i].label}: ${formatCurrency(p.value, currency)}`}
+            <circle
+              cx={p.x}
+              cy={p.y}
+              r="7"
+              class="savings-hit"
+              role="img"
+              aria-label={savingsLabel}
+              onpointerenter={(e) => showTooltip(e, savingsLabel)}
+              onpointermove={(e) => showTooltip(e, savingsLabel)}
+              onpointerleave={hideTooltip}
+            />
+            <circle cx={p.x} cy={p.y} r="3" class="savings-dot" />
+          {/each}
+        </svg>
+
+        {#if tooltip}
+          <div class="chart-tooltip" style={`left:${tooltip.x}px; top:${tooltip.y}px;`}>
+            {tooltip.text}
+          </div>
+        {/if}
+      </div>
     {/if}
   </div>
 {/if}
@@ -305,10 +348,39 @@
     background-color: var(--color-accent);
   }
 
+  .chart-wrap {
+    position: relative;
+  }
+
   .monthly-chart {
     width: 100%;
     height: auto;
     display: block;
+  }
+
+  .chart-tooltip {
+    position: absolute;
+    transform: translate(-50%, -100%);
+    margin-top: -10px;
+    background-color: var(--color-shade-1);
+    color: var(--color-text);
+    border: 1px solid var(--color-shade-3);
+    border-radius: 6px;
+    padding: 0.3rem 0.55rem;
+    font-size: 0.75rem;
+    white-space: nowrap;
+    pointer-events: none;
+    z-index: 10;
+  }
+
+  .bar {
+    transform-box: fill-box;
+    transform-origin: 50% 100%;
+    transition: transform 0.15s ease;
+  }
+
+  .bar:hover {
+    transform: scale(1.08);
   }
 
   .bar.income {
@@ -336,6 +408,13 @@
   .savings-dot {
     fill: var(--color-accent);
     pointer-events: none;
+    transform-box: fill-box;
+    transform-origin: center;
+    transition: transform 0.15s ease;
+  }
+
+  .savings-hit:hover + .savings-dot {
+    transform: scale(1.6);
   }
 
   .month-label {
