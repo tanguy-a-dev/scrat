@@ -36,6 +36,7 @@ export interface ImportPreviewRowDto {
   source: string;
   csv_category: string | null;
   csv_subcategory: string | null;
+  is_likely_balance_row: boolean;
   include_by_default: boolean;
   raw: string[];
 }

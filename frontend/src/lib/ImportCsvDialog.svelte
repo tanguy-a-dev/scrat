@@ -179,8 +179,9 @@
       <p class="hint">
         Detected: date column ({Math.round(preview.date_confidence * 100)}%
         confidence), amount column ({Math.round(preview.amount_confidence * 100)}%
-        confidence). Uncheck any row that isn't a real transaction (e.g. an
-        opening/closing balance line). "Category" is the Category (and
+        confidence). Rows that look like an opening/closing balance line are
+        pre-unchecked — review and uncheck any other row that isn't a real
+        transaction. "Category" is the Category (and
         Subcategory, if present) column from the file itself, if it has one —
         each row with one is filed under a matching category/subcategory
         (creating it if it doesn't exist yet). Rows without one use the
@@ -217,7 +218,7 @@
           <tbody>
             {#each preview.rows as row, i (i)}
               {@const invalid = row.date === null || row.amount_minor_units === null}
-              <tr class:invalid>
+              <tr class:invalid class:likely-balance={row.is_likely_balance_row}>
                 <td>
                   <input
                     type="checkbox"
@@ -231,7 +232,12 @@
                     ? formatSignedAmount(row.amount_minor_units)
                     : "—"}</td
                 >
-                <td>{row.source || "—"}</td>
+                <td>
+                  {row.source || "—"}
+                  {#if row.is_likely_balance_row}
+                    <span class="balance-hint">(likely a balance line)</span>
+                  {/if}
+                </td>
                 <td class="suggestion"
                   >{row.csv_subcategory
                     ? `${row.csv_category} / ${row.csv_subcategory}`
@@ -348,6 +354,16 @@
 
   tr.invalid {
     opacity: 0.5;
+  }
+
+  tr.likely-balance:not(.invalid) {
+    background-color: color-mix(in srgb, var(--color-accent) 8%, transparent);
+  }
+
+  .balance-hint {
+    font-style: italic;
+    opacity: 0.7;
+    font-size: 0.8rem;
   }
 
   .suggestion {

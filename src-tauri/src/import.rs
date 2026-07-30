@@ -24,7 +24,12 @@ pub struct ImportPreviewRowDto {
     /// nests under `csv_category` on import, mirroring the app's own export
     /// format.
     pub csv_subcategory: Option<String>,
-    /// Default checked/unchecked state — unparseable rows start unchecked.
+    /// True when the row looks like a bank's opening/closing balance line
+    /// rather than a real transaction — surfaced so the frontend can flag
+    /// it to the user, in addition to defaulting it unchecked.
+    pub is_likely_balance_row: bool,
+    /// Default checked/unchecked state — unparseable rows and rows that
+    /// look like an opening/closing balance line start unchecked.
     pub include_by_default: bool,
     pub raw: Vec<String>,
 }
@@ -46,10 +51,11 @@ pub fn preview_csv_import(bytes: Vec<u8>) -> ImportPreviewDto {
             .map(|row| ImportPreviewRowDto {
                 date: row.date.map(|d| d.format("%Y-%m-%d").to_string()),
                 amount_minor_units: row.amount_minor_units,
-                include_by_default: row.is_valid(),
+                include_by_default: row.is_valid() && !row.is_likely_balance_row,
                 source: row.source,
                 csv_category: row.csv_category,
                 csv_subcategory: row.csv_subcategory,
+                is_likely_balance_row: row.is_likely_balance_row,
                 raw: row.raw,
             })
             .collect(),

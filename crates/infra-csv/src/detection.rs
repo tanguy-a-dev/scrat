@@ -323,6 +323,13 @@ pub struct ParsedRow {
     /// `csv_category` when both are applied (see `commit_csv_import`),
     /// mirroring the app's own CSV export format.
     pub csv_subcategory: Option<String>,
+    /// True when this row looks like a bank's opening/closing balance line
+    /// rather than a real transaction — see `is_boundary_balance_row`.
+    /// Doesn't affect `is_valid` (the row still parses as a perfectly good
+    /// date+amount); it only changes the default checked state the import
+    /// UI starts the row at, since the heuristic can misfire and the user
+    /// can always re-check the row.
+    pub is_likely_balance_row: bool,
     pub raw: Vec<String>,
 }
 
@@ -333,6 +340,36 @@ impl ParsedRow {
     pub fn is_valid(&self) -> bool {
         self.date.is_some() && matches!(self.amount_minor_units, Some(a) if a != 0)
     }
+}
+
+/// The most common field count across `rows` — the shape real transaction
+/// rows share, used by [`is_boundary_balance_row`] as the baseline a
+/// boundary row is compared against.
+fn modal_row_len(rows: &[Vec<String>]) -> usize {
+    let mut frequency = std::collections::HashMap::new();
+    for r in rows {
+        *frequency.entry(r.len()).or_insert(0) += 1;
+    }
+    frequency
+        .into_iter()
+        .max_by_key(|&(_, count)| count)
+        .map(|(len, _)| len)
+        .unwrap_or(0)
+}
+
+/// True if row `idx` is the file's first or last data row and is
+/// structurally thinner than the rest. Most banks bookend an export with
+/// one row per boundary carrying the balance as of the start/end date — just
+/// a date, an amount, and a reference/account code — missing the
+/// transaction-type, counterparty, and reference columns a real transaction
+/// row has, so it parses into fewer fields than the modal row.
+///
+/// Only the very first and very last row are ever considered: a short row
+/// in the middle of the file is far more likely to be a genuine transaction
+/// with some blank trailing fields than a balance line, and banks only ever
+/// bookend the whole file, never the middle of it.
+fn is_boundary_balance_row(rows: &[Vec<String>], idx: usize, modal_len: usize) -> bool {
+    rows.len() >= 3 && (idx == 0 || idx == rows.len() - 1) && rows[idx].len() < modal_len
 }
 
 #[derive(Debug, Clone)]
@@ -406,7 +443,10 @@ fn find_account_column(header: &[String]) -> Option<usize> {
 /// (`csv_category`/`csv_subcategory`), and Currency/Account never belong in
 /// `source` (the app has one global currency, and the destination account is
 /// chosen once for the whole import) — otherwise they'd leak into it, e.g.
-/// "EUR" and a bank name getting prepended/appended to every source.
+/// "EUR" and a bank name getting prepended/appended to every source. Each
+/// row is also checked against [`is_boundary_balance_row`] and flagged via
+/// `is_likely_balance_row` when it looks like an opening/closing balance
+/// line rather than a real transaction.
 pub fn build_preview(bytes: &[u8]) -> ImportPreview {
     let text = decode_bytes(bytes);
     let delimiter = sniff_delimiter(&text);
@@ -437,9 +477,11 @@ pub fn build_preview(bytes: &[u8]) -> ImportPreview {
         };
     };
 
+    let modal_len = modal_row_len(&rows);
     let parsed_rows = rows
         .iter()
-        .map(|raw| {
+        .enumerate()
+        .map(|(i, raw)| {
             let date_cell = raw
                 .get(detection.date_column)
                 .map(|s| s.as_str())
@@ -478,6 +520,7 @@ pub fn build_preview(bytes: &[u8]) -> ImportPreview {
                 source,
                 csv_category,
                 csv_subcategory,
+                is_likely_balance_row: is_boundary_balance_row(&rows, i, modal_len),
                 raw: raw.clone(),
             }
         })
@@ -613,6 +656,31 @@ mod tests {
     }
 
     #[test]
+    fn modal_row_len_picks_the_most_common_field_count() {
+        let rows = parse_rows(
+            "01/07/2026;500,00;;REF\n01/07/2026;-35,00;Carte;;STORE;;0;Misc\n01/07/2026;10,00;Carte;;STORE;;0;Misc\n",
+            ';',
+        );
+        assert_eq!(modal_row_len(&rows), 8);
+    }
+
+    #[test]
+    fn is_boundary_balance_row_flags_only_a_thinner_first_or_last_row() {
+        // Three modal-shape (8-field) rows outnumber the two 4-field
+        // boundary rows, so `modal_len` is unambiguous.
+        let rows = parse_rows(
+            "01/07/2026;500,00;;REF\n01/07/2026;-35,00;Carte;;STORE;;0;Misc\n01/07/2026;10,00;Carte;;STORE;;0;Misc\n01/07/2026;-1,00;Carte;;STORE;;0;Misc\n05/07/2026;600,00;;REF\n",
+            ';',
+        );
+        let modal_len = modal_row_len(&rows);
+        assert!(is_boundary_balance_row(&rows, 0, modal_len));
+        assert!(is_boundary_balance_row(&rows, 4, modal_len));
+        assert!(!is_boundary_balance_row(&rows, 1, modal_len));
+        assert!(!is_boundary_balance_row(&rows, 2, modal_len));
+        assert!(!is_boundary_balance_row(&rows, 3, modal_len));
+    }
+
+    #[test]
     fn build_preview_on_headerless_ragged_data_concatenates_remaining_columns_as_source() {
         // Structurally mirrors a real French bank export: no header,
         // semicolon-delimited, decimal comma, two 4-field balance rows
@@ -641,12 +709,49 @@ mod tests {
         assert_eq!(wire_row.amount_minor_units, Some(12_050));
         assert!(wire_row.source.contains("INCOMING WAGES"));
 
-        // The two summary/balance rows still parse as date+amount (nothing
-        // structurally marks them as non-transactions) — this is exactly
-        // why the import UI shows a per-row include/exclude checkbox
-        // rather than silently trusting every parsed row.
+        // The two summary/balance rows still parse as date+amount, and stay
+        // `is_valid` — this is exactly why the import UI keeps a per-row
+        // include/exclude checkbox rather than silently dropping rows. But
+        // they're structurally thinner (4 fields) than the surrounding
+        // transaction rows (8 fields) and sit at the file's boundary, so
+        // they get flagged as likely balance lines and default unchecked.
         assert!(preview.rows[0].is_valid());
+        assert!(preview.rows[0].is_likely_balance_row);
         assert!(preview.rows[4].is_valid());
+        assert!(preview.rows[4].is_likely_balance_row);
+
+        assert!(!card_row.is_likely_balance_row);
+        assert!(!wire_row.is_likely_balance_row);
+    }
+
+    #[test]
+    fn build_preview_does_not_flag_a_short_row_in_the_middle_of_the_file() {
+        // A short row that isn't at the file's boundary is far more likely
+        // to be a genuine transaction with some blank trailing fields (e.g.
+        // no counterparty reference) than a balance line — only the first
+        // and last row are ever candidates.
+        let text = "\
+01/07/2026;-35,00;Carte;;CB SOME STORE   30/06/26;;0;Divers
+02/07/2026;10,00;;
+03/07/2026;-19,99;Virement;;PRLV SEPA SOME BILL;;;
+";
+        let preview = build_preview(text.as_bytes());
+        assert_eq!(preview.rows.len(), 3);
+        assert!(!preview.rows[1].is_likely_balance_row);
+    }
+
+    #[test]
+    fn build_preview_does_not_flag_boundary_rows_in_a_very_short_file() {
+        // With fewer than 3 rows there's no reliable "modal" shape to
+        // compare against, so nothing is flagged even if the two rows
+        // differ in length.
+        let text = "\
+01/07/2026;500,00;;ACC REF 12345
+01/07/2026;-35,00;Carte;;CB SOME STORE   30/06/26;;0;Divers
+";
+        let preview = build_preview(text.as_bytes());
+        assert_eq!(preview.rows.len(), 2);
+        assert!(preview.rows.iter().all(|r| !r.is_likely_balance_row));
     }
 
     #[test]
