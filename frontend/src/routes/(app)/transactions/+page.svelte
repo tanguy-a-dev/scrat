@@ -152,7 +152,9 @@
     if (categoryId === t.category_id) return;
     try {
       await api.setTransactionCategory(t.id, categoryId);
-      await load();
+      transactions = transactions.map((tx) =>
+        tx.id === t.id ? { ...tx, category_id: categoryId } : tx,
+      );
     } catch (e) {
       toast.error(String(e));
     }
@@ -489,6 +491,11 @@
   td {
     padding: 0.4rem 0.5rem;
     border-bottom: 1px solid var(--color-shade-2);
+  }
+
+  th:first-child,
+  td:first-child {
+    white-space: nowrap;
   }
 
   @media (max-width: 900px) {

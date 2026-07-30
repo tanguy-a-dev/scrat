@@ -94,10 +94,20 @@
 
   function paintHighlights() {
     if (supported) {
+      /* WebKit (the WKWebView engine Tauri uses on macOS) doesn't always
+         repaint regions that drop out of a Highlight when .set() is called
+         again on the same registry key — a search narrowing from "e" to
+         "expense" can leave the old single-letter matches visually stuck.
+         Deleting before re-setting forces a full repaint instead of relying
+         on the engine to diff the old and new range lists. Chromium doesn't
+         need this, but it's harmless there. */
+      CSS.highlights.delete("find-in-page-all");
       const textRanges = matches
         .filter((m): m is TextMatch => m.kind === "text")
         .map((m) => m.range);
-      CSS.highlights.set("find-in-page-all", new Highlight(...textRanges));
+      if (textRanges.length > 0) {
+        CSS.highlights.set("find-in-page-all", new Highlight(...textRanges));
+      }
     }
 
     clearInputMarks();
@@ -109,14 +119,12 @@
     }
 
     const current = matches[currentIndex];
+    if (supported) CSS.highlights.delete("find-in-page-current");
     if (current?.kind === "text") {
       if (supported) CSS.highlights.set("find-in-page-current", new Highlight(current.range));
-    } else {
-      if (supported) CSS.highlights.delete("find-in-page-current");
-      if (current?.kind === "input") {
-        current.el.classList.add("find-in-page-input-current");
-        current.el.setSelectionRange(current.start, current.end);
-      }
+    } else if (current?.kind === "input") {
+      current.el.classList.add("find-in-page-input-current");
+      current.el.setSelectionRange(current.start, current.end);
     }
   }
 

@@ -243,6 +243,78 @@ impl<'a> TransactionService<'a> {
         Ok(subcategory.id())
     }
 
+    /// Finds past transactions whose source text matches `source` exactly
+    /// (case-insensitive, whitespace-normalized) and returns the category of
+    /// the most recent one by transaction date — used by CSV import to
+    /// categorize rows the file itself doesn't specify a category for. Last
+    /// transaction speaks the truth: if past transactions with this source
+    /// disagree on category, the most recent one wins.
+    pub fn find_category_for_source(
+        &self,
+        source: &str,
+    ) -> Result<Option<CategoryId>, ApplicationError> {
+        let normalized = normalize_source(source);
+        if normalized.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(self
+            .matching_source_transactions(&normalized)?
+            .into_iter()
+            .max_by_key(|t| t.date())
+            .map(|t| t.category_id()))
+    }
+
+    /// Like [`Self::find_category_for_source`], but scoped to past
+    /// transactions filed under `category_name` (or one of its
+    /// subcategories) — used when a CSV row specifies a category but leaves
+    /// the subcategory blank, so history can still fill in the specific
+    /// subcategory this source is usually filed under without overriding
+    /// the category the row itself already pins down. Last transaction
+    /// speaks the truth, same as [`Self::find_category_for_source`].
+    pub fn find_category_for_source_in_category(
+        &self,
+        source: &str,
+        category_name: &str,
+    ) -> Result<Option<CategoryId>, ApplicationError> {
+        let normalized = normalize_source(source);
+        if normalized.is_empty() {
+            return Ok(None);
+        }
+
+        let categories = self.categories.list_all()?;
+        let is_in_category = |id: CategoryId| -> bool {
+            categories.iter().find(|c| c.id() == id).is_some_and(|c| {
+                c.name().as_str().eq_ignore_ascii_case(category_name)
+                    || c.parent_id().is_some_and(|parent_id| {
+                        categories.iter().any(|p| {
+                            p.id() == parent_id
+                                && p.name().as_str().eq_ignore_ascii_case(category_name)
+                        })
+                    })
+            })
+        };
+
+        Ok(self
+            .matching_source_transactions(&normalized)?
+            .into_iter()
+            .filter(|t| is_in_category(t.category_id()))
+            .max_by_key(|t| t.date())
+            .map(|t| t.category_id()))
+    }
+
+    fn matching_source_transactions(
+        &self,
+        normalized_source: &str,
+    ) -> Result<Vec<Transaction>, ApplicationError> {
+        Ok(self
+            .transactions
+            .list_all()?
+            .into_iter()
+            .filter(|t| normalize_source(t.source().as_str()) == normalized_source)
+            .collect())
+    }
+
     /// Local frequency lookup, no ML/network: finds past transactions that
     /// share a significant word with `source`, and suggests whichever
     /// category is most common among them.
@@ -271,6 +343,18 @@ impl<'a> TransactionService<'a> {
             .max_by_key(|(_, count)| *count)
             .map(|(id, _)| id))
     }
+}
+
+/// Case-insensitive, whitespace-collapsed form of a source string, matching
+/// the normalization `DedupKey::compute` applies before hashing — the
+/// convention this repo already uses to decide whether two source texts
+/// "are the same" for comparison purposes.
+fn normalize_source(s: &str) -> String {
+    s.trim()
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Lowercases and splits on non-alphanumeric boundaries, dropping short
@@ -862,6 +946,207 @@ mod tests {
         let suggestion = service.suggest_category_for_source("NETFLIX.COM").unwrap();
 
         assert_eq!(suggestion, Some(entertainment.id()));
+    }
+
+    #[test]
+    fn find_category_for_source_uses_most_recent_transactions_category() {
+        let f = fixture();
+        let dining = Category::new(
+            CategoryId::new(),
+            CategoryName::new("Dining").unwrap(),
+            None,
+        )
+        .unwrap();
+        f.categories.insert(&dining).unwrap();
+        let service = TransactionService::new(
+            &f.transactions,
+            &f.accounts,
+            &f.categories,
+            Currency::new("USD").unwrap(),
+        );
+
+        // Same source, filed under Groceries first, then recategorized (in a
+        // later transaction) as Dining — the later one should win even
+        // though it's not the last one inserted below.
+        service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+                -1_000,
+                "Corner Bistro",
+                dining.id(),
+                f.account_id,
+            )
+            .unwrap();
+        service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                -1_000,
+                "Corner Bistro",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+
+        let found = service.find_category_for_source("corner bistro").unwrap();
+
+        assert_eq!(found, Some(dining.id()));
+    }
+
+    #[test]
+    fn find_category_for_source_requires_exact_normalized_match() {
+        let f = fixture();
+        let service = TransactionService::new(
+            &f.transactions,
+            &f.accounts,
+            &f.categories,
+            Currency::new("USD").unwrap(),
+        );
+        service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                -1_000,
+                "Corner Bistro Downtown",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+
+        let found = service.find_category_for_source("Corner Bistro").unwrap();
+
+        assert_eq!(found, None);
+    }
+
+    #[test]
+    fn find_category_for_source_returns_none_when_no_past_matches() {
+        let f = fixture();
+        let service = TransactionService::new(
+            &f.transactions,
+            &f.accounts,
+            &f.categories,
+            Currency::new("USD").unwrap(),
+        );
+
+        let found = service.find_category_for_source("Corner Bistro").unwrap();
+
+        assert_eq!(found, None);
+    }
+
+    #[test]
+    fn find_category_for_source_in_category_returns_most_recent_subcategory() {
+        let f = fixture();
+        let home =
+            Category::new(CategoryId::new(), CategoryName::new("Home").unwrap(), None).unwrap();
+        f.categories.insert(&home).unwrap();
+        let rent = Category::new(
+            CategoryId::new(),
+            CategoryName::new("Rent").unwrap(),
+            Some(home.id()),
+        )
+        .unwrap();
+        f.categories.insert(&rent).unwrap();
+        let utilities = Category::new(
+            CategoryId::new(),
+            CategoryName::new("Utilities").unwrap(),
+            Some(home.id()),
+        )
+        .unwrap();
+        f.categories.insert(&utilities).unwrap();
+        let service = TransactionService::new(
+            &f.transactions,
+            &f.accounts,
+            &f.categories,
+            Currency::new("USD").unwrap(),
+        );
+
+        // Same source, first filed under Utilities, later recategorized to
+        // Rent — the later one should win.
+        service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                -1_000,
+                "ACME Landlord",
+                utilities.id(),
+                f.account_id,
+            )
+            .unwrap();
+        service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+                -1_000,
+                "ACME Landlord",
+                rent.id(),
+                f.account_id,
+            )
+            .unwrap();
+
+        let found = service
+            .find_category_for_source_in_category("ACME Landlord", "Home")
+            .unwrap();
+
+        assert_eq!(found, Some(rent.id()));
+    }
+
+    #[test]
+    fn find_category_for_source_in_category_ignores_matches_under_a_different_category() {
+        let f = fixture();
+        let home =
+            Category::new(CategoryId::new(), CategoryName::new("Home").unwrap(), None).unwrap();
+        f.categories.insert(&home).unwrap();
+        let rent = Category::new(
+            CategoryId::new(),
+            CategoryName::new("Rent").unwrap(),
+            Some(home.id()),
+        )
+        .unwrap();
+        f.categories.insert(&rent).unwrap();
+        let service = TransactionService::new(
+            &f.transactions,
+            &f.accounts,
+            &f.categories,
+            Currency::new("USD").unwrap(),
+        );
+        service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                -1_000,
+                "ACME Landlord",
+                rent.id(),
+                f.account_id,
+            )
+            .unwrap();
+
+        // fixture's pre-seeded "Groceries" category is unrelated to Home/Rent
+        let found = service
+            .find_category_for_source_in_category("ACME Landlord", "Groceries")
+            .unwrap();
+
+        assert_eq!(found, None);
+    }
+
+    #[test]
+    fn find_category_for_source_in_category_matches_the_bare_top_level_category_itself() {
+        let f = fixture();
+        let service = TransactionService::new(
+            &f.transactions,
+            &f.accounts,
+            &f.categories,
+            Currency::new("USD").unwrap(),
+        );
+        service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                -1_200,
+                "Whole Foods",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+
+        let found = service
+            .find_category_for_source_in_category("Whole Foods", "Groceries")
+            .unwrap();
+
+        assert_eq!(found, Some(f.category_id));
     }
 
     #[test]

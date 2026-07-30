@@ -71,12 +71,17 @@ pub struct ImportCommitRowDto {
     pub source: String,
     /// The CSV's own Category column text for this row, if any — when
     /// present, it's matched to an existing category by name (creating a
-    /// new top-level one if nothing matches) instead of the row falling
-    /// back to the category chosen for the whole import.
+    /// new top-level one if nothing matches). When absent, the row is
+    /// categorized from the most recent past transaction with the same
+    /// source text, if one exists, before falling back to the category
+    /// chosen for the whole import.
     pub category: Option<String>,
     /// The CSV's own Subcategory column text for this row, if any — nests
     /// under `category` (found or created) instead of being applied on its
-    /// own.
+    /// own. When `category` is given but this is blank, the most recent past
+    /// transaction with the same source text that was filed under `category`
+    /// (or one of its subcategories) supplies the subcategory instead,
+    /// before falling back to the bare top-level `category`.
     pub subcategory: Option<String>,
 }
 
@@ -141,16 +146,27 @@ pub fn commit_csv_import(
         let import_rows = parsed_rows
             .into_iter()
             .map(|row| {
+                let subcategory = row
+                    .subcategory
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
                 let category_id = match row
                     .category
                     .as_deref()
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
                 {
-                    Some(name) => {
-                        s.get_or_create_category_path(name, row.subcategory.as_deref())?
-                    }
-                    None => default_category_id,
+                    Some(name) => match subcategory {
+                        Some(sub) => s.get_or_create_category_path(name, Some(sub))?,
+                        None => match s.find_category_for_source_in_category(&row.source, name)? {
+                            Some(historical_id) => historical_id,
+                            None => s.get_or_create_category_path(name, None)?,
+                        },
+                    },
+                    None => s
+                        .find_category_for_source(&row.source)?
+                        .unwrap_or(default_category_id),
                 };
                 Ok(ImportRow {
                     date: row.date,

@@ -12,7 +12,12 @@ use crate::category_repository::SqliteCategoryRepository;
 type CategoryTree = &'static [(&'static str, &'static str, &'static [&'static str])];
 
 const EXPENSE_CATEGORIES: CategoryTree = &[
-    ("Food & Drink", "utensils", &[]),
+    ("Food & Drink", "utensils", 
+        &[
+            "Restaurant",
+            "Bar",
+        ]
+    ),
     ("Groceries", "shopping-cart", &[]),
     (
         "Housing",
@@ -151,7 +156,6 @@ const TRANSFER_CATEGORIES: CategoryTree = &[(
         "Credit Card Payments",
         "Cash Withdrawal",
         "Cash Deposit",
-        "Currency Exchange",
     ],
 )];
 

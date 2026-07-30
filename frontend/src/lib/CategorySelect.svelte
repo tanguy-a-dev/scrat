@@ -21,6 +21,7 @@
   let highlighted = $state(0);
   let containerEl: HTMLDivElement | undefined = $state();
   let inputEl: HTMLInputElement | undefined = $state();
+  let listEl: HTMLUListElement | undefined = $state();
 
   let selectedLabel = $derived(
     options.find((o) => o.id === value)?.label ?? placeholder,
@@ -63,16 +64,29 @@
     }
   }
 
+  function moveHighlight(delta: number) {
+    if (filtered.length === 0) return;
+    highlighted = Math.min(Math.max(highlighted + delta, 0), filtered.length - 1);
+    queueMicrotask(() =>
+      listEl
+        ?.querySelector("button.highlighted")
+        ?.scrollIntoView({ block: "nearest" }),
+    );
+  }
+
   function handleInputKeydown(event: KeyboardEvent) {
     if (event.key === "Escape") {
       event.preventDefault();
       close();
     } else if (event.key === "ArrowDown") {
       event.preventDefault();
-      highlighted = Math.min(highlighted + 1, filtered.length - 1);
+      moveHighlight(1);
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
-      highlighted = Math.max(highlighted - 1, 0);
+      moveHighlight(-1);
+    } else if (event.key === "Tab") {
+      event.preventDefault();
+      moveHighlight(event.shiftKey ? -1 : 1);
     } else if (event.key === "Enter") {
       event.preventDefault();
       const option = filtered[highlighted];
@@ -94,8 +108,12 @@
         bind:value={query}
         onkeydown={handleInputKeydown}
         placeholder="Search category…"
+        spellcheck="false"
+        autocomplete="off"
+        autocorrect="off"
+        autocapitalize="off"
       />
-      <ul class="options">
+      <ul class="options" bind:this={listEl}>
         {#if filtered.length === 0}
           <li class="empty">No matches.</li>
         {:else}
