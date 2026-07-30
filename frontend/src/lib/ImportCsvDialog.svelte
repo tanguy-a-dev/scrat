@@ -226,7 +226,7 @@
                     disabled={invalid}
                   />
                 </td>
-                <td>{row.date ?? "—"}</td>
+                <td class="date">{row.date ?? "—"}</td>
                 <td
                   >{row.amount_minor_units !== null
                     ? formatSignedAmount(row.amount_minor_units)
@@ -350,6 +350,10 @@
   td {
     text-align: left;
     padding: 0.35rem 0.5rem;
+  }
+
+  td.date {
+    white-space: nowrap;
   }
 
   tr.invalid {
