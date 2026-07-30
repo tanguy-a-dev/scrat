@@ -169,6 +169,19 @@ export function formatCurrency(minorUnits: number, currencyCode: string): string
   return `${sign}${symbol}${formatMoney(Math.abs(minorUnits))}`;
 }
 
+/** Same as `formatCurrency` but rounded to whole units, e.g. "€100 123".
+ * For chart axis labels, where the cents are noise and the extra three
+ * characters can overflow the label gutter. */
+export function formatCurrencyRounded(minorUnits: number, currencyCode: string): string {
+  const symbol = CURRENCY_SYMBOLS[currencyCode] ?? `${currencyCode} `;
+  const whole = Math.round(minorUnits / 100);
+  const sign = whole < 0 ? "-" : "";
+  const grouped = Math.abs(whole)
+    .toString()
+    .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  return `${sign}${symbol}${grouped}`;
+}
+
 /** Parses a user-typed decimal amount ("12.34") into integer minor units. */
 export function parseToMinorUnits(input: string): number | null {
   const value = Number.parseFloat(input);
