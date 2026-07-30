@@ -2,8 +2,8 @@
 
 ## Details
 
-- Graph colors: Generate a color palette for about 30 colors. Take into account our current palette.md
-- On the right of each graph we will add a ledeng with a small dot with the color and the category name
+- Graph colors: Generate better fitting palette for graph
+- The legend on the right of the graph should take less space, the graph should be a little bigger
 - When hovering a color on the graph or hovering the category in the ledeng, it should highlight the graph color, the legend's category and the category in the list bellow
 
 

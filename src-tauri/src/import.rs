@@ -77,7 +77,6 @@ pub struct ImportCommitRowDto {
 #[derive(Debug, Serialize)]
 pub struct ImportSummaryDto {
     pub imported: usize,
-    pub skipped_duplicates: usize,
 }
 
 struct ParsedCommitRow {
@@ -160,6 +159,5 @@ pub fn commit_csv_import(
     })
     .map(|outcome| ImportSummaryDto {
         imported: outcome.imported,
-        skipped_duplicates: outcome.skipped_duplicates,
     })
 }

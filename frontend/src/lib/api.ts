@@ -48,7 +48,6 @@ export interface ImportPreviewDto {
 
 export interface ImportSummaryDto {
   imported: number;
-  skipped_duplicates: number;
 }
 
 export const api = {

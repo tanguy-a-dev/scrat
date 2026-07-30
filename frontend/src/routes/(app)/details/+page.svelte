@@ -251,35 +251,48 @@
 )}
   <div class="graph-column">
     <h2 class="panel-title">{label}</h2>
-    <div class="donut-wrap">
-      <svg viewBox="0 0 200 200" class="donut">
-        <g transform="rotate(-90 100 100)">
-          <circle
-            cx="100"
-            cy="100"
-            r={RADIUS}
-            fill="none"
-            stroke="var(--donut-track)"
-            stroke-width="24"
-          />
-          {#each slices as slice (slice.categoryId)}
+    <div class="graph-graphics">
+      <div class="donut-wrap">
+        <svg viewBox="0 0 200 200" class="donut">
+          <g transform="rotate(-90 100 100)">
             <circle
               cx="100"
               cy="100"
               r={RADIUS}
               fill="none"
-              stroke={slice.color}
+              stroke="var(--donut-track)"
               stroke-width="24"
-              stroke-dasharray={slice.animatedDasharray}
-              stroke-dashoffset={slice.animatedDashoffset}
             />
-          {/each}
-        </g>
-      </svg>
-      <div class="donut-center">
-        <span class="total">{formatCurrency(total, currency)}</span>
-        <span class="label">{label}</span>
+            {#each slices as slice (slice.categoryId)}
+              <circle
+                cx="100"
+                cy="100"
+                r={RADIUS}
+                fill="none"
+                stroke={slice.color}
+                stroke-width="24"
+                stroke-dasharray={slice.animatedDasharray}
+                stroke-dashoffset={slice.animatedDashoffset}
+              />
+            {/each}
+          </g>
+        </svg>
+        <div class="donut-center">
+          <span class="total">{formatCurrency(total, currency)}</span>
+          <span class="label">{label}</span>
+        </div>
       </div>
+
+      {#if slices.length > 0}
+        <ul class="legend">
+          {#each slices as slice (slice.categoryId)}
+            <li>
+              <span class="dot" style={`background-color:${slice.color}`}></span>
+              <span class="name">{slice.name}</span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
     </div>
 
     {#if slices.length === 0}
@@ -408,10 +421,18 @@
     margin-top: 0;
   }
 
+  .graph-graphics {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1.5rem;
+    margin-bottom: 1.5rem;
+  }
+
   .donut-wrap {
     position: relative;
-    width: min(280px, 70vw);
-    margin: 0 auto 1.5rem;
+    width: min(220px, 55vw);
+    flex-shrink: 0;
   }
 
   .donut {
@@ -422,6 +443,21 @@
 
   :root {
     --donut-track: var(--color-shade-3);
+  }
+
+  .legend {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .legend li {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
   }
 
   .donut-center {

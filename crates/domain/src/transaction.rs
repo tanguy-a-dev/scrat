@@ -66,9 +66,9 @@ impl SourceText {
     }
 }
 
-/// A stable fingerprint of (account, date, amount, normalized source), used
-/// to make re-importing the same CSV rows a no-op (`INSERT ... ON CONFLICT
-/// DO NOTHING` in the infra layer keys off this).
+/// A stable fingerprint of (account, date, amount, normalized source). Not
+/// enforced unique — identical transactions are allowed — kept only as a
+/// candidate key for a future "find likely duplicates" review feature.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DedupKey(String);
 

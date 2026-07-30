@@ -3,7 +3,7 @@ use scrat_domain::account::AccountId;
 use scrat_domain::category::{Category, CategoryError, CategoryId, CategoryName};
 use scrat_domain::money::{Currency, Money};
 use scrat_domain::ports::{
-    AccountRepository, CategoryRepository, InsertOutcome, RepositoryError, TransactionRepository,
+    AccountRepository, CategoryRepository, RepositoryError, TransactionRepository,
 };
 use scrat_domain::transaction::{SourceText, Transaction, TransactionError, TransactionId};
 use thiserror::Error;
@@ -38,7 +38,6 @@ pub struct ImportRow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ImportOutcome {
     pub imported: usize,
-    pub skipped_duplicates: usize,
 }
 
 /// Constructed fresh per request against live repository borrows — see
@@ -154,10 +153,8 @@ impl<'a> TransactionService<'a> {
                 row.category_id,
                 account_id,
             )?;
-            match self.transactions.insert_or_skip(&transaction)? {
-                InsertOutcome::Inserted => outcome.imported += 1,
-                InsertOutcome::DuplicateSkipped => outcome.skipped_duplicates += 1,
-            }
+            self.transactions.insert(&transaction)?;
+            outcome.imported += 1;
         }
         Ok(outcome)
     }
@@ -386,20 +383,6 @@ mod tests {
         fn insert(&self, transaction: &Transaction) -> Result<(), RepositoryError> {
             self.transactions.lock().unwrap().push(transaction.clone());
             Ok(())
-        }
-        fn insert_or_skip(
-            &self,
-            transaction: &Transaction,
-        ) -> Result<scrat_domain::ports::InsertOutcome, RepositoryError> {
-            let mut transactions = self.transactions.lock().unwrap();
-            if transactions
-                .iter()
-                .any(|t| t.dedup_key() == transaction.dedup_key())
-            {
-                return Ok(scrat_domain::ports::InsertOutcome::DuplicateSkipped);
-            }
-            transactions.push(transaction.clone());
-            Ok(scrat_domain::ports::InsertOutcome::Inserted)
         }
         fn delete(&self, id: TransactionId) -> Result<(), RepositoryError> {
             self.transactions.lock().unwrap().retain(|t| t.id() != id);
@@ -663,7 +646,7 @@ mod tests {
     }
 
     #[test]
-    fn import_transactions_skips_rows_whose_dedup_key_already_exists() {
+    fn import_transactions_keeps_identical_rows_as_separate_transactions() {
         let f = fixture();
         let service = TransactionService::new(
             &f.transactions,
@@ -681,24 +664,12 @@ mod tests {
         let first = service
             .import_transactions(&[row.clone(), row.clone()], f.account_id)
             .unwrap();
+        assert_eq!(first, ImportOutcome { imported: 2 });
 
-        assert_eq!(
-            first,
-            ImportOutcome {
-                imported: 1,
-                skipped_duplicates: 1
-            }
-        );
-
-        // Re-importing the same "file" again is a no-op.
+        // Re-importing the same "file" again adds two more — this port does
+        // no deduplication, that's the caller's responsibility.
         let second = service.import_transactions(&[row], f.account_id).unwrap();
-        assert_eq!(
-            second,
-            ImportOutcome {
-                imported: 0,
-                skipped_duplicates: 1
-            }
-        );
+        assert_eq!(second, ImportOutcome { imported: 1 });
     }
 
     #[test]
