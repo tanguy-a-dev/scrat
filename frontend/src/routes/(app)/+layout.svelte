@@ -157,5 +157,11 @@
     margin-left: 4.75rem;
     padding: 2rem;
     overflow-y: auto;
+    transition: margin-left 0.15s ease;
+  }
+
+  .shell:has(nav:hover) main,
+  .shell:has(nav:focus-within) main {
+    margin-left: 8.5rem;
   }
 </style>
