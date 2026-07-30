@@ -36,9 +36,44 @@
 
   let excludedRootIds = $state<Set<string>>(new Set());
 
-  // Shared across both donut panels: hovering the slice, the legend entry,
-  // or the breakdown row for a category highlights all three at once.
+  // Hovering the donut slice or the legend entry for a category highlights
+  // both plus the matching breakdown row — but not the reverse: hovering the
+  // breakdown row only highlights itself, it never drives the graph/legend.
   let hoveredCategoryId = $state<string | null>(null);
+
+  type PanelKey = "expense" | "income";
+
+  // Which root category (if any) each panel is drilled into, showing that
+  // category's subcategories instead of the root-level breakdown.
+  let drilldown = $state<Record<PanelKey, string | null>>({
+    expense: null,
+    income: null,
+  });
+
+  function categoryHasChildren(id: string): boolean {
+    return categories.some((c) => c.parent_id === id);
+  }
+
+  function drillInto(panel: PanelKey, categoryId: string) {
+    if (!categoryHasChildren(categoryId)) return;
+    drilldown = { ...drilldown, [panel]: categoryId };
+  }
+
+  function drillBack(panel: PanelKey) {
+    drilldown = { ...drilldown, [panel]: null };
+  }
+
+  // If the category a panel is drilled into gets excluded via the filters
+  // list, drop back to the root view rather than showing a dead-end empty
+  // drilldown.
+  $effect(() => {
+    if (drilldown.expense && excludedRootIds.has(drilldown.expense)) {
+      drilldown = { ...drilldown, expense: null };
+    }
+    if (drilldown.income && excludedRootIds.has(drilldown.income)) {
+      drilldown = { ...drilldown, income: null };
+    }
+  });
 
   // Animates the donut/bars filling up from empty whenever the breakdown
   // they're drawn from changes (initial load, range/tab switch, category
@@ -69,6 +104,7 @@
   async function load() {
     loading = true;
     error = "";
+    drilldown = { expense: null, income: null };
     try {
       const range = computeRange(rangeMode, {
         start: customStart,
@@ -150,12 +186,17 @@
     filteredTransactions.filter((t) => t.amount_minor_units > 0),
   );
 
-  function buildBreakdown(txns: TransactionDto[]) {
-    const total = txns.reduce((sum, t) => sum + Math.abs(t.amount_minor_units), 0);
+  // scopeRootId narrows to one root category's transactions and groups by
+  // its subcategories instead of by root — this is what powers drilldown.
+  function buildBreakdown(txns: TransactionDto[], scopeRootId: string | null) {
+    const scoped = scopeRootId
+      ? txns.filter((t) => rootCategoryId(t.category_id) === scopeRootId)
+      : txns;
+    const total = scoped.reduce((sum, t) => sum + Math.abs(t.amount_minor_units), 0);
     const sums = new Map<string, number>();
-    for (const t of txns) {
-      const root = rootCategoryId(t.category_id);
-      sums.set(root, (sums.get(root) ?? 0) + Math.abs(t.amount_minor_units));
+    for (const t of scoped) {
+      const key = scopeRootId ? t.category_id : rootCategoryId(t.category_id);
+      sums.set(key, (sums.get(key) ?? 0) + Math.abs(t.amount_minor_units));
     }
     const totalOrOne = total || 1;
     const breakdown = [...sums.entries()]
@@ -199,8 +240,8 @@
     });
   }
 
-  let expenseData = $derived.by(() => buildBreakdown(expenseTransactions));
-  let incomeData = $derived.by(() => buildBreakdown(incomeTransactions));
+  let expenseData = $derived.by(() => buildBreakdown(expenseTransactions, drilldown.expense));
+  let incomeData = $derived.by(() => buildBreakdown(incomeTransactions, drilldown.income));
 
   let animatedExpenseSlices = $derived(
     withAnimatedSlices(withDonutSlices(expenseData.breakdown)),
@@ -252,11 +293,24 @@
 
 {#snippet donutPanel(
   label: string,
+  panelKey: PanelKey,
   total: number,
   slices: typeof animatedExpenseSlices,
 )}
   <div class="graph-column">
-    <h2 class="panel-title">{label}</h2>
+    <h2 class="panel-title">
+      {#if drilldown[panelKey]}
+        <span class="breadcrumb">
+          <button type="button" class="back-link" onclick={() => drillBack(panelKey)}
+            >{label}</button
+          >
+          <span class="crumb-sep">›</span>
+          {categoryName(drilldown[panelKey]!)}
+        </span>
+      {:else}
+        {label}
+      {/if}
+    </h2>
     <div class="graph-graphics">
       <div class="donut-wrap">
         <svg viewBox="0 0 200 200" class="donut">
@@ -290,7 +344,7 @@
         </svg>
         <div class="donut-center">
           <span class="total">{formatCurrency(total, currency)}</span>
-          <span class="label">{label}</span>
+          <span class="label">{drilldown[panelKey] ? categoryName(drilldown[panelKey]!) : label}</span>
         </div>
       </div>
 
@@ -317,21 +371,27 @@
         {#each slices as slice (slice.categoryId)}
           <li
             class:dimmed={hoveredCategoryId !== null && hoveredCategoryId !== slice.categoryId}
-            onmouseenter={() => (hoveredCategoryId = slice.categoryId)}
-            onmouseleave={() => (hoveredCategoryId = null)}
           >
-            <div class="row">
-              <span class="dot" style={`background-color:${slice.color}`}></span>
-              <span class="name">{slice.name}</span>
-              <span class="amount">{formatCurrency(slice.amountMinorUnits, currency)}</span>
-              <span class="percent">{slice.percent.toFixed(1)}%</span>
-            </div>
-            <div class="bar-track">
-              <div
-                class="bar-fill"
-                style={`width:${slice.animatedPercent}%;background-color:${slice.color}`}
-              ></div>
-            </div>
+            <button
+              type="button"
+              class="breakdown-row"
+              class:clickable={categoryHasChildren(slice.categoryId)}
+              disabled={!categoryHasChildren(slice.categoryId)}
+              onclick={() => drillInto(panelKey, slice.categoryId)}
+            >
+              <div class="row">
+                <span class="dot" style={`background-color:${slice.color}`}></span>
+                <span class="name">{slice.name}</span>
+                <span class="amount">{formatCurrency(slice.amountMinorUnits, currency)}</span>
+                <span class="percent">{slice.percent.toFixed(1)}%</span>
+              </div>
+              <div class="bar-track">
+                <div
+                  class="bar-fill"
+                  style={`width:${slice.animatedPercent}%;background-color:${slice.color}`}
+                ></div>
+              </div>
+            </button>
           </li>
         {/each}
       </ul>
@@ -342,11 +402,15 @@
 {#if loading}
   <p>Loading…</p>
 {:else}
-  <p class="net-summary">Left this period: <strong>{formatCurrency(netLeftMinorUnits, currency)}</strong></p>
-
   <div class="layout">
-    {@render donutPanel("Expenses", expenseData.total, animatedExpenseSlices)}
-    {@render donutPanel("Income", incomeData.total, animatedIncomeSlices)}
+    {@render donutPanel("Expenses", "expense", expenseData.total, animatedExpenseSlices)}
+
+    <div class="net-summary">
+      Left this period
+      <strong>{formatCurrency(netLeftMinorUnits, currency)}</strong>
+    </div>
+
+    {@render donutPanel("Income", "income", incomeData.total, animatedIncomeSlices)}
 
     <aside class="filters">
       <h2>Categories</h2>
@@ -413,9 +477,20 @@
   }
 
   .net-summary {
-    font-size: 0.95rem;
+    align-self: center;
+    justify-self: center;
+    text-align: center;
+    font-size: 0.85rem;
     opacity: 0.85;
-    margin: 0 0 1.5rem;
+  }
+
+  .net-summary strong {
+    display: block;
+    margin-top: 0.3rem;
+    font-size: 1.3rem;
+    font-weight: 700;
+    white-space: nowrap;
+    opacity: 1;
   }
 
   input[type="date"] {
@@ -429,7 +504,7 @@
 
   .layout {
     display: grid;
-    grid-template-columns: 1fr 1fr 16rem;
+    grid-template-columns: 1fr auto 1fr 16rem;
     gap: 2rem;
     align-items: start;
   }
@@ -438,6 +513,29 @@
     text-align: center;
     font-size: 1rem;
     margin-top: 0;
+  }
+
+  .breadcrumb {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+
+  .back-link {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    color: var(--color-accent);
+    cursor: pointer;
+  }
+
+  .back-link:hover {
+    text-decoration: underline;
+  }
+
+  .crumb-sep {
+    opacity: 0.6;
   }
 
   .graph-graphics {
@@ -544,20 +642,33 @@
   }
 
   .breakdown li {
-    border-radius: 4px;
-    padding: 0.2rem 0.3rem;
-    margin: -0.2rem -0.3rem;
-    cursor: pointer;
-    transition:
-      opacity 0.15s ease,
-      background-color 0.15s ease;
+    transition: opacity 0.15s ease;
   }
 
   .breakdown li.dimmed {
     opacity: 0.4;
   }
 
-  .breakdown li:hover {
+  .breakdown-row {
+    display: block;
+    width: 100%;
+    background: none;
+    border: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    border-radius: 4px;
+    padding: 0.2rem 0.3rem;
+    margin: -0.2rem -0.3rem;
+    cursor: default;
+    transition: background-color 0.15s ease;
+  }
+
+  .breakdown-row.clickable {
+    cursor: pointer;
+  }
+
+  .breakdown-row.clickable:hover {
     background-color: var(--color-shade-3);
   }
 
@@ -630,7 +741,7 @@
 
   @media (max-width: 1100px) {
     .layout {
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: 1fr auto 1fr;
     }
 
     .filters {
