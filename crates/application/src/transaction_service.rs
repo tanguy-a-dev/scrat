@@ -199,6 +199,53 @@ impl<'a> TransactionService<'a> {
         Ok(category.id())
     }
 
+    /// Like [`Self::get_or_create_category_by_name`], but also honors a CSV's
+    /// own Subcategory column: `category_name` is resolved (or created) as a
+    /// top-level category first, then `subcategory_name`, if given, is
+    /// resolved (or created) as *its* child — matching the app's strict
+    /// two-level hierarchy. A `category_name` that already exists as a
+    /// subcategory elsewhere is not reused as a parent (that would nest a
+    /// third level); a new top-level category is created instead.
+    pub fn get_or_create_category_path(
+        &self,
+        category_name: &str,
+        subcategory_name: Option<&str>,
+    ) -> Result<CategoryId, ApplicationError> {
+        let category_name = category_name.trim();
+        let subcategory_name = subcategory_name.map(str::trim).filter(|s| !s.is_empty());
+
+        let all = self.categories.list_all()?;
+        let parent_id = match all.iter().find(|c| {
+            c.parent_id().is_none() && c.name().as_str().eq_ignore_ascii_case(category_name)
+        }) {
+            Some(existing) => existing.id(),
+            None => {
+                let category =
+                    Category::new(CategoryId::new(), CategoryName::new(category_name)?, None)?;
+                self.categories.insert(&category)?;
+                category.id()
+            }
+        };
+
+        let Some(subcategory_name) = subcategory_name else {
+            return Ok(parent_id);
+        };
+
+        if let Some(existing) = all.iter().find(|c| {
+            c.parent_id() == Some(parent_id)
+                && c.name().as_str().eq_ignore_ascii_case(subcategory_name)
+        }) {
+            return Ok(existing.id());
+        }
+        let subcategory = Category::new(
+            CategoryId::new(),
+            CategoryName::new(subcategory_name)?,
+            Some(parent_id),
+        )?;
+        self.categories.insert(&subcategory)?;
+        Ok(subcategory.id())
+    }
+
     /// Local frequency lookup, no ML/network: finds past transactions that
     /// share a significant word with `source`, and suggests whichever
     /// category is most common among them.
@@ -724,6 +771,71 @@ mod tests {
         );
 
         let id = service.get_or_create_category_by_name("groceries").unwrap();
+
+        assert_eq!(id, f.category_id);
+        assert_eq!(f.categories.categories.lock().unwrap().len(), 1); // no duplicate created
+    }
+
+    #[test]
+    fn get_or_create_category_path_creates_category_and_subcategory() {
+        let f = fixture();
+        let service = TransactionService::new(
+            &f.transactions,
+            &f.accounts,
+            &f.categories,
+            Currency::new("USD").unwrap(),
+        );
+
+        let id = service
+            .get_or_create_category_path("Education", Some("Books"))
+            .unwrap();
+
+        let stored = f.categories.find_by_id(id).unwrap().unwrap();
+        assert_eq!(stored.name().as_str(), "Books");
+        let parent = f
+            .categories
+            .find_by_id(stored.parent_id().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(parent.name().as_str(), "Education");
+        assert_eq!(parent.parent_id(), None);
+    }
+
+    #[test]
+    fn get_or_create_category_path_reuses_existing_category_and_subcategory() {
+        let f = fixture();
+        let service = TransactionService::new(
+            &f.transactions,
+            &f.accounts,
+            &f.categories,
+            Currency::new("USD").unwrap(),
+        );
+        let first = service
+            .get_or_create_category_path("Education", Some("Books"))
+            .unwrap();
+
+        let second = service
+            .get_or_create_category_path("education", Some("books"))
+            .unwrap();
+
+        assert_eq!(first, second);
+        // fixture's pre-seeded "Groceries" + new Education + new Books, no duplicates
+        assert_eq!(f.categories.categories.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn get_or_create_category_path_without_subcategory_resolves_top_level_category() {
+        let f = fixture(); // fixture already has a "Groceries" category
+        let service = TransactionService::new(
+            &f.transactions,
+            &f.accounts,
+            &f.categories,
+            Currency::new("USD").unwrap(),
+        );
+
+        let id = service
+            .get_or_create_category_path("Groceries", None)
+            .unwrap();
 
         assert_eq!(id, f.category_id);
         assert_eq!(f.categories.categories.lock().unwrap().len(), 1); // no duplicate created

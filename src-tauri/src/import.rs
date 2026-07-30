@@ -16,11 +16,14 @@ pub struct ImportPreviewRowDto {
     pub date: Option<String>,
     pub amount_minor_units: Option<i64>,
     pub source: String,
-    /// The CSV's own "Category"/"Catégorie" column, if it has one —
-    /// informational only, shown alongside the row but not applied: every
-    /// imported row still gets the one category chosen for the whole
-    /// import.
+    /// The CSV's own "Category"/"Catégorie" column, if it has one — applied
+    /// on import (creating the category if needed) instead of the row
+    /// falling back to the category chosen for the whole import.
     pub csv_category: Option<String>,
+    /// The CSV's own "Subcategory"/"Sous-catégorie" column, if it has one —
+    /// nests under `csv_category` on import, mirroring the app's own export
+    /// format.
+    pub csv_subcategory: Option<String>,
     /// Default checked/unchecked state — unparseable rows start unchecked.
     pub include_by_default: bool,
     pub raw: Vec<String>,
@@ -46,6 +49,7 @@ pub fn preview_csv_import(bytes: Vec<u8>) -> ImportPreviewDto {
                 include_by_default: row.is_valid(),
                 source: row.source,
                 csv_category: row.csv_category,
+                csv_subcategory: row.csv_subcategory,
                 raw: row.raw,
             })
             .collect(),
@@ -64,6 +68,10 @@ pub struct ImportCommitRowDto {
     /// new top-level one if nothing matches) instead of the row falling
     /// back to the category chosen for the whole import.
     pub category: Option<String>,
+    /// The CSV's own Subcategory column text for this row, if any — nests
+    /// under `category` (found or created) instead of being applied on its
+    /// own.
+    pub subcategory: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -77,6 +85,7 @@ struct ParsedCommitRow {
     amount_minor_units: i64,
     source: String,
     category: Option<String>,
+    subcategory: Option<String>,
 }
 
 #[tauri::command]
@@ -100,6 +109,7 @@ pub fn commit_csv_import(
                 amount_minor_units: row.amount_minor_units,
                 source: row.source,
                 category: row.category,
+                subcategory: row.subcategory,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -126,9 +136,16 @@ pub fn commit_csv_import(
         let import_rows = parsed_rows
             .into_iter()
             .map(|row| {
-                let category_id = match row.category.as_deref().map(str::trim) {
-                    Some(name) if !name.is_empty() => s.get_or_create_category_by_name(name)?,
-                    _ => default_category_id,
+                let category_id = match row
+                    .category
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    Some(name) => {
+                        s.get_or_create_category_path(name, row.subcategory.as_deref())?
+                    }
+                    None => default_category_id,
                 };
                 Ok(ImportRow {
                     date: row.date,

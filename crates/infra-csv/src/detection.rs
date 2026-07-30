@@ -314,11 +314,15 @@ pub struct ParsedRow {
     pub amount_minor_units: Option<i64>,
     pub source: String,
     /// The raw text of a header column named "Category"/"Catégorie", if the
-    /// file has a header row and one exists — purely informational, shown
-    /// alongside the row but never used to pick its actual category (every
-    /// imported row still gets the one category chosen for the whole
-    /// import).
+    /// file has a header row and one exists — used to file the row under a
+    /// matching category (creating it if needed) instead of the fallback
+    /// category chosen for the whole import; see `commit_csv_import`.
     pub csv_category: Option<String>,
+    /// The raw text of a header column named "Subcategory"/"Sous-catégorie",
+    /// if the file has a header row and one exists — nests under
+    /// `csv_category` when both are applied (see `commit_csv_import`),
+    /// mirroring the app's own CSV export format.
+    pub csv_subcategory: Option<String>,
     pub raw: Vec<String>,
 }
 
@@ -338,14 +342,57 @@ pub struct ImportPreview {
     pub amount_confidence: f64,
 }
 
+/// Finds the first header cell (skipping `exclude`, if given) whose
+/// lowercased text contains any of `keywords` — the general substring match
+/// every specific-column finder below is built on, since bank exports label
+/// columns inconsistently (language, casing, punctuation).
+fn find_labeled_column(
+    header: &[String],
+    keywords: &[&str],
+    exclude: Option<usize>,
+) -> Option<usize> {
+    header.iter().enumerate().find_map(|(i, cell)| {
+        if Some(i) == exclude {
+            return None;
+        }
+        let lower = cell.trim().to_lowercase();
+        keywords.iter().any(|k| lower.contains(k)).then_some(i)
+    })
+}
+
+/// Finds a header cell naming the subcategory column, e.g. "Subcategory" or
+/// the French "Sous-catégorie" — checked *before* the category column since
+/// "subcategory" also contains "categ" and would otherwise be mistaken for it.
+fn find_subcategory_column(header: &[String]) -> Option<usize> {
+    find_labeled_column(
+        header,
+        &["subcateg", "sous-categ", "sous categ", "souscateg"],
+        None,
+    )
+}
+
 /// Finds a header cell naming the category column, e.g. "Category" or the
 /// French "Catégorie" — matched loosely (substring, case-insensitive, and
 /// tolerant of the accent) since bank exports label it inconsistently.
-fn find_category_column(header: &[String]) -> Option<usize> {
-    header.iter().position(|cell| {
-        let lower = cell.trim().to_lowercase();
-        lower.contains("categ") || lower.contains("catég")
-    })
+/// Excludes `subcategory_column` since "Subcategory" also matches "categ".
+fn find_category_column(header: &[String], subcategory_column: Option<usize>) -> Option<usize> {
+    find_labeled_column(header, &["categ", "catég"], subcategory_column)
+}
+
+/// Finds a header cell naming the currency column, e.g. "Currency" or the
+/// French "Devise" — the app has a single global currency setting (see
+/// `settings.currency_code`), so a per-row currency cell is never applied to
+/// the transaction, only excluded from `source` so it doesn't pollute it.
+fn find_currency_column(header: &[String]) -> Option<usize> {
+    find_labeled_column(header, &["currency", "devise"], None)
+}
+
+/// Finds a header cell naming the (bank) account column, e.g. "Account" or
+/// the French "Compte" — the destination account is chosen once for the
+/// whole import (or defaulted), so a per-row account cell is only excluded
+/// from `source`, never used to pick the account.
+fn find_account_column(header: &[String]) -> Option<usize> {
+    find_labeled_column(header, &["account", "compte"], None)
 }
 
 /// The full detection pipeline: decode → sniff delimiter → parse → detect
@@ -353,18 +400,34 @@ fn find_category_column(header: &[String]) -> Option<usize> {
 /// [`ParsedRow`] per line, concatenating every other non-empty column as
 /// `source` (real exports often shift the description between columns
 /// depending on transaction type, so picking a single "source column"
-/// isn't reliable — concatenating whatever's left is).
+/// isn't reliable — concatenating whatever's left is). Columns identified by
+/// header name as Category, Subcategory, Currency, or Account are excluded
+/// from that concatenation: Category/Subcategory are surfaced separately
+/// (`csv_category`/`csv_subcategory`), and Currency/Account never belong in
+/// `source` (the app has one global currency, and the destination account is
+/// chosen once for the whole import) — otherwise they'd leak into it, e.g.
+/// "EUR" and a bank name getting prepended/appended to every source.
 pub fn build_preview(bytes: &[u8]) -> ImportPreview {
     let text = decode_bytes(bytes);
     let delimiter = sniff_delimiter(&text);
     let mut rows = parse_rows(&text, delimiter);
 
-    let category_column = if detect_header(&rows) && !rows.is_empty() {
-        let header = rows.remove(0);
-        find_category_column(&header)
-    } else {
-        None
-    };
+    let (category_column, subcategory_column, currency_column, account_column) =
+        if detect_header(&rows) && !rows.is_empty() {
+            let header = rows.remove(0);
+            let subcategory_column = find_subcategory_column(&header);
+            let category_column = find_category_column(&header, subcategory_column);
+            let currency_column = find_currency_column(&header);
+            let account_column = find_account_column(&header);
+            (
+                category_column,
+                subcategory_column,
+                currency_column,
+                account_column,
+            )
+        } else {
+            (None, None, None, None)
+        };
 
     let Some(detection) = detect_columns(&rows) else {
         return ImportPreview {
@@ -385,17 +448,24 @@ pub fn build_preview(bytes: &[u8]) -> ImportPreview {
                 .get(detection.amount_column)
                 .map(|s| s.as_str())
                 .unwrap_or("");
-            let csv_category = category_column
-                .and_then(|c| raw.get(c))
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty());
+            let cell_text = |col: Option<usize>| {
+                col.and_then(|c| raw.get(c))
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            };
+            let csv_category = cell_text(category_column);
+            let csv_subcategory = cell_text(subcategory_column);
             let source = raw
                 .iter()
                 .enumerate()
                 .filter(|(i, _)| {
-                    *i != detection.date_column
-                        && *i != detection.amount_column
-                        && Some(*i) != category_column
+                    let i = Some(*i);
+                    i != Some(detection.date_column)
+                        && i != Some(detection.amount_column)
+                        && i != category_column
+                        && i != subcategory_column
+                        && i != currency_column
+                        && i != account_column
                 })
                 .map(|(_, v)| v.trim())
                 .filter(|v| !v.is_empty())
@@ -407,6 +477,7 @@ pub fn build_preview(bytes: &[u8]) -> ImportPreview {
                 amount_minor_units: parse_amount_cell(amount_cell),
                 source,
                 csv_category,
+                csv_subcategory,
                 raw: raw.clone(),
             }
         })
@@ -603,6 +674,37 @@ Date;Amount;Description;Category
         let preview = build_preview(text.as_bytes());
 
         assert!(preview.rows.iter().all(|r| r.csv_category.is_none()));
+    }
+
+    #[test]
+    fn build_preview_extracts_subcategory_and_excludes_currency_and_account_from_source() {
+        // Mirrors the app's own export format (Date;Amount;Currency;Source;
+        // Category;Subcategory;Account) — Currency and Account must not leak
+        // into `source`, and Subcategory must be captured separately from
+        // Category rather than folded into the source concatenation.
+        let text = "\
+Date;Amount;Currency;Source;Category;Subcategory;Account
+2026-08-04;-12,25;EUR;HEMA GARERER CHA;Home;;LCL
+2026-08-04;-20,97;EUR;LES SUPER HEROS;Education;Books;LCL
+2026-08-04;-60,80;EUR;SC-SUSHI SASHI;Food & Drinks;;LCL
+";
+        let preview = build_preview(text.as_bytes());
+
+        assert_eq!(preview.rows.len(), 3);
+
+        assert_eq!(preview.rows[0].source, "HEMA GARERER CHA");
+        assert_eq!(preview.rows[0].csv_category, Some("Home".to_string()));
+        assert_eq!(preview.rows[0].csv_subcategory, None);
+
+        assert_eq!(preview.rows[1].source, "LES SUPER HEROS");
+        assert_eq!(preview.rows[1].csv_category, Some("Education".to_string()));
+        assert_eq!(preview.rows[1].csv_subcategory, Some("Books".to_string()));
+
+        assert_eq!(preview.rows[2].source, "SC-SUSHI SASHI");
+        assert_eq!(
+            preview.rows[2].csv_category,
+            Some("Food & Drinks".to_string())
+        );
     }
 
     #[test]

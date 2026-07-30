@@ -124,6 +124,7 @@
         amount_minor_units: number;
         source: string;
         category: string | null;
+        subcategory: string | null;
       }[] = [];
       preview.rows.forEach((r, i) => {
         if (included[i] && r.date !== null && r.amount_minor_units !== null) {
@@ -132,6 +133,7 @@
             amount_minor_units: r.amount_minor_units,
             source: r.source,
             category: r.csv_category,
+            subcategory: r.csv_subcategory,
           });
         }
       });
@@ -178,11 +180,11 @@
         Detected: date column ({Math.round(preview.date_confidence * 100)}%
         confidence), amount column ({Math.round(preview.amount_confidence * 100)}%
         confidence). Uncheck any row that isn't a real transaction (e.g. an
-        opening/closing balance line). "Category" is the category column from
-        the file itself, if it has one — each row with one is filed under a
-        matching category (creating it if it doesn't exist yet). Rows without
-        one use the fallback chosen below, or "Uncategorized" if you leave that
-        unset.
+        opening/closing balance line). "Category" is the Category (and
+        Subcategory, if present) column from the file itself, if it has one —
+        each row with one is filed under a matching category/subcategory
+        (creating it if it doesn't exist yet). Rows without one use the
+        fallback chosen below, or "Uncategorized" if you leave that unset.
         Leave the account unset to use your default account.
       </p>
 
@@ -230,7 +232,11 @@
                     : "—"}</td
                 >
                 <td>{row.source || "—"}</td>
-                <td class="suggestion">{row.csv_category ?? "—"}</td>
+                <td class="suggestion"
+                  >{row.csv_subcategory
+                    ? `${row.csv_category} / ${row.csv_subcategory}`
+                    : row.csv_category ?? "—"}</td
+                >
               </tr>
             {/each}
           </tbody>

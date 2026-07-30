@@ -35,6 +35,7 @@ export interface ImportPreviewRowDto {
   amount_minor_units: number | null;
   source: string;
   csv_category: string | null;
+  csv_subcategory: string | null;
   include_by_default: boolean;
   raw: string[];
 }
@@ -119,6 +120,7 @@ export const api = {
       amount_minor_units: number;
       source: string;
       category: string | null;
+      subcategory: string | null;
     }[],
     categoryId: string | null,
     accountId: string | null,
