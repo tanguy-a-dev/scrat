@@ -619,6 +619,10 @@
     justify-content: center;
     text-align: center;
     gap: 0.15rem;
+    /* This sits on top of the donut SVG (inset:0 over the whole wrap) — without
+       this it would swallow every pointer event before the slices underneath
+       ever see a hover, even though only the center text is visually here. */
+    pointer-events: none;
   }
 
   .donut-center .total {
