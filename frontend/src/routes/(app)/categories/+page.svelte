@@ -55,6 +55,10 @@
     withErrorHandling(() => api.createCategory(name, parentId));
   }
 
+  function handleSetIcon(id: string, icon: string) {
+    withErrorHandling(() => api.setCategoryIcon(id, icon));
+  }
+
   async function handleDelete(category: CategoryDto) {
     try {
       await api.deleteCategory(category.id, null);
@@ -150,6 +154,7 @@
         onRename={handleRename}
         onDelete={handleDelete}
         onAddChild={handleAddChild}
+        onSetIcon={handleSetIcon}
       />
     {/each}
   </div>

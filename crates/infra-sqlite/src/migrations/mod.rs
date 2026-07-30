@@ -5,6 +5,7 @@ use rusqlite::Connection;
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("0001_initial.sql")),
     (2, include_str!("0002_account_opening_balance.sql")),
+    (3, include_str!("0003_category_icon.sql")),
 ];
 
 /// Applies any migration whose version isn't yet recorded in

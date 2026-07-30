@@ -70,7 +70,7 @@
 
   nav:hover,
   nav:focus-within {
-    width: 12rem;
+    width: 8.5rem;
     background-color: var(--color-shade-2);
     border-right: 1px solid var(--color-shade-3);
     box-shadow: 2px 0 12px rgba(0, 0, 0, 0.4);

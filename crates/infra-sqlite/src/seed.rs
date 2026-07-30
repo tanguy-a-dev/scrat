@@ -3,18 +3,20 @@
 //! renaming or deleting a seeded category sticks.
 
 use rusqlite::Connection;
-use scrat_domain::category::{Category, CategoryId, CategoryName};
+use scrat_domain::category::{Category, CategoryIcon, CategoryId, CategoryName};
 use scrat_domain::ports::{CategoryRepository, RepositoryError};
 
 use crate::category_repository::SqliteCategoryRepository;
 
-type CategoryTree = &'static [(&'static str, &'static [&'static str])];
+/// (top-level name, icon key, subcategories).
+type CategoryTree = &'static [(&'static str, &'static str, &'static [&'static str])];
 
 const EXPENSE_CATEGORIES: CategoryTree = &[
-    ("Food & Drink", &[]),
-    ("Groceries", &[]),
+    ("Food & Drink", "utensils", &[]),
+    ("Groceries", "shopping-cart", &[]),
     (
         "Housing",
+        "house",
         &[
             "Rent",
             "Mortgage",
@@ -26,6 +28,7 @@ const EXPENSE_CATEGORIES: CategoryTree = &[
     ),
     (
         "Utilities",
+        "plug",
         &[
             "Electricity",
             "Water",
@@ -37,6 +40,7 @@ const EXPENSE_CATEGORIES: CategoryTree = &[
     ),
     (
         "Transportation",
+        "car",
         &[
             "Fuel",
             "Public Transit",
@@ -44,17 +48,18 @@ const EXPENSE_CATEGORIES: CategoryTree = &[
             "Parking",
             "Tolls",
             "Vehicle Maintenance",
-            "Vehicle Insurance",
         ],
     ),
-    ("Healthcare", &["Doctor", "Pharmacy"]),
+    ("Healthcare", "heart-pulse", &["Doctor", "Pharmacy"]),
     (
         "Personal Care",
+        "sparkles",
         &["Haircuts", "Cosmetics", "Skincare", "Hygiene"],
     ),
-    ("Clothing", &["Clothes", "Shoes", "Accessories"]),
+    ("Clothing", "shirt", &["Clothes", "Shoes", "Accessories"]),
     (
         "Entertainment",
+        "film",
         &[
             "Movies",
             "Concerts",
@@ -64,23 +69,24 @@ const EXPENSE_CATEGORIES: CategoryTree = &[
             "Streaming Services",
         ],
     ),
-    ("Sports & Fitness", &["Gym"]),
-    ("Education", &["Books", "Courses"]),
+    ("Sports & Fitness", "dumbbell", &["Gym"]),
+    ("Education", "graduation-cap", &["Books", "Courses"]),
     (
         "Travel",
+        "plane",
         &[
             "Flights",
             "Accommodation",
             "Trains",
             "Car Rental",
             "Activities",
-            "Travel Insurance",
         ],
     ),
-    ("Gifts & Donations", &["Gifts"]),
-    ("Financial", &["Bank Fees", "Loan Payments"]),
+    ("Gifts & Donations", "gift", &["Gifts"]),
+    ("Financial", "landmark", &["Bank Fees", "Loan Payments"]),
     (
         "Taxes & Government",
+        "receipt",
         &[
             "Income Tax",
             "Property Tax",
@@ -90,25 +96,33 @@ const EXPENSE_CATEGORIES: CategoryTree = &[
     ),
     (
         "Insurance",
+        "shield",
         &["Health", "Home", "Vehicle", "Life", "Travel"],
     ),
-    ("Uncategorized", &[]),
+    ("Uncategorized", "circle-question-mark", &[]),
 ];
 
 const INCOME_CATEGORIES: CategoryTree = &[
-    ("Salary", &["Base Salary", "Overtime", "Commission"]),
-    ("Bonus", &["Performance", "Holiday", "Referral"]),
+    (
+        "Salary",
+        "briefcase",
+        &["Base Salary", "Overtime", "Commission"],
+    ),
+    ("Bonus", "award", &["Performance", "Holiday", "Referral"]),
     (
         "Freelance & Business",
+        "laptop",
         &["Client Payments", "Product Sales", "Service Income"],
     ),
     (
         "Investment Income",
+        "trending-up",
         &["Dividends", "Interest", "Capital Gains"],
     ),
-    ("Rental Income", &["Property Rent"]),
+    ("Rental Income", "building", &["Property Rent"]),
     (
         "Government Benefits",
+        "landmark",
         &[
             "Pension",
             "Unemployment",
@@ -118,6 +132,7 @@ const INCOME_CATEGORIES: CategoryTree = &[
     ),
     (
         "Refunds & Reimbursements",
+        "rotate-ccw",
         &[
             "Purchase Refund",
             "Tax Refund",
@@ -125,13 +140,13 @@ const INCOME_CATEGORIES: CategoryTree = &[
             "Expense Reimbursement",
         ],
     ),
-    ("Gifts", &["Cash Gift", "Inheritance"]),
+    ("Gifts", "gift", &["Cash Gift", "Inheritance"]),
 ];
 
 const TRANSFER_CATEGORIES: CategoryTree = &[(
     "Transfers",
+    "arrow-left-right",
     &[
-        "Checking ↔ Savings",
         "Investment Transfers",
         "Credit Card Payments",
         "Cash Withdrawal",
@@ -142,19 +157,24 @@ const TRANSFER_CATEGORIES: CategoryTree = &[(
 
 /// Populates a freshly-created database with a curated set of top-level
 /// categories and subcategories, so the user isn't staring at an empty
-/// category picker on first run. Every name here is a fixed, known-valid
-/// literal, so constructor failures are treated as a programmer error
-/// (`expect`), not a runtime condition callers need to handle.
+/// category picker on first run. Every name and icon key here is a fixed,
+/// known-valid literal, so constructor failures are treated as a programmer
+/// error (`expect`), not a runtime condition callers need to handle.
 pub fn seed_default_categories(conn: &Connection) -> Result<(), RepositoryError> {
     let repo = SqliteCategoryRepository::new(conn);
     for tree in [EXPENSE_CATEGORIES, INCOME_CATEGORIES, TRANSFER_CATEGORIES] {
-        for (parent_name, children) in tree {
-            let parent = Category::new(
+        for (parent_name, icon, children) in tree {
+            let mut parent = Category::new(
                 CategoryId::new(),
                 CategoryName::new(parent_name).expect("seed category name is valid"),
                 None,
             )
             .expect("seed top-level category has no parent");
+            parent
+                .set_icon(Some(
+                    CategoryIcon::new(icon).expect("seed icon key is valid"),
+                ))
+                .expect("top-level seed category can carry an icon");
             repo.insert(&parent)?;
             for child_name in *children {
                 let child = Category::new(
@@ -187,7 +207,7 @@ mod tests {
 
         let all = repo.list_all().unwrap();
 
-        assert_eq!(all.len(), 110);
+        assert_eq!(all.len(), 108);
     }
 
     #[test]
@@ -209,12 +229,34 @@ mod tests {
         let repo = SqliteCategoryRepository::new(&conn);
         let all = repo.list_all().unwrap();
 
-        for child_name in TRANSFER_CATEGORIES[0].1 {
+        for child_name in TRANSFER_CATEGORIES[0].2 {
             let child = all
                 .iter()
                 .find(|c| c.name().as_str() == *child_name)
                 .unwrap();
             assert!(!scrat_domain::category::has_children(child.id(), &all));
         }
+    }
+
+    #[test]
+    fn seeded_top_level_categories_have_an_icon() {
+        let conn = test_conn();
+        let repo = SqliteCategoryRepository::new(&conn);
+        let all = repo.list_all().unwrap();
+
+        let housing = all.iter().find(|c| c.name().as_str() == "Housing").unwrap();
+
+        assert_eq!(housing.icon().map(CategoryIcon::as_str), Some("house"));
+    }
+
+    #[test]
+    fn seeded_subcategories_have_no_icon() {
+        let conn = test_conn();
+        let repo = SqliteCategoryRepository::new(&conn);
+        let all = repo.list_all().unwrap();
+
+        let rent = all.iter().find(|c| c.name().as_str() == "Rent").unwrap();
+
+        assert_eq!(rent.icon(), None);
     }
 }

@@ -1,6 +1,6 @@
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
-use scrat_domain::category::{Category, CategoryId, CategoryName};
+use scrat_domain::category::{Category, CategoryIcon, CategoryId, CategoryName};
 use scrat_domain::ports::{CategoryRepository, RepositoryError};
 
 pub struct SqliteCategoryRepository<'a> {
@@ -28,10 +28,21 @@ impl<'a> SqliteCategoryRepository<'a> {
             .map_err(|e| {
                 rusqlite::Error::InvalidColumnType(0, e.to_string(), rusqlite::types::Type::Text)
             })?;
+        let icon: Option<String> = row.get("icon")?;
+        let icon = icon
+            .map(|i| CategoryIcon::new(&i))
+            .transpose()
+            .map_err(|e| {
+                rusqlite::Error::InvalidColumnType(0, e.to_string(), rusqlite::types::Type::Text)
+            })?;
 
-        Category::new(id, name, parent_id).map_err(|e| {
+        let mut category = Category::new(id, name, parent_id).map_err(|e| {
             rusqlite::Error::InvalidColumnType(0, e.to_string(), rusqlite::types::Type::Text)
-        })
+        })?;
+        category.set_icon(icon).map_err(|e| {
+            rusqlite::Error::InvalidColumnType(0, e.to_string(), rusqlite::types::Type::Text)
+        })?;
+        Ok(category)
     }
 }
 
@@ -43,11 +54,12 @@ impl<'a> CategoryRepository for SqliteCategoryRepository<'a> {
     fn insert(&self, category: &Category) -> Result<(), RepositoryError> {
         self.conn
             .execute(
-                "INSERT INTO categories (id, name, parent_id, created_at) VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO categories (id, name, parent_id, icon, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![
                     category.id().as_string(),
                     category.name().as_str(),
                     category.parent_id().map(|p| p.as_string()),
+                    category.icon().map(|i| i.as_str()),
                     Utc::now().to_rfc3339(),
                 ],
             )
@@ -58,11 +70,12 @@ impl<'a> CategoryRepository for SqliteCategoryRepository<'a> {
     fn update(&self, category: &Category) -> Result<(), RepositoryError> {
         self.conn
             .execute(
-                "UPDATE categories SET name = ?2, parent_id = ?3 WHERE id = ?1",
+                "UPDATE categories SET name = ?2, parent_id = ?3, icon = ?4 WHERE id = ?1",
                 params![
                     category.id().as_string(),
                     category.name().as_str(),
                     category.parent_id().map(|p| p.as_string()),
+                    category.icon().map(|i| i.as_str()),
                 ],
             )
             .map_err(sql_err)?;
@@ -82,7 +95,7 @@ impl<'a> CategoryRepository for SqliteCategoryRepository<'a> {
     fn find_by_id(&self, id: CategoryId) -> Result<Option<Category>, RepositoryError> {
         self.conn
             .query_row(
-                "SELECT id, name, parent_id FROM categories WHERE id = ?1",
+                "SELECT id, name, parent_id, icon FROM categories WHERE id = ?1",
                 params![id.as_string()],
                 Self::row_to_category,
             )
@@ -93,7 +106,7 @@ impl<'a> CategoryRepository for SqliteCategoryRepository<'a> {
     fn list_all(&self) -> Result<Vec<Category>, RepositoryError> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, name, parent_id FROM categories ORDER BY name")
+            .prepare("SELECT id, name, parent_id, icon FROM categories ORDER BY name")
             .map_err(sql_err)?;
         let rows = stmt
             .query_map([], Self::row_to_category)
@@ -165,6 +178,52 @@ mod tests {
 
         assert_eq!(reloaded.name().as_str(), "Hobby");
         assert_eq!(reloaded.parent_id(), None);
+    }
+
+    #[test]
+    fn persists_and_reloads_an_icon() {
+        let conn = test_conn();
+        let repo = SqliteCategoryRepository::new(&conn);
+        let mut category =
+            Category::new(CategoryId::new(), CategoryName::new("Hobby").unwrap(), None).unwrap();
+        category
+            .set_icon(Some(CategoryIcon::new("house").unwrap()))
+            .unwrap();
+
+        repo.insert(&category).unwrap();
+        let reloaded = repo.find_by_id(category.id()).unwrap().unwrap();
+
+        assert_eq!(reloaded.icon().map(CategoryIcon::as_str), Some("house"));
+    }
+
+    #[test]
+    fn category_without_an_icon_reloads_as_none() {
+        let conn = test_conn();
+        let repo = SqliteCategoryRepository::new(&conn);
+        let category =
+            Category::new(CategoryId::new(), CategoryName::new("Hobby").unwrap(), None).unwrap();
+
+        repo.insert(&category).unwrap();
+        let reloaded = repo.find_by_id(category.id()).unwrap().unwrap();
+
+        assert_eq!(reloaded.icon(), None);
+    }
+
+    #[test]
+    fn update_persists_a_changed_icon() {
+        let conn = test_conn();
+        let repo = SqliteCategoryRepository::new(&conn);
+        let mut category =
+            Category::new(CategoryId::new(), CategoryName::new("Hobby").unwrap(), None).unwrap();
+        repo.insert(&category).unwrap();
+
+        category
+            .set_icon(Some(CategoryIcon::new("car").unwrap()))
+            .unwrap();
+        repo.update(&category).unwrap();
+
+        let reloaded = repo.find_by_id(category.id()).unwrap().unwrap();
+        assert_eq!(reloaded.icon().map(CategoryIcon::as_str), Some("car"));
     }
 
     #[test]

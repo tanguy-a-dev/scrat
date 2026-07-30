@@ -11,6 +11,10 @@ pub struct CategoryDto {
     pub id: String,
     pub name: String,
     pub parent_id: Option<String>,
+    /// Icon key (e.g. "house") — always `Some` for a top-level category,
+    /// always `None` for a subcategory. See `scrat_domain::category::CATEGORY_ICONS`
+    /// for the closed set of valid keys.
+    pub icon: Option<String>,
     /// Whether this is the app-wide default "Uncategorized" category — the
     /// one new transactions fall back to when none is explicitly chosen
     /// (e.g. an unset "category for all rows" during CSV import). Forced,
@@ -23,6 +27,7 @@ fn to_dto(category: Category, default_category_id: CategoryId) -> CategoryDto {
         id: category.id().as_string(),
         name: category.name().as_str().to_string(),
         parent_id: category.parent_id().map(|p| p.as_string()),
+        icon: category.icon().map(|i| i.as_str().to_string()),
         is_default: category.id() == default_category_id,
     }
 }
@@ -100,6 +105,12 @@ pub fn create_category(
 pub fn rename_category(state: State<DbState>, id: String, name: String) -> Result<(), String> {
     let id = parse_id(&id)?;
     with_service(&state, |s| s.rename_category(id, &name))
+}
+
+#[tauri::command]
+pub fn set_category_icon(state: State<DbState>, id: String, icon: String) -> Result<(), String> {
+    let id = parse_id(&id)?;
+    with_service(&state, |s| s.set_category_icon(id, &icon))
 }
 
 #[tauri::command]

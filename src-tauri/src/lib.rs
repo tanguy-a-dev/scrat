@@ -28,6 +28,7 @@ pub fn run() {
             categories::list_categories,
             categories::create_category,
             categories::rename_category,
+            categories::set_category_icon,
             categories::move_category,
             categories::delete_category,
             transactions::list_transactions,

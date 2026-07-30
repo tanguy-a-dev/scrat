@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { CategoryDto } from "./api";
   import DeleteButton from "./DeleteButton.svelte";
+  import { CATEGORY_ICONS, iconComponentFor } from "./categoryIcons";
   import { Plus } from "@lucide/svelte";
 
   let {
@@ -9,6 +10,7 @@
     onRename,
     onDelete,
     onAddChild,
+    onSetIcon,
   }: {
     category: CategoryDto;
     /** Direct children only — the hierarchy is never deeper than two levels. */
@@ -16,10 +18,38 @@
     onRename: (id: string, name: string) => void;
     onDelete: (category: CategoryDto) => void;
     onAddChild: (parentId: string, name: string) => void;
+    onSetIcon: (id: string, icon: string) => void;
   } = $props();
 
   let addingChild = $state(false);
   let childName = $state("");
+
+  let CurrentIcon = $derived(iconComponentFor(category.icon));
+  let iconPickerOpen = $state(false);
+  let iconPickerEl: HTMLElement | undefined = $state();
+
+  function selectIcon(key: string) {
+    iconPickerOpen = false;
+    if (key !== category.icon) onSetIcon(category.id, key);
+  }
+
+  $effect(() => {
+    if (!iconPickerOpen) return;
+    function handleClickOutside(event: MouseEvent) {
+      if (iconPickerEl && !iconPickerEl.contains(event.target as Node)) {
+        iconPickerOpen = false;
+      }
+    }
+    function handleKeydown(event: KeyboardEvent) {
+      if (event.key === "Escape") iconPickerOpen = false;
+    }
+    window.addEventListener("mousedown", handleClickOutside);
+    window.addEventListener("keydown", handleKeydown);
+    return () => {
+      window.removeEventListener("mousedown", handleClickOutside);
+      window.removeEventListener("keydown", handleKeydown);
+    };
+  });
 
   /* Live text per input, so a pill-shaped subcategory input can size itself to
      its content while being typed in (the DOM value stays uncontrolled — renames
@@ -45,6 +75,33 @@
 
 <section class="card">
   <header>
+    <span class="icon-picker" bind:this={iconPickerEl}>
+      <button
+        type="button"
+        class="icon-button"
+        aria-label="Change icon"
+        title="Change icon"
+        onclick={() => (iconPickerOpen = !iconPickerOpen)}
+      >
+        <CurrentIcon size={16} />
+      </button>
+      {#if iconPickerOpen}
+        <div class="icon-popover" role="menu">
+          {#each CATEGORY_ICONS as option (option.key)}
+            <button
+              type="button"
+              class="icon-option"
+              class:selected={option.key === category.icon}
+              aria-label={option.key}
+              title={option.key}
+              onclick={() => selectIcon(option.key)}
+            >
+              <option.component size={16} />
+            </button>
+          {/each}
+        </div>
+      {/if}
+    </span>
     <input
       class="name"
       value={category.name}
@@ -52,11 +109,6 @@
       aria-label="Category name"
       onchange={(e) => onRename(category.id, e.currentTarget.value)}
     />
-    {#if subcategories.length > 0}
-      <span class="count" title="{subcategories.length} subcategories">
-        {subcategories.length}
-      </span>
-    {/if}
     {#if !category.is_default}
       <span class="dim">
         <DeleteButton
@@ -138,6 +190,49 @@
     gap: 0.4rem;
   }
 
+  .icon-picker {
+    position: relative;
+    display: inline-flex;
+    flex-shrink: 0;
+  }
+
+  .icon-popover {
+    position: absolute;
+    top: calc(100% + 0.4rem);
+    left: 0;
+    z-index: 20;
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 0.3rem;
+    padding: 0.5rem;
+    border-radius: 10px;
+    background-color: var(--color-shade-3);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  }
+
+  .icon-option {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.9rem;
+    height: 1.9rem;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background-color: var(--color-shade-2);
+    color: inherit;
+    cursor: pointer;
+  }
+
+  .icon-option:hover {
+    background-color: var(--color-shade-4);
+  }
+
+  .icon-option.selected {
+    background-color: var(--color-accent);
+    color: var(--color-accent-contrast);
+  }
+
   /* Names stay directly editable, but read as text until you reach for them —
      a grid of boxed inputs was the main source of visual noise here. */
   .name {
@@ -161,18 +256,6 @@
     outline: none;
     background-color: var(--color-shade-1);
     border-color: var(--color-accent);
-  }
-
-  .count {
-    flex-shrink: 0;
-    min-width: 1.5rem;
-    text-align: center;
-    padding: 0.1rem 0.4rem;
-    border-radius: 999px;
-    background-color: var(--color-shade-3);
-    font-size: 0.75rem;
-    font-variant-numeric: tabular-nums;
-    opacity: 0.85;
   }
 
   /* Secondary actions recede until the card is being worked on, so a grid of

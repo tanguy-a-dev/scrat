@@ -14,6 +14,9 @@ export interface CategoryDto {
   id: string;
   name: string;
   parent_id: string | null;
+  /** Icon key, e.g. "house" — always set for a top-level category, always
+   * null for a subcategory. See CATEGORY_ICONS in $lib/categoryIcons.ts. */
+  icon: string | null;
   is_default: boolean;
 }
 
@@ -75,6 +78,8 @@ export const api = {
     invoke<CategoryDto>("create_category", { name, parentId }),
   renameCategory: (id: string, name: string) =>
     invoke<void>("rename_category", { id, name }),
+  setCategoryIcon: (id: string, icon: string) =>
+    invoke<void>("set_category_icon", { id, icon }),
   moveCategory: (id: string, parentId: string | null) =>
     invoke<void>("move_category", { id, parentId }),
   deleteCategory: (id: string, reassignTo: string | null) =>

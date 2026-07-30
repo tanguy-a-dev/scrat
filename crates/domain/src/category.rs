@@ -11,6 +11,10 @@ pub enum CategoryError {
     InvalidId(String),
     #[error("a category cannot be its own parent")]
     SelfParent,
+    #[error("'{0}' is not a known category icon")]
+    UnknownIcon(String),
+    #[error("a subcategory cannot have an icon")]
+    SubcategoryCannotHaveIcon,
 }
 
 const MAX_NAME_LEN: usize = 100;
@@ -25,6 +29,42 @@ const MAX_NAME_LEN: usize = 100;
 /// never be renamed or deleted; see `CategoryService::rename_category` and
 /// `CategoryService::delete_category`.
 pub const DEFAULT_CATEGORY_NAME: &str = "Uncategorized";
+
+/// Closed set of icon identifiers a top-level category can carry: plain
+/// kebab-case keys matching lucide's icon names, rather than the domain
+/// layer depending on any specific icon library — the frontend owns the
+/// key -> rendered-icon mapping.
+pub const CATEGORY_ICONS: &[&str] = &[
+    "house",
+    "shopping-cart",
+    "utensils",
+    "plug",
+    "car",
+    "heart-pulse",
+    "sparkles",
+    "shirt",
+    "film",
+    "dumbbell",
+    "graduation-cap",
+    "plane",
+    "gift",
+    "landmark",
+    "receipt",
+    "shield",
+    "circle-question-mark",
+    "briefcase",
+    "award",
+    "laptop",
+    "trending-up",
+    "building",
+    "rotate-ccw",
+    "arrow-left-right",
+    "tag",
+];
+
+/// Assigned to a newly created top-level category before the user picks
+/// something more specific via the icon editor.
+pub const FALLBACK_ICON: &str = "tag";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CategoryId(Uuid);
@@ -72,10 +112,27 @@ impl CategoryName {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CategoryIcon(String);
+
+impl CategoryIcon {
+    pub fn new(raw: &str) -> Result<Self, CategoryError> {
+        if !CATEGORY_ICONS.contains(&raw) {
+            return Err(CategoryError::UnknownIcon(raw.to_string()));
+        }
+        Ok(Self(raw.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Category {
     id: CategoryId,
     name: CategoryName,
     parent_id: Option<CategoryId>,
+    icon: Option<CategoryIcon>,
 }
 
 impl Category {
@@ -91,6 +148,7 @@ impl Category {
             id,
             name,
             parent_id,
+            icon: None,
         })
     }
 
@@ -106,6 +164,10 @@ impl Category {
         self.parent_id
     }
 
+    pub fn icon(&self) -> Option<&CategoryIcon> {
+        self.icon.as_ref()
+    }
+
     pub fn rename(&mut self, name: CategoryName) {
         self.name = name;
     }
@@ -114,7 +176,21 @@ impl Category {
         if parent_id == Some(self.id) {
             return Err(CategoryError::SelfParent);
         }
+        if parent_id.is_some() {
+            // Becoming a subcategory — icons are a top-level-only concept.
+            self.icon = None;
+        }
         self.parent_id = parent_id;
+        Ok(())
+    }
+
+    /// Only a top-level category may carry an icon — a subcategory renders
+    /// inside its parent's card, so an icon on it would never be shown.
+    pub fn set_icon(&mut self, icon: Option<CategoryIcon>) -> Result<(), CategoryError> {
+        if icon.is_some() && self.parent_id.is_some() {
+            return Err(CategoryError::SubcategoryCannotHaveIcon);
+        }
+        self.icon = icon;
         Ok(())
     }
 }
@@ -168,5 +244,48 @@ mod tests {
         let all = vec![category(root, None), category(child, Some(root))];
 
         assert!(!has_children(child, &all));
+    }
+
+    #[test]
+    fn category_icon_rejects_unknown_key() {
+        assert_eq!(
+            CategoryIcon::new("not-a-real-icon"),
+            Err(CategoryError::UnknownIcon("not-a-real-icon".to_string()))
+        );
+    }
+
+    #[test]
+    fn category_icon_accepts_a_known_key() {
+        assert!(CategoryIcon::new("house").is_ok());
+    }
+
+    #[test]
+    fn set_icon_rejects_icon_on_a_subcategory() {
+        let mut child = category(CategoryId::new(), Some(CategoryId::new()));
+
+        let result = child.set_icon(Some(CategoryIcon::new("house").unwrap()));
+
+        assert_eq!(result, Err(CategoryError::SubcategoryCannotHaveIcon));
+    }
+
+    #[test]
+    fn set_icon_allows_icon_on_a_root_category() {
+        let mut root = category(CategoryId::new(), None);
+
+        let result = root.set_icon(Some(CategoryIcon::new("house").unwrap()));
+
+        assert!(result.is_ok());
+        assert_eq!(root.icon().map(CategoryIcon::as_str), Some("house"));
+    }
+
+    #[test]
+    fn set_parent_clears_icon_when_becoming_a_subcategory() {
+        let mut root = category(CategoryId::new(), None);
+        root.set_icon(Some(CategoryIcon::new("house").unwrap()))
+            .unwrap();
+
+        root.set_parent(Some(CategoryId::new())).unwrap();
+
+        assert_eq!(root.icon(), None);
     }
 }

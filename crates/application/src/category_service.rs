@@ -1,5 +1,6 @@
 use scrat_domain::category::{
-    has_children, Category, CategoryError, CategoryId, CategoryName, DEFAULT_CATEGORY_NAME,
+    has_children, Category, CategoryError, CategoryIcon, CategoryId, CategoryName,
+    DEFAULT_CATEGORY_NAME, FALLBACK_ICON,
 };
 use scrat_domain::ports::{CategoryRepository, RepositoryError};
 use thiserror::Error;
@@ -45,7 +46,14 @@ impl<'a> CategoryService<'a> {
                 return Err(ApplicationError::ParentIsSubcategory);
             }
         }
-        let category = Category::new(CategoryId::new(), name, parent_id)?;
+        let mut category = Category::new(CategoryId::new(), name, parent_id)?;
+        if parent_id.is_none() {
+            // Every top-level category gets a starting icon the user can
+            // then change — see `set_category_icon`.
+            category.set_icon(Some(
+                CategoryIcon::new(FALLBACK_ICON).expect("fallback icon key is valid"),
+            ))?;
+        }
         self.repo.insert(&category)?;
         Ok(category)
     }
@@ -54,6 +62,16 @@ impl<'a> CategoryService<'a> {
         self.ensure_not_protected(id)?;
         let mut category = self.get(id)?;
         category.rename(CategoryName::new(new_name)?);
+        self.repo.update(&category)?;
+        Ok(())
+    }
+
+    /// Changes a top-level category's icon. Never gated by
+    /// `ensure_not_protected` — the forced default category can't be renamed
+    /// or deleted, but its icon is still just a display preference.
+    pub fn set_category_icon(&self, id: CategoryId, icon: &str) -> Result<(), ApplicationError> {
+        let mut category = self.get(id)?;
+        category.set_icon(Some(CategoryIcon::new(icon)?))?;
         self.repo.update(&category)?;
         Ok(())
     }
@@ -288,6 +306,73 @@ mod tests {
 
         assert_eq!(category.name().as_str(), "Hobby");
         assert_eq!(category.parent_id(), None);
+    }
+
+    #[test]
+    fn create_category_assigns_a_fallback_icon_to_root_categories() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+
+        let category = service.create_category("Hobby", None).unwrap();
+
+        assert_eq!(category.icon().map(CategoryIcon::as_str), Some("tag"));
+    }
+
+    #[test]
+    fn create_category_leaves_subcategories_without_an_icon() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+        let hobby = service.create_category("Hobby", None).unwrap();
+
+        let paint = service.create_category("Paint", Some(hobby.id())).unwrap();
+
+        assert_eq!(paint.icon(), None);
+    }
+
+    #[test]
+    fn set_category_icon_updates_a_root_categorys_icon() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+        let hobby = service.create_category("Hobby", None).unwrap();
+
+        service.set_category_icon(hobby.id(), "house").unwrap();
+
+        let stored = repo.find_by_id(hobby.id()).unwrap().unwrap();
+        assert_eq!(stored.icon().map(CategoryIcon::as_str), Some("house"));
+    }
+
+    #[test]
+    fn set_category_icon_rejects_an_unknown_icon_key() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+        let hobby = service.create_category("Hobby", None).unwrap();
+
+        let result = service.set_category_icon(hobby.id(), "not-a-real-icon");
+
+        assert!(matches!(result, Err(ApplicationError::Category(_))));
+    }
+
+    #[test]
+    fn set_category_icon_rejects_a_subcategory() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+        let hobby = service.create_category("Hobby", None).unwrap();
+        let paint = service.create_category("Paint", Some(hobby.id())).unwrap();
+
+        let result = service.set_category_icon(paint.id(), "house");
+
+        assert!(matches!(result, Err(ApplicationError::Category(_))));
+    }
+
+    #[test]
+    fn set_category_icon_is_allowed_on_the_protected_default_category() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+        let default_category = service.get_or_create_default_category().unwrap();
+
+        let result = service.set_category_icon(default_category.id(), "house");
+
+        assert!(result.is_ok());
     }
 
     #[test]
