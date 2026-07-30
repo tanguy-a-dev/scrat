@@ -11,10 +11,19 @@
   let currentIndex = $state(0);
   let inputEl: HTMLInputElement | undefined = $state();
 
-  let ranges: Range[] = [];
+  /* Category/account names live as the `value` of an <input> (they're
+     inline-editable), not as DOM text nodes — a TreeWalker over text never
+     sees them. So a match is either a Range in ordinary text, or a span
+     inside an editable input's value, each highlighted a different way. */
+  type TextMatch = { kind: "text"; range: Range };
+  type InputMatch = { kind: "input"; el: HTMLInputElement; start: number; end: number };
+  type Match = TextMatch | InputMatch;
 
-  function collectMatches(term: string): Range[] {
-    const found: Range[] = [];
+  let matches: Match[] = [];
+  let markedInputs = new Set<HTMLInputElement>();
+
+  function collectTextMatches(term: string): TextMatch[] {
+    const found: TextMatch[] = [];
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
       acceptNode(node) {
         const parent = (node as Text).parentElement;
@@ -39,49 +48,110 @@
         const range = new Range();
         range.setStart(node, at);
         range.setEnd(node, at + term.length);
-        found.push(range);
+        found.push({ kind: "text", range });
         from = at + term.length;
       }
     }
     return found;
   }
 
+  function collectInputMatches(term: string): InputMatch[] {
+    const found: InputMatch[] = [];
+    for (const el of document.querySelectorAll<HTMLInputElement>("input")) {
+      if (el.type !== "text" || el.closest(".find-in-page-bar")) continue;
+      const value = el.value;
+      if (!value) continue;
+      const lower = value.toLowerCase();
+      let from = 0;
+      let at: number;
+      while ((at = lower.indexOf(term, from)) !== -1) {
+        found.push({ kind: "input", el, start: at, end: at + term.length });
+        from = at + term.length;
+      }
+    }
+    return found;
+  }
+
+  function comparePosition(a: Match, b: Match): number {
+    const nodeA = a.kind === "text" ? a.range.startContainer : a.el;
+    const nodeB = b.kind === "text" ? b.range.startContainer : b.el;
+    if (nodeA === nodeB) {
+      return a.kind === "text" && b.kind === "text"
+        ? a.range.startOffset - b.range.startOffset
+        : 0;
+    }
+    return nodeA.compareDocumentPosition(nodeB) & Node.DOCUMENT_POSITION_FOLLOWING
+      ? -1
+      : 1;
+  }
+
+  function clearInputMarks() {
+    for (const el of markedInputs) {
+      el.classList.remove("find-in-page-input-match", "find-in-page-input-current");
+    }
+    markedInputs.clear();
+  }
+
   function paintHighlights() {
-    if (!supported) return;
-    CSS.highlights.set("find-in-page-all", new Highlight(...ranges));
-    if (ranges.length > 0) {
-      CSS.highlights.set("find-in-page-current", new Highlight(ranges[currentIndex]));
+    if (supported) {
+      const textRanges = matches
+        .filter((m): m is TextMatch => m.kind === "text")
+        .map((m) => m.range);
+      CSS.highlights.set("find-in-page-all", new Highlight(...textRanges));
+    }
+
+    clearInputMarks();
+    for (const m of matches) {
+      if (m.kind === "input") {
+        m.el.classList.add("find-in-page-input-match");
+        markedInputs.add(m.el);
+      }
+    }
+
+    const current = matches[currentIndex];
+    if (current?.kind === "text") {
+      if (supported) CSS.highlights.set("find-in-page-current", new Highlight(current.range));
     } else {
-      CSS.highlights.delete("find-in-page-current");
+      if (supported) CSS.highlights.delete("find-in-page-current");
+      if (current?.kind === "input") {
+        current.el.classList.add("find-in-page-input-current");
+        current.el.setSelectionRange(current.start, current.end);
+      }
     }
   }
 
   function clearHighlights() {
-    if (!supported) return;
-    CSS.highlights.delete("find-in-page-all");
-    CSS.highlights.delete("find-in-page-current");
+    if (supported) {
+      CSS.highlights.delete("find-in-page-all");
+      CSS.highlights.delete("find-in-page-current");
+    }
+    clearInputMarks();
   }
 
   function scrollToCurrent() {
-    const range = ranges[currentIndex];
-    range?.startContainer.parentElement?.scrollIntoView({
-      block: "center",
-      behavior: "smooth",
-    });
+    const current = matches[currentIndex];
+    if (!current) return;
+    const el = current.kind === "text" ? current.range.startContainer.parentElement : current.el;
+    el?.scrollIntoView({ block: "center", behavior: "smooth" });
   }
 
   function runSearch() {
     currentIndex = 0;
     const term = query.trim().toLowerCase();
-    ranges = term && supported ? collectMatches(term) : [];
-    matchCount = ranges.length;
+    matches = term
+      ? [
+          ...(supported ? collectTextMatches(term) : []),
+          ...collectInputMatches(term),
+        ].sort(comparePosition)
+      : [];
+    matchCount = matches.length;
     paintHighlights();
     if (matchCount > 0) scrollToCurrent();
   }
 
   function step(delta: 1 | -1) {
-    if (ranges.length === 0) return;
-    currentIndex = (currentIndex + delta + ranges.length) % ranges.length;
+    if (matches.length === 0) return;
+    currentIndex = (currentIndex + delta + matches.length) % matches.length;
     paintHighlights();
     scrollToCurrent();
   }
@@ -89,7 +159,7 @@
   function close() {
     open = false;
     query = "";
-    ranges = [];
+    matches = [];
     matchCount = 0;
     clearHighlights();
   }
@@ -210,5 +280,20 @@
     min-width: 4.5rem;
     text-align: center;
     white-space: nowrap;
+  }
+
+  /* Applied imperatively to arbitrary <input> elements elsewhere in the app
+     (category/account name fields) — those live in other components'
+     templates, so these rules must be :global to reach them. Mirrors the
+     dim/bright pairing of the ::highlight() rules in app.css, since inputs
+     can't be targeted by the CSS Custom Highlight API used for plain text. */
+  :global(.find-in-page-input-match) {
+    outline: 2px solid color-mix(in srgb, #ffd500 55%, transparent);
+    outline-offset: 1px;
+  }
+
+  :global(.find-in-page-input-current) {
+    outline: 2px solid rgba(255, 140, 0, 0.9);
+    outline-offset: 1px;
   }
 </style>
