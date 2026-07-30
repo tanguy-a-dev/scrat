@@ -5,6 +5,7 @@ use scrat_domain::money::{Currency, Money};
 use scrat_domain::ports::{
     AccountRepository, CategoryRepository, RepositoryError, TransactionRepository,
 };
+use scrat_domain::recurring::{self, RecurringCharge};
 use scrat_domain::transaction::{SourceText, Transaction, TransactionError, TransactionId};
 use thiserror::Error;
 
@@ -123,6 +124,24 @@ impl<'a> TransactionService<'a> {
 
     pub fn list_all(&self) -> Result<Vec<Transaction>, ApplicationError> {
         Ok(self.transactions.list_all()?)
+    }
+
+    /// Scans `[start, today]` for recurring commitments — subscriptions, rent,
+    /// utilities. Nothing is stored: the result is derived from the ledger on
+    /// every call, so cancelling a service and re-importing is all it takes to
+    /// keep it honest.
+    ///
+    /// The lookback is the caller's to choose because it is a genuine
+    /// trade-off rather than a detail. Too short and a monthly charge can't
+    /// reach the three occurrences detection needs; too long and something
+    /// cancelled long ago keeps reappearing (flagged lapsed, but still there).
+    pub fn detect_recurring_charges(
+        &self,
+        start: NaiveDate,
+        today: NaiveDate,
+    ) -> Result<Vec<RecurringCharge>, ApplicationError> {
+        let transactions = self.transactions.list_in_range(start, today)?;
+        Ok(recurring::detect_recurring_charges(&transactions, today))
     }
 
     /// Imports a batch of already-parsed rows (from a CSV, say) into the
@@ -1164,5 +1183,74 @@ mod tests {
             .unwrap();
 
         assert_eq!(suggestion, None);
+    }
+
+    #[test]
+    fn detect_recurring_charges_finds_a_subscription_in_the_ledger() {
+        let f = fixture();
+        let service = TransactionService::new(
+            &f.transactions,
+            &f.accounts,
+            &f.categories,
+            Currency::new("USD").unwrap(),
+        );
+        for month in 4..=6 {
+            service
+                .create_transaction(
+                    NaiveDate::from_ymd_opt(2026, month, 12).unwrap(),
+                    -1_349,
+                    "NETFLIX.COM",
+                    f.category_id,
+                    f.account_id,
+                )
+                .unwrap();
+        }
+
+        let charges = service
+            .detect_recurring_charges(
+                NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 6, 20).unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(charges.len(), 1);
+        assert_eq!(charges[0].typical_amount_minor_units, 1_349);
+        assert_eq!(charges[0].category_id, f.category_id);
+    }
+
+    /// The lookback is what the use-case actually contributes over the domain
+    /// detector, so it's what this layer has to prove: occurrences outside the
+    /// window must not reach detection, even though they're in the ledger.
+    #[test]
+    fn detect_recurring_charges_only_sees_the_requested_window() {
+        let f = fixture();
+        let service = TransactionService::new(
+            &f.transactions,
+            &f.accounts,
+            &f.categories,
+            Currency::new("USD").unwrap(),
+        );
+        for month in 4..=6 {
+            service
+                .create_transaction(
+                    NaiveDate::from_ymd_opt(2026, month, 12).unwrap(),
+                    -1_349,
+                    "NETFLIX.COM",
+                    f.category_id,
+                    f.account_id,
+                )
+                .unwrap();
+        }
+
+        // Starting in May leaves only two occurrences in range — one short of
+        // what detection requires.
+        let charges = service
+            .detect_recurring_charges(
+                NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 6, 20).unwrap(),
+            )
+            .unwrap();
+
+        assert!(charges.is_empty());
     }
 }

@@ -51,6 +51,27 @@ export interface ImportSummaryDto {
   imported: number;
 }
 
+/** A commitment inferred from the ledger — never stored, recomputed on every
+ * call. See `crates/domain/src/recurring.rs` for the detection rules. */
+export interface RecurringChargeDto {
+  /** Raw source text of the most recent occurrence, noise included. */
+  label: string;
+  cadence: "weekly" | "monthly" | "quarterly" | "yearly";
+  /** Positive magnitude — a recurring charge is always a cost. */
+  typical_amount_minor_units: number;
+  /** The same charge restated per month, so cadences can be summed. */
+  monthly_equivalent_minor_units: number;
+  currency: string;
+  occurrences: number;
+  first_seen: string;
+  last_seen: string;
+  next_expected: string;
+  category_id: string;
+  /** False once overdue by more than half a period — the "didn't I cancel
+   * this?" case. Excluded from any committed-per-month total. */
+  is_active: boolean;
+}
+
 export const api = {
   isDbInitialized: () => invoke<boolean>("is_db_initialized"),
   createDb: (passphrase: string) =>
@@ -111,6 +132,7 @@ export const api = {
     invoke<string | null>("suggest_category_for_source", { source }),
   exportTransactionsCsv: (destination: string) =>
     invoke<void>("export_transactions_csv", { destination }),
+  listRecurringCharges: () => invoke<RecurringChargeDto[]>("list_recurring_charges"),
 
   previewCsvImport: (bytes: number[]) =>
     invoke<ImportPreviewDto>("preview_csv_import", { bytes }),

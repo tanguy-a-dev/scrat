@@ -6,6 +6,7 @@
     formatCurrency,
     formatCurrencyRounded,
     type AccountDto,
+    type RecurringChargeDto,
     type TransactionDto,
   } from "$lib/api";
 
@@ -38,6 +39,7 @@
 
   let accounts = $state<AccountDto[]>([]);
   let transactions = $state<TransactionDto[]>([]);
+  let recurring = $state<RecurringChargeDto[]>([]);
   let loading = $state(true);
   let error = $state("");
 
@@ -79,9 +81,17 @@
       // every reconstructed past balance is off by it. Months outside a chart's
       // window are ignored when bucketing.
       const end = "9999-12-31";
-      const [a, t] = await Promise.all([api.listAccounts(), api.listTransactions(start, end)]);
+      // Recurring detection has its own (much longer) lookback, decided
+      // backend-side — it needs three occurrences of a charge, which a yearly
+      // one can only reach across years.
+      const [a, t, r] = await Promise.all([
+        api.listAccounts(),
+        api.listTransactions(start, end),
+        api.listRecurringCharges(),
+      ]);
       accounts = a;
       transactions = t;
+      recurring = r;
     } catch (e) {
       error = String(e);
     } finally {
@@ -184,6 +194,41 @@
   let meanSavings = $derived(
     Math.round(monthlyTotals.reduce((sum, m) => sum + m.savings, 0) / monthlyTotals.length),
   );
+
+  // ---------------------------------------------------------------------------
+  // Recurring commitments.
+  // ---------------------------------------------------------------------------
+
+  /** How many active charges to show before collapsing the rest behind a
+   * toggle. Enough to be useful at a glance without the panel taking over the
+   * page for someone with thirty subscriptions. */
+  const RECURRING_PREVIEW_COUNT = 6;
+
+  let showAllRecurring = $state(false);
+
+  let activeRecurring = $derived(recurring.filter((c) => c.is_active));
+  let lapsedRecurring = $derived(recurring.filter((c) => !c.is_active));
+
+  let visibleRecurring = $derived(
+    showAllRecurring ? activeRecurring : activeRecurring.slice(0, RECURRING_PREVIEW_COUNT),
+  );
+
+  /** Total monthly commitment. Active charges only — money that stopped
+   * leaving isn't committed, however regular it once was. */
+  let monthlyCommitment = $derived(
+    activeRecurring.reduce((sum, c) => sum + c.monthly_equivalent_minor_units, 0),
+  );
+
+  let recurringCurrency = $derived(recurring[0]?.currency ?? currency);
+
+  /** "12 Aug". Parsed by splitting the ISO string rather than via `new Date`,
+   * which reads a bare YYYY-MM-DD as UTC midnight and so renders the previous
+   * day for anyone west of Greenwich. */
+  function formatShortDate(iso: string): string {
+    const [, month, day] = iso.split("-");
+    const label = MONTH_LABELS[Number(month) - 1];
+    return label ? `${Number(day)} ${label}` : iso;
+  }
 
   // ---------------------------------------------------------------------------
   // Shared chart scaffolding.
@@ -698,6 +743,76 @@
       {/if}
     </div>
   </div>
+
+  <div class="recurring-card">
+    <div class="chart-header">
+      <h2>Recurring commitments</h2>
+      {#if activeRecurring.length > 0}
+        <span class="chart-note">
+          {formatCurrency(monthlyCommitment, recurringCurrency)} / month across
+          {activeRecurring.length}
+          {activeRecurring.length === 1 ? "charge" : "charges"}
+        </span>
+      {/if}
+    </div>
+
+    {#if recurring.length === 0}
+      <p class="empty">
+        Nothing detected yet. A charge has to appear at least three times, on a steady rhythm and
+        for about the same amount, before it counts as recurring.
+      </p>
+    {:else}
+      <ul class="recurring-list">
+        {#each visibleRecurring as charge (charge.label + charge.first_seen)}
+          <li class="recurring-row">
+            <span class="recurring-label" title={charge.label}>{charge.label}</span>
+            <span class="cadence-badge">{charge.cadence}</span>
+            <span class="recurring-amount">
+              {formatCurrency(charge.typical_amount_minor_units, charge.currency)}
+            </span>
+            <span class="recurring-meta">
+              {#if charge.cadence === "monthly"}
+                Next {formatShortDate(charge.next_expected)}
+              {:else}
+                ≈ {formatCurrency(charge.monthly_equivalent_minor_units, charge.currency)}/mo ·
+                next {formatShortDate(charge.next_expected)}
+              {/if}
+            </span>
+          </li>
+        {/each}
+      </ul>
+
+      {#if activeRecurring.length > RECURRING_PREVIEW_COUNT}
+        <button class="link-button" onclick={() => (showAllRecurring = !showAllRecurring)}>
+          {showAllRecurring
+            ? "Show fewer"
+            : `Show all ${activeRecurring.length} recurring charges`}
+        </button>
+      {/if}
+
+      {#if lapsedRecurring.length > 0}
+        <div class="lapsed">
+          <h3>Not seen recently</h3>
+          <p class="hint">
+            These billed on a rhythm and then stopped. Either they were cancelled, or a payment
+            failed and is worth checking.
+          </p>
+          <ul class="recurring-list">
+            {#each lapsedRecurring as charge (charge.label + charge.first_seen)}
+              <li class="recurring-row lapsed-row">
+                <span class="recurring-label" title={charge.label}>{charge.label}</span>
+                <span class="cadence-badge">{charge.cadence}</span>
+                <span class="recurring-amount">
+                  {formatCurrency(charge.typical_amount_minor_units, charge.currency)}
+                </span>
+                <span class="recurring-meta">Last seen {formatShortDate(charge.last_seen)}</span>
+              </li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
+    {/if}
+  </div>
 {/if}
 
 <style>
@@ -774,11 +889,98 @@
   }
 
   .month-card,
-  .chart-card {
+  .chart-card,
+  .recurring-card {
     margin-top: 1.5rem;
     padding: 1.25rem;
     border-radius: 10px;
     background-color: var(--color-box);
+  }
+
+  .recurring-card h2 {
+    font-size: 1rem;
+    margin: 0;
+  }
+
+  .recurring-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  /* Label takes the slack; the other three columns size to their content so
+     amounts stay aligned down the list regardless of merchant-name length. */
+  .recurring-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.55rem 0;
+    border-top: 1px solid var(--color-text);
+    border-top-color: color-mix(in srgb, var(--color-text) 12%, transparent);
+  }
+
+  .recurring-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.9rem;
+  }
+
+  .cadence-badge {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.15rem 0.45rem;
+    border-radius: 999px;
+    background-color: color-mix(in srgb, var(--color-text) 12%, transparent);
+    opacity: 0.85;
+  }
+
+  .recurring-amount {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.95rem;
+  }
+
+  .recurring-meta {
+    font-size: 0.75rem;
+    opacity: 0.65;
+    text-align: right;
+    min-width: 9rem;
+  }
+
+  .lapsed-row {
+    opacity: 0.55;
+  }
+
+  .lapsed {
+    margin-top: 1.25rem;
+  }
+
+  .lapsed h3 {
+    font-size: 0.85rem;
+    margin: 0 0 0.2rem;
+  }
+
+  .lapsed .hint {
+    display: block;
+    margin-bottom: 0.4rem;
+  }
+
+  .link-button {
+    margin-top: 0.6rem;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--color-accent);
+    font-size: 0.8rem;
+    font-family: inherit;
+    cursor: pointer;
+  }
+
+  .link-button:hover {
+    text-decoration: underline;
   }
 
   .stats-row {

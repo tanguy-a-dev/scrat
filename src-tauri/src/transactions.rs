@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 
-use chrono::NaiveDate;
+use chrono::{Local, Months, NaiveDate};
 use scrat_application::transaction_service::TransactionService;
 use scrat_domain::account::{Account, AccountId};
 use scrat_domain::category::{Category, CategoryId};
 use scrat_domain::ports::{AccountRepository, CategoryRepository};
+use scrat_domain::recurring::RecurringCharge;
 use scrat_domain::transaction::{Transaction, TransactionId};
 use scrat_infra_sqlite::{
     SqliteAccountRepository, SqliteCategoryRepository, SqliteTransactionRepository,
@@ -125,6 +126,78 @@ pub fn suggest_category_for_source(
 ) -> Result<Option<String>, String> {
     with_service(&state, |s| s.suggest_category_for_source(&source))
         .map(|found| found.map(|id| id.as_string()))
+}
+
+#[derive(Debug, Serialize)]
+pub struct RecurringChargeDto {
+    pub label: String,
+    /// "weekly" | "monthly" | "quarterly" | "yearly".
+    pub cadence: String,
+    /// Positive magnitude — a recurring charge is a cost, and carrying the
+    /// sign here only invites a double negation on the way to the screen.
+    pub typical_amount_minor_units: i64,
+    pub monthly_equivalent_minor_units: i64,
+    pub currency: String,
+    pub occurrences: usize,
+    pub first_seen: String,
+    pub last_seen: String,
+    pub next_expected: String,
+    pub category_id: String,
+    pub is_active: bool,
+}
+
+impl RecurringChargeDto {
+    fn from_domain(charge: RecurringCharge, currency: &str) -> Self {
+        Self {
+            label: charge.label,
+            cadence: charge.cadence.as_str().to_string(),
+            typical_amount_minor_units: charge.typical_amount_minor_units,
+            monthly_equivalent_minor_units: charge.monthly_equivalent_minor_units,
+            currency: currency.to_string(),
+            occurrences: charge.occurrences,
+            first_seen: charge.first_seen.format("%Y-%m-%d").to_string(),
+            last_seen: charge.last_seen.format("%Y-%m-%d").to_string(),
+            next_expected: charge.next_expected.format("%Y-%m-%d").to_string(),
+            category_id: charge.category_id.as_string(),
+            is_active: charge.is_active,
+        }
+    }
+}
+
+/// How far back a recurring scan looks. Two years is enough for a yearly
+/// charge to bill three times (barely) while keeping something cancelled in
+/// the distant past from lingering in the list forever.
+const RECURRING_LOOKBACK_MONTHS: u32 = 24;
+
+#[tauri::command]
+pub fn list_recurring_charges(state: State<DbState>) -> Result<Vec<RecurringChargeDto>, String> {
+    let today = Local::now().date_naive();
+    let start = today
+        .checked_sub_months(Months::new(RECURRING_LOOKBACK_MONTHS))
+        .unwrap_or(today);
+
+    // Repositories built inline under one lock rather than going through
+    // `with_service`, which would hand back the charges but not the currency
+    // they're denominated in — and taking the lock a second time to read it
+    // is how a non-reentrant Mutex turns into a deadlock.
+    let guard = state.0.lock().unwrap();
+    let conn = guard
+        .as_ref()
+        .ok_or_else(|| "database is locked".to_string())?;
+    let currency = app_currency(conn);
+    let transactions = SqliteTransactionRepository::new(conn, currency.clone());
+    let accounts = SqliteAccountRepository::new(conn, currency.clone());
+    let categories = SqliteCategoryRepository::new(conn);
+    let service = TransactionService::new(&transactions, &accounts, &categories, currency.clone());
+
+    let charges = service
+        .detect_recurring_charges(start, today)
+        .map_err(|e| e.to_string())?;
+
+    Ok(charges
+        .into_iter()
+        .map(|charge| RecurringChargeDto::from_domain(charge, currency.code()))
+        .collect())
 }
 
 /// Formats minor units as a decimal string with a comma separator (e.g.

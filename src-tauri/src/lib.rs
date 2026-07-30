@@ -38,6 +38,7 @@ pub fn run() {
             transactions::suggest_account_for_source,
             transactions::suggest_category_for_source,
             transactions::export_transactions_csv,
+            transactions::list_recurring_charges,
             import::preview_csv_import,
             import::commit_csv_import,
             settings::get_currency,
