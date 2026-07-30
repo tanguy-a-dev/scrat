@@ -18,10 +18,13 @@ const MAX_NAME_LEN: usize = 100;
 /// The category new transactions fall back to when none is explicitly
 /// chosen (e.g. a CSV import left without a "category for all rows"). Also
 /// guaranteed to always exist wherever categories are listed, so it's never
-/// missing from a category picker. Matches the seeded "Other Income"
+/// missing from a category picker. Matches the seeded "Uncategorized"
 /// top-level category (see `scrat_infra_sqlite::seed`) so the fallback
-/// reuses it instead of creating a separate duplicate.
-pub const DEFAULT_CATEGORY_NAME: &str = "Other Income";
+/// reuses it instead of creating a separate duplicate. This is now the one
+/// and only default category — forced, not user-selectable — so it can
+/// never be renamed or deleted; see `CategoryService::rename_category` and
+/// `CategoryService::delete_category`.
+pub const DEFAULT_CATEGORY_NAME: &str = "Uncategorized";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CategoryId(Uuid);

@@ -14,7 +14,6 @@ pub use category_repository::SqliteCategoryRepository;
 pub use connection::{create_new, database_exists, unlock_existing, DbError};
 pub use rusqlite::Connection;
 pub use settings_repository::{
-    get_currency_code, get_default_account_id, get_default_category_id, set_currency_code,
-    set_default_account_id, set_default_category_id,
+    get_currency_code, get_default_account_id, set_currency_code, set_default_account_id,
 };
 pub use transaction_repository::SqliteTransactionRepository;

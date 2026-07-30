@@ -29,14 +29,6 @@ pub fn set_currency_code(conn: &Connection, code: &str) -> Result<(), Repository
     set_setting(conn, "currency_code", code)
 }
 
-pub fn get_default_category_id(conn: &Connection) -> Result<Option<String>, RepositoryError> {
-    get_setting(conn, "default_category_id")
-}
-
-pub fn set_default_category_id(conn: &Connection, id: &str) -> Result<(), RepositoryError> {
-    set_setting(conn, "default_category_id", id)
-}
-
 pub fn get_default_account_id(conn: &Connection) -> Result<Option<String>, RepositoryError> {
     get_setting(conn, "default_account_id")
 }
@@ -74,33 +66,6 @@ mod tests {
         set_currency_code(&conn, "EUR").unwrap();
         set_currency_code(&conn, "GBP").unwrap();
         assert_eq!(get_currency_code(&conn).unwrap(), Some("GBP".to_string()));
-    }
-
-    #[test]
-    fn get_default_category_id_returns_none_when_unset() {
-        let conn = test_conn();
-        assert_eq!(get_default_category_id(&conn).unwrap(), None);
-    }
-
-    #[test]
-    fn set_then_get_default_category_id_roundtrips() {
-        let conn = test_conn();
-        set_default_category_id(&conn, "cat-1").unwrap();
-        assert_eq!(
-            get_default_category_id(&conn).unwrap(),
-            Some("cat-1".to_string())
-        );
-    }
-
-    #[test]
-    fn set_default_category_id_overwrites_previous_value() {
-        let conn = test_conn();
-        set_default_category_id(&conn, "cat-1").unwrap();
-        set_default_category_id(&conn, "cat-2").unwrap();
-        assert_eq!(
-            get_default_category_id(&conn).unwrap(),
-            Some("cat-2".to_string())
-        );
     }
 
     #[test]

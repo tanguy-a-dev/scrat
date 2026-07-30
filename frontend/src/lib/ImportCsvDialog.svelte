@@ -181,7 +181,7 @@
         opening/closing balance line). "Category" is the category column from
         the file itself, if it has one — each row with one is filed under a
         matching category (creating it if it doesn't exist yet). Rows without
-        one use the fallback chosen below, or "Other Income" if you leave that
+        one use the fallback chosen below, or "Uncategorized" if you leave that
         unset.
         Leave the account unset to use your default account.
       </p>

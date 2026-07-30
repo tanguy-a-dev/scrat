@@ -30,7 +30,6 @@ pub fn run() {
             categories::rename_category,
             categories::move_category,
             categories::delete_category,
-            categories::set_default_category,
             transactions::list_transactions,
             transactions::create_transaction,
             transactions::delete_transaction,

@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { CategoryDto } from "./api";
   import DeleteButton from "./DeleteButton.svelte";
-  import { Plus, Lock, Unlock } from "@lucide/svelte";
+  import { Plus } from "@lucide/svelte";
 
   let {
     category,
@@ -9,7 +9,6 @@
     onRename,
     onDelete,
     onAddChild,
-    onSetDefault,
   }: {
     category: CategoryDto;
     /** Direct children only — the hierarchy is never deeper than two levels. */
@@ -17,7 +16,6 @@
     onRename: (id: string, name: string) => void;
     onDelete: (category: CategoryDto) => void;
     onAddChild: (parentId: string, name: string) => void;
-    onSetDefault: (id: string) => void;
   } = $props();
 
   let addingChild = $state(false);
@@ -45,11 +43,12 @@
   }
 </script>
 
-<section class="card" class:is-default={category.is_default}>
+<section class="card">
   <header>
     <input
       class="name"
       value={category.name}
+      readonly={category.is_default}
       aria-label="Category name"
       onchange={(e) => onRename(category.id, e.currentTarget.value)}
     />
@@ -58,68 +57,35 @@
         {subcategories.length}
       </span>
     {/if}
-    {#if category.is_default}
-      <span
-        class="icon-button"
-        aria-label="Default category"
-        title="Default category"
-      >
-        <Lock size={16} />
+    {#if !category.is_default}
+      <span class="dim">
+        <DeleteButton
+          label="Delete category"
+          onConfirm={() => onDelete(category)}
+        />
       </span>
-    {:else}
-      <button
-        type="button"
-        class="icon-button dim"
-        aria-label="Set as default"
-        title="Set as default"
-        onclick={() => onSetDefault(category.id)}
-      >
-        <Unlock size={16} />
-      </button>
     {/if}
-    <span class="dim">
-      <DeleteButton
-        label="Delete category"
-        onConfirm={() => onDelete(category)}
-      />
-    </span>
   </header>
 
   <div class="subs">
     {#each subcategories as child (child.id)}
-      <span class="chip" class:is-default={child.is_default}>
+      <span class="chip">
         <input
           class="chip-name"
           value={draftFor(child)}
           size={Math.max(draftFor(child).length + 1, 4)}
+          readonly={child.is_default}
           aria-label="Subcategory name"
           oninput={(e) => (drafts[child.id] = e.currentTarget.value)}
           onchange={(e) => onRename(child.id, e.currentTarget.value)}
         />
-        {#if child.is_default}
-          <span
-            class="chip-action"
-            aria-label="Default category"
-            title="Default category"
-          >
-            <Lock size={13} />
-          </span>
-        {:else}
-          <button
-            type="button"
-            class="chip-action"
-            aria-label="Set as default"
-            title="Set as default"
-            onclick={() => onSetDefault(child.id)}
-          >
-            <Unlock size={13} />
-          </button>
+        {#if !child.is_default}
+          <DeleteButton
+            label="Delete subcategory"
+            compact
+            onConfirm={() => onDelete(child)}
+          />
         {/if}
-        <DeleteButton
-          label="Delete subcategory"
-          compact
-          onConfirm={() => onDelete(child)}
-        />
       </span>
     {/each}
 
@@ -159,15 +125,11 @@
   .card {
     display: flex;
     flex-direction: column;
+    height: 100%;
     gap: 0.6rem;
     padding: 0.85rem 0.9rem;
     border-radius: 12px;
-    border: 1px solid transparent;
     background-color: var(--color-shade-2);
-  }
-
-  .card.is-default {
-    border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
   }
 
   header {
@@ -229,8 +191,10 @@
 
   .subs {
     display: flex;
+    flex: 1;
     flex-wrap: wrap;
     align-items: center;
+    align-content: flex-start;
     gap: 0.35rem;
     padding-top: 0.6rem;
     border-top: 1px solid var(--color-shade-3);
@@ -245,10 +209,6 @@
     border-radius: 999px;
     background-color: var(--color-shade-3);
     font-size: 0.85rem;
-  }
-
-  .chip.is-default {
-    border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
   }
 
   .chip-name {
@@ -288,12 +248,6 @@
   .chip-action:hover {
     opacity: 1;
     background-color: var(--color-shade-4);
-  }
-
-  .chip.is-default .chip-action {
-    color: var(--color-accent);
-    opacity: 1;
-    cursor: default;
   }
 
   .add-chip {

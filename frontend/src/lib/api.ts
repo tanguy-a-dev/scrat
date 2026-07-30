@@ -79,8 +79,6 @@ export const api = {
     invoke<void>("move_category", { id, parentId }),
   deleteCategory: (id: string, reassignTo: string | null) =>
     invoke<void>("delete_category", { id, reassignTo }),
-  setDefaultCategory: (id: string) =>
-    invoke<void>("set_default_category", { id }),
 
   listTransactions: (start: string, end: string) =>
     invoke<TransactionDto[]>("list_transactions", { start, end }),

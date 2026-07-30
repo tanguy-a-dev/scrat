@@ -18,6 +18,8 @@ pub enum ApplicationError {
     HasSubcategories,
     #[error("category still has {0} transaction(s); choose a category to reassign them to")]
     RequiresReassignment(u64),
+    #[error("the default '{0}' category cannot be renamed or deleted")]
+    DefaultCategoryProtected(String),
 }
 
 /// Constructed fresh per request against a live repository borrow — see
@@ -49,6 +51,7 @@ impl<'a> CategoryService<'a> {
     }
 
     pub fn rename_category(&self, id: CategoryId, new_name: &str) -> Result<(), ApplicationError> {
+        self.ensure_not_protected(id)?;
         let mut category = self.get(id)?;
         category.rename(CategoryName::new(new_name)?);
         self.repo.update(&category)?;
@@ -85,6 +88,7 @@ impl<'a> CategoryService<'a> {
         id: CategoryId,
         reassign_to: Option<CategoryId>,
     ) -> Result<(), ApplicationError> {
+        self.ensure_not_protected(id)?;
         let transaction_count = self.repo.transaction_count(id)?;
         if transaction_count > 0 {
             let target =
@@ -110,10 +114,11 @@ impl<'a> CategoryService<'a> {
         Ok(self.repo.list_all()?)
     }
 
-    /// Finds the category named "Other Income" (case-insensitive), creating
+    /// Finds the category named "Uncategorized" (case-insensitive), creating
     /// it if this is the first time anything has needed a fallback default —
-    /// used to bootstrap the app-wide default category setting the first
-    /// time it's read, and by CSV import as its own per-row fallback.
+    /// the app's one forced default category, resolved fresh on every call
+    /// rather than cached, since it can never be renamed away from this name
+    /// (see `ensure_not_protected`).
     pub fn get_or_create_default_category(&self) -> Result<Category, ApplicationError> {
         if let Some(existing) = self.repo.list_all()?.into_iter().find(|c| {
             c.name()
@@ -123,6 +128,18 @@ impl<'a> CategoryService<'a> {
             return Ok(existing);
         }
         self.create_category(DEFAULT_CATEGORY_NAME, None)
+    }
+
+    /// Refuses the operation if `id` is the forced default category — it's
+    /// the bucket transactions fall back to app-wide, so renaming or
+    /// deleting it (even via reassignment) is never allowed.
+    fn ensure_not_protected(&self, id: CategoryId) -> Result<(), ApplicationError> {
+        if self.get_or_create_default_category()?.id() == id {
+            return Err(ApplicationError::DefaultCategoryProtected(
+                DEFAULT_CATEGORY_NAME.to_string(),
+            ));
+        }
+        Ok(())
     }
 
     fn get(&self, id: CategoryId) -> Result<Category, ApplicationError> {
@@ -226,12 +243,40 @@ mod tests {
     fn get_or_create_default_category_reuses_existing_one_case_insensitively() {
         let repo = FakeCategoryRepository::default();
         let service = CategoryService::new(&repo);
-        let existing = service.create_category("other income", None).unwrap();
+        let existing = service.create_category("uncategorized", None).unwrap();
 
         let category = service.get_or_create_default_category().unwrap();
 
         assert_eq!(category.id(), existing.id());
         assert_eq!(repo.categories.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rename_category_rejects_the_default_category() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+        let default_category = service.get_or_create_default_category().unwrap();
+
+        let result = service.rename_category(default_category.id(), "Renamed");
+
+        assert!(matches!(
+            result,
+            Err(ApplicationError::DefaultCategoryProtected(_))
+        ));
+    }
+
+    #[test]
+    fn delete_category_rejects_the_default_category() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+        let default_category = service.get_or_create_default_category().unwrap();
+
+        let result = service.delete_category(default_category.id(), None);
+
+        assert!(matches!(
+            result,
+            Err(ApplicationError::DefaultCategoryProtected(_))
+        ));
     }
 
     #[test]

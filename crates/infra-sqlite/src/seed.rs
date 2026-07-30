@@ -187,7 +187,7 @@ mod tests {
 
         let all = repo.list_all().unwrap();
 
-        assert_eq!(all.len(), 112);
+        assert_eq!(all.len(), 110);
     }
 
     #[test]

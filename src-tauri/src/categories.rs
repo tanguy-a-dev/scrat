@@ -1,6 +1,5 @@
 use scrat_application::category_service::CategoryService;
 use scrat_domain::category::{Category, CategoryId};
-use scrat_domain::ports::CategoryRepository;
 use scrat_infra_sqlite::{Connection, SqliteCategoryRepository};
 use serde::Serialize;
 use tauri::State;
@@ -12,10 +11,10 @@ pub struct CategoryDto {
     pub id: String,
     pub name: String,
     pub parent_id: Option<String>,
-    /// Whether this is the app-wide default category — the one new
-    /// transactions fall back to when none is explicitly chosen (e.g. an
-    /// unset "category for all rows" during CSV import). Changeable via
-    /// `set_default_category`.
+    /// Whether this is the app-wide default "Uncategorized" category — the
+    /// one new transactions fall back to when none is explicitly chosen
+    /// (e.g. an unset "category for all rows" during CSV import). Forced,
+    /// not user-selectable — this category can never be renamed or deleted.
     pub is_default: bool,
 }
 
@@ -49,27 +48,14 @@ fn with_service<T>(
     f(&service).map_err(|e| e.to_string())
 }
 
-/// Resolves the app-wide default category id: whatever's configured in
-/// settings, as long as it still exists — otherwise (nothing configured
-/// yet, or it was since deleted) falls back to the "Other Income" category,
-/// creating it if needed, and persists that as the new default so future
-/// reads are stable.
+/// Resolves the app-wide default category id: the forced "Uncategorized"
+/// category, creating it if this database predates it. Not user-selectable —
+/// there's nothing to persist here, since there's only ever one answer.
 pub(crate) fn resolve_default_category_id(conn: &Connection) -> Result<CategoryId, String> {
     let repo = SqliteCategoryRepository::new(conn);
-    if let Some(id_str) =
-        scrat_infra_sqlite::get_default_category_id(conn).map_err(|e| e.to_string())?
-    {
-        if let Ok(id) = CategoryId::parse(&id_str) {
-            if repo.find_by_id(id).map_err(|e| e.to_string())?.is_some() {
-                return Ok(id);
-            }
-        }
-    }
     let service = CategoryService::new(&repo);
     let default_category = service
         .get_or_create_default_category()
-        .map_err(|e| e.to_string())?;
-    scrat_infra_sqlite::set_default_category_id(conn, &default_category.id().as_string())
         .map_err(|e| e.to_string())?;
     Ok(default_category.id())
 }
@@ -88,20 +74,6 @@ pub fn list_categories(state: State<DbState>) -> Result<Vec<CategoryDto>, String
         .into_iter()
         .map(|c| to_dto(c, default_category_id))
         .collect())
-}
-
-#[tauri::command]
-pub fn set_default_category(state: State<DbState>, id: String) -> Result<(), String> {
-    let id = parse_id(&id)?;
-    let guard = state.0.lock().unwrap();
-    let conn = guard
-        .as_ref()
-        .ok_or_else(|| "database is locked".to_string())?;
-    let repo = SqliteCategoryRepository::new(conn);
-    repo.find_by_id(id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "category not found".to_string())?;
-    scrat_infra_sqlite::set_default_category_id(conn, &id.as_string()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

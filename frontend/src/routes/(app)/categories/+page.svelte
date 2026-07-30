@@ -55,10 +55,6 @@
     withErrorHandling(() => api.createCategory(name, parentId));
   }
 
-  function handleSetDefault(id: string) {
-    withErrorHandling(() => api.setDefaultCategory(id));
-  }
-
   async function handleDelete(category: CategoryDto) {
     try {
       await api.deleteCategory(category.id, null);
@@ -154,7 +150,6 @@
         onRename={handleRename}
         onDelete={handleDelete}
         onAddChild={handleAddChild}
-        onSetDefault={handleSetDefault}
       />
     {/each}
   </div>
@@ -266,11 +261,13 @@
 
   /* Cards flow into columns instead of one tall single-file list: with ~20
      categories the whole taxonomy fits on one screen, so subcategories can be
-     compared side by side rather than by scrolling. */
+     compared side by side rather than by scrolling. Grid's default stretch
+     (no align-items override) makes every card in a row match the row's
+     tallest card; CategoryCard.svelte fills that height and grows its
+     subcategory area to absorb the extra space. */
   .grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr));
-    align-items: start;
     gap: 0.75rem;
   }
 
