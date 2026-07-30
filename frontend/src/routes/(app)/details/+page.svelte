@@ -43,37 +43,37 @@
 
   type PanelKey = "expense" | "income";
 
-  // Which root category (if any) each panel is drilled into, showing that
-  // category's subcategories instead of the root-level breakdown.
-  let drilldown = $state<Record<PanelKey, string | null>>({
-    expense: null,
-    income: null,
+  // Which root categories are expanded, per panel — an expanded row shows
+  // its subcategories as extra rows underneath it, inline in the same list,
+  // rather than replacing the panel's own root-level breakdown.
+  let expandedCategoryIds = $state<Record<PanelKey, Set<string>>>({
+    expense: new Set(),
+    income: new Set(),
   });
 
   function categoryHasChildren(id: string): boolean {
     return categories.some((c) => c.parent_id === id);
   }
 
-  function drillInto(panel: PanelKey, categoryId: string) {
-    if (!categoryHasChildren(categoryId)) return;
-    drilldown = { ...drilldown, [panel]: categoryId };
+  // A category is only worth expanding if doing so would reveal a genuinely
+  // different breakdown — i.e. at least one of its transactions is actually
+  // assigned to a child category. A category with subcategories defined but
+  // whose transactions are all logged directly against it (e.g. Transportation
+  // with no transaction ever assigned to a specific subcategory) would just
+  // show itself again under itself, which isn't useful.
+  function hasVisibleSubcategories(txns: TransactionDto[], rootId: string): boolean {
+    if (!categoryHasChildren(rootId)) return false;
+    return txns.some(
+      (t) => t.category_id !== rootId && rootCategoryId(t.category_id) === rootId,
+    );
   }
 
-  function drillBack(panel: PanelKey) {
-    drilldown = { ...drilldown, [panel]: null };
+  function toggleExpand(panel: PanelKey, categoryId: string) {
+    const next = new Set(expandedCategoryIds[panel]);
+    if (next.has(categoryId)) next.delete(categoryId);
+    else next.add(categoryId);
+    expandedCategoryIds = { ...expandedCategoryIds, [panel]: next };
   }
-
-  // If the category a panel is drilled into gets excluded via the filters
-  // list, drop back to the root view rather than showing a dead-end empty
-  // drilldown.
-  $effect(() => {
-    if (drilldown.expense && excludedRootIds.has(drilldown.expense)) {
-      drilldown = { ...drilldown, expense: null };
-    }
-    if (drilldown.income && excludedRootIds.has(drilldown.income)) {
-      drilldown = { ...drilldown, income: null };
-    }
-  });
 
   // Animates the donut/bars filling up from empty whenever the breakdown
   // they're drawn from changes (initial load, range/tab switch, category
@@ -104,7 +104,7 @@
   async function load() {
     loading = true;
     error = "";
-    drilldown = { expense: null, income: null };
+    expandedCategoryIds = { expense: new Set(), income: new Set() };
     try {
       const range = computeRange(rangeMode, {
         start: customStart,
@@ -210,6 +210,12 @@
     return { total, breakdown };
   }
 
+  // Colored (but non-animated) breakdown of one root category's subcategories,
+  // for rendering the expanded rows nested under it in the breakdown list.
+  function subCategoryBreakdown(txns: TransactionDto[], rootId: string) {
+    return withDonutSlices(buildBreakdown(txns, rootId).breakdown);
+  }
+
   function withDonutSlices(breakdown: ReturnType<typeof buildBreakdown>["breakdown"]) {
     let cumulative = 0;
     return breakdown.map((slice, i) => {
@@ -240,8 +246,8 @@
     });
   }
 
-  let expenseData = $derived.by(() => buildBreakdown(expenseTransactions, drilldown.expense));
-  let incomeData = $derived.by(() => buildBreakdown(incomeTransactions, drilldown.income));
+  let expenseData = $derived.by(() => buildBreakdown(expenseTransactions, null));
+  let incomeData = $derived.by(() => buildBreakdown(incomeTransactions, null));
 
   let animatedExpenseSlices = $derived(
     withAnimatedSlices(withDonutSlices(expenseData.breakdown)),
@@ -296,21 +302,10 @@
   panelKey: PanelKey,
   total: number,
   slices: typeof animatedExpenseSlices,
+  txns: TransactionDto[],
 )}
   <div class="graph-column">
-    <h2 class="panel-title">
-      {#if drilldown[panelKey]}
-        <span class="breadcrumb">
-          <button type="button" class="back-link" onclick={() => drillBack(panelKey)}
-            >{label}</button
-          >
-          <span class="crumb-sep">›</span>
-          {categoryName(drilldown[panelKey]!)}
-        </span>
-      {:else}
-        {label}
-      {/if}
-    </h2>
+    <h2 class="panel-title">{label}</h2>
     <div class="graph-graphics">
       <div class="donut-wrap">
         <svg viewBox="0 0 200 200" class="donut">
@@ -344,7 +339,7 @@
         </svg>
         <div class="donut-center">
           <span class="total">{formatCurrency(total, currency)}</span>
-          <span class="label">{drilldown[panelKey] ? categoryName(drilldown[panelKey]!) : label}</span>
+          <span class="label">{label}</span>
         </div>
       </div>
 
@@ -369,17 +364,20 @@
     {:else}
       <ul class="breakdown">
         {#each slices as slice (slice.categoryId)}
+          {@const hasChildren = hasVisibleSubcategories(txns, slice.categoryId)}
+          {@const expanded = expandedCategoryIds[panelKey].has(slice.categoryId)}
           <li
             class:dimmed={hoveredCategoryId !== null && hoveredCategoryId !== slice.categoryId}
           >
             <button
               type="button"
               class="breakdown-row"
-              class:clickable={categoryHasChildren(slice.categoryId)}
-              disabled={!categoryHasChildren(slice.categoryId)}
-              onclick={() => drillInto(panelKey, slice.categoryId)}
+              class:clickable={hasChildren}
+              disabled={!hasChildren}
+              onclick={() => toggleExpand(panelKey, slice.categoryId)}
             >
               <div class="row">
+                <span class="chevron" class:expanded class:hidden={!hasChildren}>›</span>
                 <span class="dot" style={`background-color:${slice.color}`}></span>
                 <span class="name">{slice.name}</span>
                 <span class="amount">{formatCurrency(slice.amountMinorUnits, currency)}</span>
@@ -392,6 +390,27 @@
                 ></div>
               </div>
             </button>
+
+            {#if hasChildren && expanded}
+              <ul class="sub-breakdown">
+                {#each subCategoryBreakdown(txns, slice.categoryId) as sub (sub.categoryId)}
+                  <li class="sub-row">
+                    <div class="row">
+                      <span class="dot" style={`background-color:${sub.color}`}></span>
+                      <span class="name">{sub.name}</span>
+                      <span class="amount">{formatCurrency(sub.amountMinorUnits, currency)}</span>
+                      <span class="percent">{sub.percent.toFixed(1)}%</span>
+                    </div>
+                    <div class="bar-track">
+                      <div
+                        class="bar-fill"
+                        style={`width:${sub.percent}%;background-color:${sub.color}`}
+                      ></div>
+                    </div>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
           </li>
         {/each}
       </ul>
@@ -403,14 +422,14 @@
   <p>Loading…</p>
 {:else}
   <div class="layout">
-    {@render donutPanel("Expenses", "expense", expenseData.total, animatedExpenseSlices)}
+    {@render donutPanel("Expenses", "expense", expenseData.total, animatedExpenseSlices, expenseTransactions)}
 
     <div class="net-summary">
-      Left this period
+      <span class="net-summary-label">Left this period</span>
       <strong>{formatCurrency(netLeftMinorUnits, currency)}</strong>
     </div>
 
-    {@render donutPanel("Income", "income", incomeData.total, animatedIncomeSlices)}
+    {@render donutPanel("Income", "income", incomeData.total, animatedIncomeSlices, incomeTransactions)}
 
     <aside class="filters">
       <h2>Categories</h2>
@@ -477,9 +496,20 @@
   }
 
   .net-summary {
-    align-self: center;
+    /* Top-aligned with a fixed offset rather than centered on the grid row —
+       the row's height includes the breakdown lists below, so centering on
+       the row would push this down past the graphs. This offset lines it up
+       with the vertical center of the donuts instead. */
+    align-self: start;
     justify-self: center;
+    margin-top: 7.5rem;
     text-align: center;
+    padding: 1rem 1.25rem;
+    border-radius: 10px;
+    background-color: var(--color-box);
+  }
+
+  .net-summary-label {
     font-size: 0.85rem;
     opacity: 0.85;
   }
@@ -490,7 +520,6 @@
     font-size: 1.3rem;
     font-weight: 700;
     white-space: nowrap;
-    opacity: 1;
   }
 
   input[type="date"] {
@@ -513,29 +542,6 @@
     text-align: center;
     font-size: 1rem;
     margin-top: 0;
-  }
-
-  .breadcrumb {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-  }
-
-  .back-link {
-    background: none;
-    border: none;
-    padding: 0;
-    font: inherit;
-    color: var(--color-accent);
-    cursor: pointer;
-  }
-
-  .back-link:hover {
-    text-decoration: underline;
-  }
-
-  .crumb-sep {
-    opacity: 0.6;
   }
 
   .graph-graphics {
@@ -588,7 +594,7 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
-    padding: 0.1rem 0.2rem;
+    padding: 0.05rem 0.15rem;
     border-radius: 4px;
     cursor: pointer;
     transition:
@@ -676,6 +682,42 @@
     background-color: var(--color-shade-3);
   }
 
+  .chevron {
+    display: inline-block;
+    width: 0.7rem;
+    flex-shrink: 0;
+    text-align: center;
+    opacity: 0.6;
+    transition: transform 0.15s ease;
+  }
+
+  .chevron.expanded {
+    transform: rotate(90deg);
+  }
+
+  .chevron.hidden {
+    visibility: hidden;
+  }
+
+  .sub-breakdown {
+    list-style: none;
+    margin: 0.5rem 0 0;
+    padding-left: 1.4rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    border-left: 1px solid var(--color-shade-3);
+  }
+
+  .sub-row {
+    padding-left: 0.75rem;
+  }
+
+  .sub-row .name {
+    font-size: 0.9rem;
+    opacity: 0.9;
+  }
+
   .row {
     display: flex;
     align-items: center;
@@ -760,6 +802,10 @@
   @media (max-width: 640px) {
     .layout {
       grid-template-columns: 1fr;
+    }
+
+    .net-summary {
+      margin-top: 0;
     }
   }
 </style>
