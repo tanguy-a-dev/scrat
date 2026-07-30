@@ -4,10 +4,13 @@
   let {
     label,
     onConfirm,
+    compact = false,
   }: {
     /** aria-label/title for the trigger, e.g. "Delete transaction". */
     label: string;
     onConfirm: () => void;
+    /** Smaller, unfilled variant that fits inside a chip or pill. */
+    compact?: boolean;
   } = $props();
 
   let confirming = $state(false);
@@ -41,7 +44,7 @@
   });
 </script>
 
-<span class="delete-button" bind:this={rootEl}>
+<span class="delete-button" class:compact bind:this={rootEl}>
   {#if confirming}
     <span class="confirm-popover">
       <span class="confirm-text">Delete?</span>
@@ -51,7 +54,7 @@
         aria-label="Confirm delete"
         onclick={confirmDelete}
       >
-        <Check size={16} />
+        <Check size={compact ? 13 : 16} />
       </button>
       <button
         type="button"
@@ -59,7 +62,7 @@
         aria-label="Cancel"
         onclick={cancel}
       >
-        <X size={16} />
+        <X size={compact ? 13 : 16} />
       </button>
     </span>
   {:else}
@@ -70,7 +73,7 @@
       title={label}
       onclick={() => (confirming = true)}
     >
-      <Trash2 size={16} />
+      <Trash2 size={compact ? 13 : 16} />
     </button>
   {/if}
 </span>
@@ -92,5 +95,35 @@
   .confirm-text {
     font-size: 0.8rem;
     white-space: nowrap;
+  }
+
+  /* Compact: same confirm flow, sized to sit inline in a pill. The trigger
+     drops the filled circle so a row of chips doesn't read as a row of
+     buttons — colour alone carries the "destructive" signal until hover. */
+  .compact .icon-button {
+    width: 1.35rem;
+    height: 1.35rem;
+    background-color: transparent;
+    color: var(--color-danger);
+    opacity: 0.45;
+  }
+
+  .compact .confirm-popover .icon-button,
+  .compact .icon-button:hover {
+    opacity: 1;
+  }
+
+  .compact .icon-button:hover {
+    background-color: color-mix(in srgb, var(--color-danger) 30%, transparent);
+    color: var(--color-danger-strong);
+  }
+
+  .compact .confirm-popover {
+    background-color: var(--color-shade-4);
+    padding: 0.1rem 0.1rem 0.1rem 0.5rem;
+  }
+
+  .compact .confirm-text {
+    font-size: 0.7rem;
   }
 </style>

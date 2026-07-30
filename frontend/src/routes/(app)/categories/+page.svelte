@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, type CategoryDto } from "$lib/api";
-  import CategoryNode from "$lib/CategoryNode.svelte";
+  import { api, buildCategoryOptions, type CategoryDto } from "$lib/api";
+  import CategoryCard from "$lib/CategoryCard.svelte";
   import { toast } from "$lib/toasts.svelte";
 
   let categories = $state<CategoryDto[]>([]);
@@ -88,69 +88,145 @@
     }
   }
 
+  function autofocus(node: HTMLElement) {
+    node.focus();
+  }
+
   let rootCategories = $derived(categories.filter((c) => c.parent_id === null));
+  let subcategoryCount = $derived(categories.length - rootCategories.length);
+
+  function childrenOf(parent: CategoryDto): CategoryDto[] {
+    return categories.filter((c) => c.parent_id === parent.id);
+  }
+
+  /* Same eligibility rule as before — never the category being deleted, and if
+     it has subcategories only top-level targets — but labelled "Parent > Child"
+     so a subcategory target isn't ambiguous. */
+  let reassignOptions = $derived.by(() => {
+    if (!pendingDelete) return [];
+    const target = pendingDelete.category;
+    const targetHasChildren = categories.some((c) => c.parent_id === target.id);
+    const eligible = new Set(
+      categories
+        .filter(
+          (c) =>
+            c.id !== target.id && (!targetHasChildren || c.parent_id === null),
+        )
+        .map((c) => c.id),
+    );
+    return buildCategoryOptions(categories).filter((o) => eligible.has(o.id));
+  });
 </script>
 
-<h1>Categories</h1>
+<svelte:window
+  onkeydown={(e) => {
+    if (e.key === "Escape" && pendingDelete) pendingDelete = null;
+  }}
+/>
+
+<header class="page-header">
+  <div class="title">
+    <h1>Categories</h1>
+    {#if !loading && rootCategories.length > 0}
+      <span class="summary">
+        {rootCategories.length} categories · {subcategoryCount} subcategories
+      </span>
+    {/if}
+  </div>
+  <form class="create-form" onsubmit={handleAddRoot}>
+    <input placeholder="New category name" bind:value={newRootName} />
+    <button type="submit">Add category</button>
+  </form>
+</header>
 
 {#if error}<p class="error">{error}</p>{/if}
-
-<form class="create-form" onsubmit={handleAddRoot}>
-  <input placeholder="New category name" bind:value={newRootName} />
-  <button type="submit">Add category</button>
-</form>
 
 {#if loading}
   <p>Loading…</p>
 {:else if rootCategories.length === 0}
   <p class="empty">No categories yet — add one above.</p>
 {:else}
-  <ul class="tree">
+  <div class="grid">
     {#each rootCategories as category (category.id)}
-      <CategoryNode
+      <CategoryCard
         {category}
-        all={categories}
+        subcategories={childrenOf(category)}
         onRename={handleRename}
         onDelete={handleDelete}
         onAddChild={handleAddChild}
         onSetDefault={handleSetDefault}
       />
     {/each}
-  </ul>
+  </div>
 {/if}
 
 {#if pendingDelete}
-  {@const target = pendingDelete.category}
-  {@const targetHasChildren = categories.some(
-    (c) => c.parent_id === target.id,
-  )}
-  <div class="reassign-panel">
-    <p>
-      "{target.name}" still has transactions. Choose a category to move them
-      to before deleting:
-    </p>
-    <select bind:value={reassignTarget}>
-      <option value="" disabled selected>Select a category…</option>
-      {#each categories.filter((c) => c.id !== target.id && (!targetHasChildren || c.parent_id === null)) as c (c.id)}
-        <option value={c.id}>{c.name}</option>
-      {/each}
-    </select>
-    <button
-      type="button"
-      onclick={confirmReassignDelete}
-      disabled={!reassignTarget}
+  <!-- Modal rather than a panel appended below the grid: in a multi-column
+       layout, a prompt at the bottom of the page is easy to miss entirely. -->
+  <div class="overlay">
+    <div
+      class="reassign-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Reassign transactions before deleting"
+      tabindex="-1"
+      use:autofocus
     >
-      Reassign &amp; delete
-    </button>
-    <button type="button" onclick={() => (pendingDelete = null)}>
-      Cancel
-    </button>
+      <p>
+        "{pendingDelete.category.name}" still has transactions. Choose a
+        category to move them to before deleting:
+      </p>
+      <select bind:value={reassignTarget}>
+        <option value="" disabled selected>Select a category…</option>
+        {#each reassignOptions as option (option.id)}
+          <option value={option.id}>{option.label}</option>
+        {/each}
+      </select>
+      <div class="actions">
+        <button
+          type="button"
+          class="ghost"
+          onclick={() => (pendingDelete = null)}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          class="danger"
+          onclick={confirmReassignDelete}
+          disabled={!reassignTarget}
+        >
+          Reassign &amp; delete
+        </button>
+      </div>
+    </div>
   </div>
 {/if}
 
 <style>
+  .page-header {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .title {
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+  }
+
   h1 {
-    margin-top: 0;
+    margin: 0;
+  }
+
+  .summary {
+    font-size: 0.85rem;
+    opacity: 0.6;
+    white-space: nowrap;
   }
 
   .error {
@@ -164,7 +240,6 @@
   .create-form {
     display: flex;
     gap: 0.5rem;
-    margin-bottom: 1.5rem;
   }
 
   input,
@@ -189,28 +264,78 @@
     border: none;
   }
 
-  .tree {
-    margin: 0;
-    padding: 0;
+  /* Cards flow into columns instead of one tall single-file list: with ~20
+     categories the whole taxonomy fits on one screen, so subcategories can be
+     compared side by side rather than by scrolling. */
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr));
+    align-items: start;
+    gap: 0.75rem;
+  }
+
+  .overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    background-color: rgba(0, 0, 0, 0.6);
   }
 
   .reassign-panel {
-    margin-top: 1.5rem;
-    padding: 1rem;
-    border-radius: 10px;
-    background-color: color-mix(in srgb, var(--color-danger) 15%, transparent);
+    width: 100%;
+    max-width: 28rem;
+    padding: 1.25rem;
+    border-radius: 12px;
+    border: 1px solid var(--color-shade-3);
+    background-color: var(--color-shade-2);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
     display: flex;
     flex-direction: column;
-    gap: 0.6rem;
-    max-width: 28rem;
+    gap: 0.75rem;
+  }
+
+  .reassign-panel p {
+    margin: 0;
   }
 
   .reassign-panel select {
     border-radius: 6px;
     border: 1px solid var(--color-shade-3);
-    background-color: var(--color-shade-2);
+    background-color: var(--color-shade-1);
     color: inherit;
-    padding: 0.4rem 0.6rem;
+    padding: 0.45rem 0.6rem;
     font-family: inherit;
+  }
+
+  .actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+  }
+
+  /* Cancel stays secondary: the emphasised button in a destructive dialog
+     should be the one you opened the dialog to do. */
+  .reassign-panel button.ghost {
+    background-color: transparent;
+    border: 1px solid var(--color-shade-4);
+    color: inherit;
+  }
+
+  .reassign-panel button.ghost:hover {
+    background-color: var(--color-shade-3);
+  }
+
+  .reassign-panel button.danger {
+    background-color: var(--color-danger);
+    color: var(--color-text);
+  }
+
+  .reassign-panel button.danger:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
 </style>

@@ -126,7 +126,6 @@ const INCOME_CATEGORIES: CategoryTree = &[
         ],
     ),
     ("Gifts", &["Cash Gift", "Inheritance"]),
-    ("Other Income", &["Miscellaneous"]),
 ];
 
 const TRANSFER_CATEGORIES: CategoryTree = &[(

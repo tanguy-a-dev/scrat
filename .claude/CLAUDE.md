@@ -176,7 +176,7 @@ test for whatever broke, the same way the existing tests do.
 - No charting library. The Details donut is hand-rolled inline SVG (stacked
   `stroke-dasharray`/`stroke-dashoffset` circles) — this was a deliberate choice
   to avoid a dependency for one chart; don't add one without discussing it first.
-- Shared UI pieces live in `frontend/src/lib/` (e.g. `CategoryNode.svelte`,
+- Shared UI pieces live in `frontend/src/lib/` (e.g. `CategoryCard.svelte`,
   `ImportCsvDialog.svelte`), not duplicated per-route.
 - Theme (light/dark) lives in `frontend/src/app.css`, loaded once from the root
   `+layout.svelte`. Don't put `:root` color rules in a page-level `<style>`
