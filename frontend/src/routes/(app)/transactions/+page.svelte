@@ -16,6 +16,7 @@
   } from "$lib/api";
   import ImportCsvDialog from "$lib/ImportCsvDialog.svelte";
   import DeleteButton from "$lib/DeleteButton.svelte";
+  import CategorySelect from "$lib/CategorySelect.svelte";
   import { toast } from "$lib/toasts.svelte";
   import { FileUp, Plus } from "@lucide/svelte";
 
@@ -237,16 +238,11 @@
             <td>{formatCurrency(t.amount_minor_units, t.currency)}</td>
             <td>{t.source}</td>
             <td>
-              <select
-                class="category-select"
+              <CategorySelect
+                options={categoryOptions}
                 value={t.category_id}
-                onchange={(e) =>
-                  handleCategoryChange(t, e.currentTarget.value)}
-              >
-                {#each categoryOptions as c (c.id)}
-                  <option value={c.id}>{c.label}</option>
-                {/each}
-              </select>
+                onChange={(categoryId) => handleCategoryChange(t, categoryId)}
+              />
             </td>
             <td>{accountName(t.account_id)}</td>
             <td>
@@ -493,17 +489,6 @@
   td {
     padding: 0.4rem 0.5rem;
     border-bottom: 1px solid var(--color-shade-2);
-  }
-
-  .category-select {
-    border-radius: 4px;
-    border: 1px solid var(--color-shade-3);
-    background-color: var(--color-shade-2);
-    color: inherit;
-    padding: 0.2rem 0.4rem;
-    font-size: 0.85rem;
-    font-family: inherit;
-    max-width: 11rem;
   }
 
   @media (max-width: 900px) {

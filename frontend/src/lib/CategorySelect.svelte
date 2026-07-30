@@ -1,0 +1,209 @@
+<script lang="ts">
+  interface Option {
+    id: string;
+    label: string;
+  }
+
+  let {
+    options,
+    value,
+    onChange,
+    placeholder = "Category…",
+  }: {
+    options: Option[];
+    value: string;
+    onChange: (id: string) => void;
+    placeholder?: string;
+  } = $props();
+
+  let open = $state(false);
+  let query = $state("");
+  let highlighted = $state(0);
+  let containerEl: HTMLDivElement | undefined = $state();
+  let inputEl: HTMLInputElement | undefined = $state();
+
+  let selectedLabel = $derived(
+    options.find((o) => o.id === value)?.label ?? placeholder,
+  );
+
+  let filtered = $derived.by(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return options;
+    return options.filter((o) => o.label.toLowerCase().includes(q));
+  });
+
+  $effect(() => {
+    filtered;
+    highlighted = 0;
+  });
+
+  function openDropdown() {
+    open = true;
+    query = "";
+    queueMicrotask(() => inputEl?.focus());
+  }
+
+  function close() {
+    open = false;
+  }
+
+  function select(id: string) {
+    onChange(id);
+    close();
+  }
+
+  function handleTriggerClick() {
+    if (open) close();
+    else openDropdown();
+  }
+
+  function handleWindowClick(event: MouseEvent) {
+    if (open && containerEl && !containerEl.contains(event.target as Node)) {
+      close();
+    }
+  }
+
+  function handleInputKeydown(event: KeyboardEvent) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      close();
+    } else if (event.key === "ArrowDown") {
+      event.preventDefault();
+      highlighted = Math.min(highlighted + 1, filtered.length - 1);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      highlighted = Math.max(highlighted - 1, 0);
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const option = filtered[highlighted];
+      if (option) select(option.id);
+    }
+  }
+</script>
+
+<svelte:window onclick={handleWindowClick} />
+
+<div class="category-select" bind:this={containerEl}>
+  <button type="button" class="trigger" onclick={handleTriggerClick}>
+    {selectedLabel}
+  </button>
+  {#if open}
+    <div class="dropdown">
+      <input
+        bind:this={inputEl}
+        bind:value={query}
+        onkeydown={handleInputKeydown}
+        placeholder="Search category…"
+      />
+      <ul class="options">
+        {#if filtered.length === 0}
+          <li class="empty">No matches.</li>
+        {:else}
+          {#each filtered as option, i (option.id)}
+            <li>
+              <button
+                type="button"
+                class:selected={option.id === value}
+                class:highlighted={i === highlighted}
+                onmouseenter={() => (highlighted = i)}
+                onclick={() => select(option.id)}
+              >
+                {option.label}
+              </button>
+            </li>
+          {/each}
+        {/if}
+      </ul>
+    </div>
+  {/if}
+</div>
+
+<style>
+  .category-select {
+    position: relative;
+    display: inline-block;
+    max-width: 11rem;
+  }
+
+  .trigger {
+    width: 100%;
+    border-radius: 4px;
+    border: 1px solid var(--color-shade-3);
+    background-color: var(--color-shade-2);
+    color: inherit;
+    padding: 0.2rem 0.4rem;
+    font-size: 0.85rem;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .dropdown {
+    position: absolute;
+    top: calc(100% + 0.25rem);
+    left: 0;
+    z-index: 100;
+    width: max(100%, 16rem);
+    background: var(--color-shade-2);
+    border: 1px solid var(--color-shade-3);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .dropdown input {
+    border: none;
+    border-bottom: 1px solid var(--color-shade-3);
+    background: transparent;
+    color: inherit;
+    padding: 0.5rem 0.6rem;
+    font-size: 0.85rem;
+    font-family: inherit;
+  }
+
+  .dropdown input:focus {
+    outline: none;
+  }
+
+  .options {
+    list-style: none;
+    margin: 0;
+    padding: 0.3rem;
+    max-height: 14rem;
+    overflow-y: auto;
+  }
+
+  .options button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border: none;
+    background: transparent;
+    color: inherit;
+    padding: 0.4rem 0.5rem;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    font-family: inherit;
+    cursor: pointer;
+  }
+
+  .options button.highlighted {
+    background-color: var(--color-shade-3);
+  }
+
+  .options button.selected {
+    background-color: var(--color-accent);
+    color: var(--color-accent-contrast);
+  }
+
+  .empty {
+    padding: 0.5rem 0.6rem;
+    opacity: 0.7;
+    font-size: 0.85rem;
+  }
+</style>

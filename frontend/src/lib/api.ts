@@ -189,9 +189,8 @@ export function buildCategoryOptions(
   const result: { id: string; label: string }[] = [];
   function walk(parentId: string | null) {
     for (const c of byParent.get(parentId) ?? []) {
-      const suffix = c.is_default ? " (default)" : "";
       const parentName = c.parent_id ? byId.get(c.parent_id)?.name : undefined;
-      const label = parentName ? `${parentName} > ${c.name}${suffix}` : `${c.name}${suffix}`;
+      const label = parentName ? `${parentName} > ${c.name}` : c.name;
       result.push({ id: c.id, label });
       walk(c.id);
     }
