@@ -1,11 +1,14 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
+  import { page } from "$app/state";
+  import { navPages, adjacentPageHref } from "$lib/navigation";
 
   interface Command {
     id: string;
     label: string;
     section: "Navigate" | "Actions";
+    shortcut?: string;
     action: () => void;
   }
 
@@ -15,12 +18,26 @@
   let inputEl: HTMLInputElement | undefined = $state();
 
   const commands: Command[] = [
-    { id: "nav-overview", label: "Go to Overview", section: "Navigate", action: () => goto("/overview") },
-    { id: "nav-details", label: "Go to Details", section: "Navigate", action: () => goto("/details") },
-    { id: "nav-transactions", label: "Go to Transactions", section: "Navigate", action: () => goto("/transactions") },
-    { id: "nav-accounts", label: "Go to Accounts", section: "Navigate", action: () => goto("/accounts") },
-    { id: "nav-categories", label: "Go to Categories", section: "Navigate", action: () => goto("/categories") },
-    { id: "nav-settings", label: "Go to Settings", section: "Navigate", action: () => goto("/settings") },
+    {
+      id: "nav-next-page",
+      label: "Next page",
+      section: "Navigate",
+      shortcut: "⌘/⌥ ↓",
+      action: () => goto(adjacentPageHref(page.url.pathname, 1)),
+    },
+    {
+      id: "nav-previous-page",
+      label: "Previous page",
+      section: "Navigate",
+      shortcut: "⌘/⌥ ↑",
+      action: () => goto(adjacentPageHref(page.url.pathname, -1)),
+    },
+    ...navPages.map((p) => ({
+      id: `nav-${p.href}`,
+      label: `Go to ${p.label}`,
+      section: "Navigate" as const,
+      action: () => goto(p.href),
+    })),
     {
       id: "action-add-transaction",
       label: "Add transaction",
@@ -34,6 +51,11 @@
       action: () => goto("/transactions?action=import-csv"),
     },
   ];
+
+  function isEditableTarget(target: EventTarget | null): boolean {
+    if (!(target instanceof HTMLElement)) return false;
+    return target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable;
+  }
 
   let filtered = $derived.by(() => {
     const q = query.trim().toLowerCase();
@@ -60,6 +82,14 @@
     } else if (event.key === "Escape" && open) {
       event.preventDefault();
       close();
+    } else if (
+      !open &&
+      (event.metaKey || event.altKey) &&
+      (event.key === "ArrowDown" || event.key === "ArrowUp") &&
+      !isEditableTarget(event.target)
+    ) {
+      event.preventDefault();
+      goto(adjacentPageHref(page.url.pathname, event.key === "ArrowDown" ? 1 : -1));
     }
   }
 
@@ -120,7 +150,10 @@
               onmouseenter={() => (selectedIndex = i)}
               onclick={() => run(command)}
             >
-              {command.label}
+              <span>{command.label}</span>
+              {#if command.shortcut}
+                <span class="shortcut">{command.shortcut}</span>
+              {/if}
             </button>
           </li>
         {:else}
@@ -192,7 +225,10 @@
   }
 
   button {
-    display: block;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
     width: 100%;
     text-align: left;
     border: none;
@@ -208,5 +244,11 @@
   button.selected {
     background-color: var(--color-accent);
     color: var(--color-accent-contrast);
+  }
+
+  .shortcut {
+    font-size: 0.75rem;
+    opacity: 0.6;
+    white-space: nowrap;
   }
 </style>
