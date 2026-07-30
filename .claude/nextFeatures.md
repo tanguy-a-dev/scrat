@@ -2,10 +2,9 @@
 
 ## Details
 
-- Graph colors: Generate better fitting palette for graph
-- The legend on the right of the graph should take less space, the graph should be a little bigger
-- When hovering a color on the graph or hovering the category in the ledeng, it should highlight the graph color, the legend's category and the category in the list bellow
-
+- "Left this period: €X" should be displayed in the middle of the two graphs
+- When I hover the list of categories it should not highlight the graph. The reverse is true, if i hover the graph or the legend the list should be highlighted
+- When I click on a category in the list bellow the graph, I want the sub-category to be displayed.
 
 ## Comparison
 Must think about how first

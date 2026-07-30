@@ -10,15 +10,17 @@
     type RangeMode,
   } from "$lib/api";
 
+  // Validated categorical palette (dark-mode steps) — passes CVD/contrast
+  // checks against this app's dark surface. See dataviz skill's palette.md.
   const PALETTE = [
-    "#228be6",
-    "#97f2d7",
-    "#f2cc8f",
-    "#e07a5f",
-    "#9b5de5",
-    "#43aa8b",
-    "#f15bb5",
-    "#98abb5",
+    "#3987e5",
+    "#d95926",
+    "#199e70",
+    "#c98500",
+    "#d55181",
+    "#008300",
+    "#9085e9",
+    "#e66767",
   ];
   const RADIUS = 80;
   const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
@@ -33,6 +35,10 @@
   let customEnd = $state(todayIsoDate());
 
   let excludedRootIds = $state<Set<string>>(new Set());
+
+  // Shared across both donut panels: hovering the slice, the legend entry,
+  // or the breakdown row for a category highlights all three at once.
+  let hoveredCategoryId = $state<string | null>(null);
 
   // Animates the donut/bars filling up from empty whenever the breakdown
   // they're drawn from changes (initial load, range/tab switch, category
@@ -273,6 +279,11 @@
                 stroke-width="24"
                 stroke-dasharray={slice.animatedDasharray}
                 stroke-dashoffset={slice.animatedDashoffset}
+                class="slice"
+                class:dimmed={hoveredCategoryId !== null && hoveredCategoryId !== slice.categoryId}
+                role="presentation"
+                onmouseenter={() => (hoveredCategoryId = slice.categoryId)}
+                onmouseleave={() => (hoveredCategoryId = null)}
               />
             {/each}
           </g>
@@ -286,7 +297,11 @@
       {#if slices.length > 0}
         <ul class="legend">
           {#each slices as slice (slice.categoryId)}
-            <li>
+            <li
+              class:dimmed={hoveredCategoryId !== null && hoveredCategoryId !== slice.categoryId}
+              onmouseenter={() => (hoveredCategoryId = slice.categoryId)}
+              onmouseleave={() => (hoveredCategoryId = null)}
+            >
               <span class="dot" style={`background-color:${slice.color}`}></span>
               <span class="name">{slice.name}</span>
             </li>
@@ -300,7 +315,11 @@
     {:else}
       <ul class="breakdown">
         {#each slices as slice (slice.categoryId)}
-          <li>
+          <li
+            class:dimmed={hoveredCategoryId !== null && hoveredCategoryId !== slice.categoryId}
+            onmouseenter={() => (hoveredCategoryId = slice.categoryId)}
+            onmouseleave={() => (hoveredCategoryId = null)}
+          >
             <div class="row">
               <span class="dot" style={`background-color:${slice.color}`}></span>
               <span class="name">{slice.name}</span>
@@ -431,7 +450,7 @@
 
   .donut-wrap {
     position: relative;
-    width: min(220px, 55vw);
+    width: min(260px, 60vw);
     flex-shrink: 0;
   }
 
@@ -439,6 +458,17 @@
     width: 100%;
     height: auto;
     display: block;
+  }
+
+  .slice {
+    transition:
+      opacity 0.15s ease,
+      stroke-width 0.15s ease;
+    cursor: pointer;
+  }
+
+  .slice.dimmed {
+    opacity: 0.35;
   }
 
   :root {
@@ -451,13 +481,35 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: 0.35rem;
+    max-width: 8.5rem;
+    font-size: 0.8rem;
   }
 
   .legend li {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.4rem;
+    padding: 0.1rem 0.2rem;
+    border-radius: 4px;
+    cursor: pointer;
+    transition:
+      opacity 0.15s ease,
+      background-color 0.15s ease;
+  }
+
+  .legend li .name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .legend li.dimmed {
+    opacity: 0.4;
+  }
+
+  .legend li:hover {
+    background-color: var(--color-shade-3);
   }
 
   .donut-center {
@@ -489,6 +541,24 @@
     display: flex;
     flex-direction: column;
     gap: 0.75rem;
+  }
+
+  .breakdown li {
+    border-radius: 4px;
+    padding: 0.2rem 0.3rem;
+    margin: -0.2rem -0.3rem;
+    cursor: pointer;
+    transition:
+      opacity 0.15s ease,
+      background-color 0.15s ease;
+  }
+
+  .breakdown li.dimmed {
+    opacity: 0.4;
+  }
+
+  .breakdown li:hover {
+    background-color: var(--color-shade-3);
   }
 
   .row {
