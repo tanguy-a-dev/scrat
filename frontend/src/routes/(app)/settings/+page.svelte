@@ -115,6 +115,35 @@
       importing = false;
     }
   }
+
+  let deleteRequested = $state(false);
+  let deleteConfirmText = $state("");
+  let deleting = $state(false);
+  const DELETE_CONFIRM_WORD = "DELETE";
+
+  function startDelete() {
+    deleteRequested = true;
+    deleteConfirmText = "";
+  }
+
+  function cancelDelete() {
+    deleteRequested = false;
+    deleteConfirmText = "";
+  }
+
+  async function handleConfirmDelete(event: Event) {
+    event.preventDefault();
+    if (deleteConfirmText !== DELETE_CONFIRM_WORD) return;
+    deleting = true;
+    try {
+      await api.deleteDatabase();
+      toast.success("Your data has been deleted.");
+      await goto("/");
+    } catch (e) {
+      toast.error(String(e));
+      deleting = false;
+    }
+  }
 </script>
 
 <h1>Settings</h1>
@@ -213,6 +242,47 @@
     frequency lookup only: no machine learning, nothing ever leaves your
     computer.
   </p>
+</section>
+
+<section>
+  <h2>Delete my data</h2>
+  <p class="hint">
+    Permanently deletes your local encrypted database — every account,
+    category, and transaction. This cannot be undone, and no backup is made.
+    Export your database first if you want to keep a copy.
+  </p>
+  {#if !deleteRequested}
+    <button type="button" class="danger" onclick={startDelete}>
+      Delete my data
+    </button>
+  {:else}
+    <div class="import-warning-panel">
+      <p>
+        <strong>This will permanently delete all of your data.</strong>
+        There is no undo and no backup. Type
+        <code>{DELETE_CONFIRM_WORD}</code> below to confirm.
+      </p>
+      <form onsubmit={handleConfirmDelete}>
+        <input
+          type="text"
+          placeholder={DELETE_CONFIRM_WORD}
+          bind:value={deleteConfirmText}
+          autocomplete="off"
+          required
+        />
+        <button
+          type="submit"
+          class="danger"
+          disabled={deleting || deleteConfirmText !== DELETE_CONFIRM_WORD}
+        >
+          {deleting ? "Deleting…" : "Permanently delete"}
+        </button>
+        <button type="button" onclick={cancelDelete} disabled={deleting}>
+          Cancel
+        </button>
+      </form>
+    </div>
+  {/if}
 </section>
 
 <style>

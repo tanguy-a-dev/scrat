@@ -44,6 +44,7 @@ pub fn run() {
             settings::set_currency,
             settings::export_database,
             settings::import_database,
+            settings::delete_database,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

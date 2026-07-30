@@ -89,3 +89,23 @@ pub fn import_database(
         )),
     }
 }
+
+/// Permanently deletes the encrypted database file — there is no undo and no
+/// backup is made. The frontend is expected to have gotten explicit user
+/// confirmation before calling this.
+#[tauri::command]
+pub fn delete_database(app: AppHandle, state: State<DbState>) -> Result<(), String> {
+    let path = db_path(&app)?;
+    let mut guard = state.0.lock().unwrap();
+    *guard = None; // release the connection before deleting its file
+    if scrat_infra_sqlite::database_exists(&path) {
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    for suffix in ["db-wal", "db-shm", "db-journal"] {
+        let sidecar = path.with_extension(suffix);
+        if sidecar.exists() {
+            let _ = std::fs::remove_file(&sidecar);
+        }
+    }
+    Ok(())
+}

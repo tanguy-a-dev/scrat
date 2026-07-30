@@ -145,7 +145,6 @@ const INCOME_CATEGORIES: CategoryTree = &[
             "Expense Reimbursement",
         ],
     ),
-    ("Gifts", "gift", &["Cash Gift", "Inheritance"]),
 ];
 
 const TRANSFER_CATEGORIES: CategoryTree = &[(

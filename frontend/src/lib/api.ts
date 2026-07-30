@@ -137,6 +137,7 @@ export const api = {
     invoke<void>("export_database", { destination }),
   importDatabase: (source: string, passphrase: string) =>
     invoke<void>("import_database", { source, passphrase }),
+  deleteDatabase: () => invoke<void>("delete_database"),
 };
 
 /** Formats integer minor units (e.g. cents) as "12.34". */
