@@ -58,6 +58,14 @@ export function countsTowardTotals(t: { role: TransactionRole }): boolean {
   return t.role === "normal";
 }
 
+/** Result of a bulk delete. `deleted` can exceed the number of ids sent —
+ * deleting one leg of a transfer always removes its counterpart too, even
+ * if that counterpart was never part of the selection. */
+export interface BulkDeleteDto {
+  deleted: number;
+  transfer_groups: number;
+}
+
 export interface ImportPreviewRowDto {
   date: string | null;
   amount_minor_units: number | null;
@@ -169,8 +177,14 @@ export const api = {
       accountId,
     }),
   deleteTransaction: (id: string) => invoke<void>("delete_transaction", { id }),
+  /** Deletes every listed transaction, expanding any transfer leg to its
+   * whole group — see `BulkDeleteDto`. `deleted` can exceed `ids.length`. */
+  deleteTransactions: (ids: string[]) =>
+    invoke<BulkDeleteDto>("delete_transactions", { ids }),
   setTransactionCategory: (id: string, categoryId: string) =>
     invoke<void>("set_transaction_category", { id, categoryId }),
+  setTransactionsCategory: (ids: string[], categoryId: string) =>
+    invoke<void>("set_transactions_category", { ids, categoryId }),
   suggestAccountForSource: (source: string) =>
     invoke<string | null>("suggest_account_for_source", { source }),
   suggestCategoryForSource: (source: string) =>

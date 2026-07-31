@@ -144,6 +144,63 @@ pub fn delete_transaction(state: State<DbState>, id: String) -> Result<(), Strin
     with_service(&state, |s| s.delete_transaction(id))
 }
 
+/// A page's worth of ids is a few hundred; this is a generous ceiling to
+/// reject an obviously malformed request rather than build an unbounded
+/// query from frontend input.
+const MAX_BULK_IDS: usize = 10_000;
+
+#[derive(Debug, Serialize)]
+pub struct BulkDeleteDto {
+    /// Rows actually removed — can exceed `ids.len()` sent by the caller,
+    /// since deleting one leg of a transfer always removes its counterpart
+    /// too, even if that counterpart wasn't in the selection.
+    pub deleted: usize,
+    /// How many distinct transfer groups were touched, so the caller can
+    /// explain a `deleted` count larger than the selection.
+    pub transfer_groups: usize,
+}
+
+#[tauri::command]
+pub fn delete_transactions(
+    state: State<DbState>,
+    ids: Vec<String>,
+) -> Result<BulkDeleteDto, String> {
+    if ids.len() > MAX_BULK_IDS {
+        return Err(format!(
+            "too many transactions selected (max {MAX_BULK_IDS})"
+        ));
+    }
+    let ids = ids
+        .into_iter()
+        .map(|id| TransactionId::parse(&id))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    with_service(&state, |s| s.delete_transactions(&ids)).map(|outcome| BulkDeleteDto {
+        deleted: outcome.deleted,
+        transfer_groups: outcome.transfer_groups,
+    })
+}
+
+#[tauri::command]
+pub fn set_transactions_category(
+    state: State<DbState>,
+    ids: Vec<String>,
+    category_id: String,
+) -> Result<(), String> {
+    if ids.len() > MAX_BULK_IDS {
+        return Err(format!(
+            "too many transactions selected (max {MAX_BULK_IDS})"
+        ));
+    }
+    let ids = ids
+        .into_iter()
+        .map(|id| TransactionId::parse(&id))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    let category_id = CategoryId::parse(&category_id).map_err(|e| e.to_string())?;
+    with_service(&state, |s| s.set_category_many(&ids, category_id))
+}
+
 /// Brings an account whose statements can't be imported back in line with
 /// the balance the user reads off their bank's own app, by posting the
 /// difference as a single adjustment entry.

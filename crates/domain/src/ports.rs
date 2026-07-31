@@ -76,6 +76,19 @@ pub trait TransactionRepository {
         id: TransactionId,
         category_id: CategoryId,
     ) -> Result<(), RepositoryError>;
+    /// Deletes every listed transaction in one statement. Ids that don't
+    /// exist are ignored rather than an error — the caller (bulk delete)
+    /// expands transfer legs to their whole group and de-duplicates, so the
+    /// same row can legitimately be named twice. Implementations must apply
+    /// this atomically: a partial delete would leave the caller unable to
+    /// tell the user what actually happened.
+    fn delete_many(&self, ids: &[TransactionId]) -> Result<(), RepositoryError>;
+    /// Recategorizes every listed transaction in one statement, atomically.
+    fn update_category_many(
+        &self,
+        ids: &[TransactionId],
+        category_id: CategoryId,
+    ) -> Result<(), RepositoryError>;
     fn list_in_range(
         &self,
         start: NaiveDate,

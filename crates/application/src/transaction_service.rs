@@ -56,6 +56,17 @@ pub struct RetroactiveTransferOutcome {
     pub converted: usize,
 }
 
+/// Result of a bulk delete. `deleted` can exceed the number of ids the
+/// caller passed in — deleting one leg of a transfer deletes its
+/// counterpart too, even if that counterpart was never in the selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BulkDeleteOutcome {
+    pub deleted: usize,
+    /// How many transfer groups were touched — lets the caller say "N
+    /// transfers removed on both accounts" instead of just a row count.
+    pub transfer_groups: usize,
+}
+
 /// The source text recorded on a reconciliation adjustment. Fixed rather
 /// than user-supplied so these entries are recognizable at a glance in the
 /// ledger, next to the imported rows they sit among.
@@ -142,6 +153,59 @@ impl<'a> TransactionService<'a> {
             .find_by_id(category_id)?
             .ok_or(ApplicationError::CategoryNotFound)?;
         self.transactions.update_category(id, category_id)?;
+        Ok(())
+    }
+
+    /// Deletes every listed transaction, expanding each id that belongs to a
+    /// transfer to its whole group — same rule as `delete_transaction`, so a
+    /// bulk selection can never remove one leg and silently overstate the
+    /// counterpart account. A selection containing both legs of the same
+    /// transfer still counts and deletes that group once.
+    ///
+    /// `deleted` in the result can exceed `ids.len()`: deleting one leg
+    /// always brings its counterpart with it, even if that counterpart was
+    /// never part of the selection.
+    pub fn delete_transactions(
+        &self,
+        ids: &[TransactionId],
+    ) -> Result<BulkDeleteOutcome, ApplicationError> {
+        let mut standalone = Vec::new();
+        let mut group_ids: std::collections::HashSet<TransferGroupId> =
+            std::collections::HashSet::new();
+        for &id in ids {
+            match self
+                .transactions
+                .find_by_id(id)?
+                .and_then(|t| t.transfer_group_id())
+            {
+                Some(group_id) => {
+                    group_ids.insert(group_id);
+                }
+                None => standalone.push(id),
+            }
+        }
+        self.transactions.delete_many(&standalone)?;
+        for group_id in &group_ids {
+            self.transactions.delete_transfer_group(*group_id)?;
+        }
+        Ok(BulkDeleteOutcome {
+            deleted: standalone.len() + group_ids.len() * 2,
+            transfer_groups: group_ids.len(),
+        })
+    }
+
+    /// Recategorizes every listed transaction in one batch. The category is
+    /// validated once up front, not once per id — same check as
+    /// `set_category`, just not repeated N times.
+    pub fn set_category_many(
+        &self,
+        ids: &[TransactionId],
+        category_id: CategoryId,
+    ) -> Result<(), ApplicationError> {
+        self.categories
+            .find_by_id(category_id)?
+            .ok_or(ApplicationError::CategoryNotFound)?;
+        self.transactions.update_category_many(ids, category_id)?;
         Ok(())
     }
 
@@ -735,6 +799,39 @@ mod tests {
                 .lock()
                 .unwrap()
                 .retain(|t| t.transfer_group_id() != Some(group_id));
+            Ok(())
+        }
+        fn delete_many(&self, ids: &[TransactionId]) -> Result<(), RepositoryError> {
+            self.transactions
+                .lock()
+                .unwrap()
+                .retain(|t| !ids.contains(&t.id()));
+            Ok(())
+        }
+        fn update_category_many(
+            &self,
+            ids: &[TransactionId],
+            category_id: CategoryId,
+        ) -> Result<(), RepositoryError> {
+            let mut transactions = self.transactions.lock().unwrap();
+            for pos in 0..transactions.len() {
+                if !ids.contains(&transactions[pos].id()) {
+                    continue;
+                }
+                let existing = &transactions[pos];
+                let updated = Transaction::new_with_role(
+                    existing.id(),
+                    existing.date(),
+                    existing.amount().clone(),
+                    existing.source().clone(),
+                    category_id,
+                    existing.account_id(),
+                    existing.role(),
+                    existing.transfer_group_id(),
+                )
+                .expect("recategorizing preserves validity");
+                transactions[pos] = updated;
+            }
             Ok(())
         }
         fn update_category(
@@ -1348,6 +1445,235 @@ mod tests {
         let all = f.transactions.list_all().unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].id(), kept.id());
+    }
+
+    #[test]
+    fn delete_transactions_removes_every_listed_ordinary_transaction() {
+        let f = fixture();
+        let service = f.service();
+        let a = service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                -450,
+                "Boulangerie",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+        let b = service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 16).unwrap(),
+                -900,
+                "Pharmacie",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+        let kept = service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 17).unwrap(),
+                -300,
+                "Cafe",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+
+        let outcome = service.delete_transactions(&[a.id(), b.id()]).unwrap();
+
+        assert_eq!(
+            outcome,
+            BulkDeleteOutcome {
+                deleted: 2,
+                transfer_groups: 0
+            }
+        );
+        let all = f.transactions.list_all().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id(), kept.id());
+    }
+
+    #[test]
+    fn delete_transactions_expands_a_single_selected_leg_to_the_whole_transfer_group() {
+        let f = fixture();
+        let service = f.service();
+        let rules = [f.transfer_rule("virement n26", f.counterpart_account_id)];
+        service
+            .import_transactions(
+                &[f.import_row("VIREMENT N26", -25_000)],
+                f.account_id,
+                &rules,
+            )
+            .unwrap();
+        let outflow_id = f
+            .transactions
+            .list_all()
+            .unwrap()
+            .iter()
+            .find(|t| t.account_id() == f.account_id)
+            .expect("source leg")
+            .id();
+
+        // Only the outflow leg is in the selection — the inflow leg was
+        // never loaded on the counterpart account's own page.
+        let outcome = service.delete_transactions(&[outflow_id]).unwrap();
+
+        assert_eq!(
+            outcome,
+            BulkDeleteOutcome {
+                deleted: 2,
+                transfer_groups: 1
+            }
+        );
+        assert!(f.transactions.list_all().unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_transactions_with_both_legs_selected_deletes_the_pair_once() {
+        let f = fixture();
+        let service = f.service();
+        let rules = [f.transfer_rule("virement n26", f.counterpart_account_id)];
+        service
+            .import_transactions(
+                &[f.import_row("VIREMENT N26", -25_000)],
+                f.account_id,
+                &rules,
+            )
+            .unwrap();
+        let legs = f.transactions.list_all().unwrap();
+        let outflow_id = legs
+            .iter()
+            .find(|t| t.account_id() == f.account_id)
+            .unwrap()
+            .id();
+        let inflow_id = legs
+            .iter()
+            .find(|t| t.account_id() == f.counterpart_account_id)
+            .unwrap()
+            .id();
+
+        let outcome = service
+            .delete_transactions(&[outflow_id, inflow_id])
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            BulkDeleteOutcome {
+                deleted: 2,
+                transfer_groups: 1
+            }
+        );
+        assert!(f.transactions.list_all().unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_transactions_with_empty_list_is_a_no_op() {
+        let f = fixture();
+        let service = f.service();
+        let kept = service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                -450,
+                "Boulangerie",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+
+        let outcome = service.delete_transactions(&[]).unwrap();
+
+        assert_eq!(
+            outcome,
+            BulkDeleteOutcome {
+                deleted: 0,
+                transfer_groups: 0
+            }
+        );
+        let all = f.transactions.list_all().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id(), kept.id());
+    }
+
+    #[test]
+    fn set_category_many_updates_every_listed_transaction() {
+        let f = fixture();
+        let service = f.service();
+        let a = service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                -450,
+                "Boulangerie",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+        let b = service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 16).unwrap(),
+                -900,
+                "Pharmacie",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+        let untouched = service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 17).unwrap(),
+                -300,
+                "Cafe",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+        let dining = Category::new(
+            CategoryId::new(),
+            CategoryName::new("Dining").unwrap(),
+            None,
+        )
+        .unwrap();
+        f.categories.insert(&dining).unwrap();
+
+        service
+            .set_category_many(&[a.id(), b.id()], dining.id())
+            .unwrap();
+
+        let all = f.transactions.list_all().unwrap();
+        assert_eq!(
+            all.iter().find(|t| t.id() == a.id()).unwrap().category_id(),
+            dining.id()
+        );
+        assert_eq!(
+            all.iter().find(|t| t.id() == b.id()).unwrap().category_id(),
+            dining.id()
+        );
+        assert_eq!(
+            all.iter()
+                .find(|t| t.id() == untouched.id())
+                .unwrap()
+                .category_id(),
+            f.category_id
+        );
+    }
+
+    #[test]
+    fn set_category_many_rejects_unknown_category_and_writes_nothing() {
+        let f = fixture();
+        let service = f.service();
+        let a = service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                -450,
+                "Boulangerie",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+
+        let result = service.set_category_many(&[a.id()], CategoryId::new());
+
+        assert!(matches!(result, Err(ApplicationError::CategoryNotFound)));
+        let all = f.transactions.list_all().unwrap();
+        assert_eq!(all[0].category_id(), f.category_id);
     }
 
     #[test]

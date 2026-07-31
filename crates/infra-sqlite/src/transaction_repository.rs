@@ -1,5 +1,5 @@
 use chrono::NaiveDate;
-use rusqlite::{params, Connection};
+use rusqlite::{params, params_from_iter, Connection};
 use scrat_domain::account::AccountId;
 use scrat_domain::category::CategoryId;
 use scrat_domain::money::{Currency, Money};
@@ -78,6 +78,11 @@ const INSERT_SQL: &str = "INSERT INTO transactions
 const SELECT_COLUMNS: &str = "id, date, amount_minor_units, source, category_id, account_id,
      role, transfer_group_id";
 
+/// Keeps each bulk `IN (...)` clause well under SQLite's variable-count
+/// limit (historically 999, `SQLITE_MAX_VARIABLE_NUMBER`), regardless of how
+/// many ids a caller passes in one call.
+const ID_CHUNK_SIZE: usize = 500;
+
 impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
     fn insert(&self, transaction: &Transaction) -> Result<(), RepositoryError> {
         let date = transaction.date().format("%Y-%m-%d").to_string();
@@ -146,6 +151,45 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
                 params![category_id.as_string(), id.as_string()],
             )
             .map_err(sql_err)?;
+        Ok(())
+    }
+
+    fn delete_many(&self, ids: &[TransactionId]) -> Result<(), RepositoryError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let tx = self.conn.unchecked_transaction().map_err(sql_err)?;
+        for chunk in ids.chunks(ID_CHUNK_SIZE) {
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let sql = format!("DELETE FROM transactions WHERE id IN ({placeholders})");
+            let id_strings: Vec<String> = chunk.iter().map(|id| id.as_string()).collect();
+            tx.execute(&sql, params_from_iter(id_strings.iter()))
+                .map_err(sql_err)?;
+        }
+        tx.commit().map_err(sql_err)?;
+        Ok(())
+    }
+
+    fn update_category_many(
+        &self,
+        ids: &[TransactionId],
+        category_id: CategoryId,
+    ) -> Result<(), RepositoryError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let tx = self.conn.unchecked_transaction().map_err(sql_err)?;
+        for chunk in ids.chunks(ID_CHUNK_SIZE) {
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let sql =
+                format!("UPDATE transactions SET category_id = ? WHERE id IN ({placeholders})");
+            let mut chunk_params: Vec<String> = Vec::with_capacity(chunk.len() + 1);
+            chunk_params.push(category_id.as_string());
+            chunk_params.extend(chunk.iter().map(|id| id.as_string()));
+            tx.execute(&sql, params_from_iter(chunk_params.iter()))
+                .map_err(sql_err)?;
+        }
+        tx.commit().map_err(sql_err)?;
         Ok(())
     }
 
@@ -763,6 +807,157 @@ mod tests {
         let remaining = repo.list_all().unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].id(), unrelated.id());
+    }
+
+    #[test]
+    fn delete_many_is_a_no_op_on_an_empty_list() {
+        let conn = test_conn();
+        let (account_id, category_id) = seed_account_and_category(&conn);
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        let kept = Transaction::new(
+            TransactionId::new(),
+            NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+            Money::from_minor_units(-1_200, usd()),
+            SourceText::new("Whole Foods").unwrap(),
+            category_id,
+            account_id,
+        )
+        .unwrap();
+        repo.insert(&kept).unwrap();
+
+        repo.delete_many(&[]).unwrap();
+
+        assert_eq!(repo.list_all().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn delete_many_ignores_ids_that_do_not_exist() {
+        let conn = test_conn();
+        let (account_id, category_id) = seed_account_and_category(&conn);
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        let kept = Transaction::new(
+            TransactionId::new(),
+            NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+            Money::from_minor_units(-1_200, usd()),
+            SourceText::new("Whole Foods").unwrap(),
+            category_id,
+            account_id,
+        )
+        .unwrap();
+        let removed = Transaction::new(
+            TransactionId::new(),
+            NaiveDate::from_ymd_opt(2026, 1, 16).unwrap(),
+            Money::from_minor_units(-450, usd()),
+            SourceText::new("Boulangerie").unwrap(),
+            category_id,
+            account_id,
+        )
+        .unwrap();
+        repo.insert(&kept).unwrap();
+        repo.insert(&removed).unwrap();
+
+        repo.delete_many(&[removed.id(), TransactionId::new()])
+            .unwrap();
+
+        let remaining = repo.list_all().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id(), kept.id());
+    }
+
+    /// Regression test for SQLite's variable-count limit on an `IN (...)`
+    /// clause (historically 999, `SQLITE_MAX_VARIABLE_NUMBER`) — a page of
+    /// the ledger loaded in the "All Time" view can comfortably exceed the
+    /// single-chunk size, so `delete_many` must split into multiple
+    /// statements and still delete every row.
+    #[test]
+    fn delete_many_handles_more_ids_than_one_chunk() {
+        let conn = test_conn();
+        let (account_id, category_id) = seed_account_and_category(&conn);
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        let date = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+        let mut ids = Vec::new();
+        for i in 0..1_200 {
+            let transaction = Transaction::new(
+                TransactionId::new(),
+                date,
+                Money::from_minor_units(-(i + 1), usd()),
+                SourceText::new("Bulk row").unwrap(),
+                category_id,
+                account_id,
+            )
+            .unwrap();
+            repo.insert(&transaction).unwrap();
+            ids.push(transaction.id());
+        }
+
+        repo.delete_many(&ids).unwrap();
+
+        assert!(repo.list_all().unwrap().is_empty());
+    }
+
+    #[test]
+    fn update_category_many_updates_only_the_listed_rows() {
+        let conn = test_conn();
+        let (account_id, category_id) = seed_account_and_category(&conn);
+        let category_repo = crate::SqliteCategoryRepository::new(&conn);
+        let dining = Category::new(
+            CategoryId::new(),
+            CategoryName::new("Dining").unwrap(),
+            None,
+        )
+        .unwrap();
+        category_repo.insert(&dining).unwrap();
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        let a = Transaction::new(
+            TransactionId::new(),
+            NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+            Money::from_minor_units(-1_200, usd()),
+            SourceText::new("Whole Foods").unwrap(),
+            category_id,
+            account_id,
+        )
+        .unwrap();
+        let b = Transaction::new(
+            TransactionId::new(),
+            NaiveDate::from_ymd_opt(2026, 1, 16).unwrap(),
+            Money::from_minor_units(-450, usd()),
+            SourceText::new("Boulangerie").unwrap(),
+            category_id,
+            account_id,
+        )
+        .unwrap();
+        let untouched = Transaction::new(
+            TransactionId::new(),
+            NaiveDate::from_ymd_opt(2026, 1, 17).unwrap(),
+            Money::from_minor_units(-300, usd()),
+            SourceText::new("Cafe").unwrap(),
+            category_id,
+            account_id,
+        )
+        .unwrap();
+        repo.insert(&a).unwrap();
+        repo.insert(&b).unwrap();
+        repo.insert(&untouched).unwrap();
+
+        repo.update_category_many(&[a.id(), b.id()], dining.id())
+            .unwrap();
+
+        let all = repo.list_all().unwrap();
+        assert_eq!(
+            all.iter().find(|t| t.id() == a.id()).unwrap().category_id(),
+            dining.id()
+        );
+        assert_eq!(
+            all.iter().find(|t| t.id() == b.id()).unwrap().category_id(),
+            dining.id()
+        );
+        assert_eq!(
+            all.iter()
+                .find(|t| t.id() == untouched.id())
+                .unwrap()
+                .category_id(),
+            category_id
+        );
     }
 
     #[test]

@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
+  import { SvelteSet } from "svelte/reactivity";
   import { page } from "$app/state";
   import { replaceState } from "$app/navigation";
   import {
@@ -19,11 +20,26 @@
   import CategorySelect from "$lib/CategorySelect.svelte";
   import FilterPopover from "$lib/FilterPopover.svelte";
   import { toast } from "$lib/toasts.svelte";
-  import { ArrowUp, FileUp, Plus, Search } from "@lucide/svelte";
+  import { ArrowUp, Check, FileUp, Minus, Pencil, Plus, Search } from "@lucide/svelte";
 
   function autofocus(node: HTMLElement) {
     node.focus();
   }
+
+  /** Keeps a checkbox's native `indeterminate` visual state in sync — there
+   * is no HTML attribute for it, only the DOM property. Applied to the real
+   * (visually hidden) input so screen readers still get it; the visible box
+   * is drawn separately in the `checkbox` snippet below. */
+  function setIndeterminate(node: HTMLInputElement, value: boolean) {
+    node.indeterminate = value;
+    return {
+      update(value: boolean) {
+        node.indeterminate = value;
+      },
+    };
+  }
+
+  type SelectionKind = "expense" | "income";
 
   let showImportDialog = $state(false);
   let showAddForm = $state(false);
@@ -70,6 +86,21 @@
   let categoryFilter = $state("");
   let sourceFilter = $state("");
 
+  // Expenses and Income keep independent selections — checking a row in one
+  // list never surfaces the other list's bulk-action menu. A plain `Set`
+  // wrapped in `$state` only reacts to reassignment, not to `.add`/
+  // `.delete` on the same instance — `SvelteSet` is the reactive-collection
+  // variant that tracks mutation.
+  let selectedExpenseIds = new SvelteSet<string>();
+  let selectedIncomeIds = new SvelteSet<string>();
+
+  // The row a plain click last landed on, per list — the anchor a
+  // following shift-click ranges from. Cleared whenever the selection it
+  // refers to no longer means anything (reload, bulk action, a row it
+  // pointed at scrolling out of the current filter).
+  let lastClickedExpenseId = $state<string | null>(null);
+  let lastClickedIncomeId = $state<string | null>(null);
+
   let formDate = $state(todayIsoDate());
   let formAmount = $state("");
   let formSource = $state("");
@@ -82,6 +113,12 @@
     loading = true;
     error = "";
     allTimeExhausted = false;
+    // A new range or a reload invalidates whatever was on screen — never
+    // leave a stale selection armed against rows that are about to change.
+    selectedExpenseIds.clear();
+    selectedIncomeIds.clear();
+    lastClickedExpenseId = null;
+    lastClickedIncomeId = null;
     currentRange = computeRange(rangeMode, {
       start: customStart,
       end: customEnd,
@@ -188,6 +225,32 @@
     sourceFilter;
     const timer = setTimeout(refreshCount, 250);
     return () => clearTimeout(timer);
+  });
+
+  // A filter that hides a selected row must drop it from the selection, not
+  // just visually hide it — otherwise clearing the filter later would
+  // silently resurrect an old selection the user never re-confirmed.
+  // `untrack` reads each Set's current members without subscribing this
+  // effect to the Set itself, so deleting from it here can't re-trigger the
+  // same effect.
+  function pruneToVisible(selected: Set<string>, visibleIds: Set<string>) {
+    for (const id of untrack(() => Array.from(selected))) {
+      if (!visibleIds.has(id)) selected.delete(id);
+    }
+  }
+
+  $effect(() => {
+    const visibleIds = new Set(filteredTransactions.map((t) => t.id));
+    pruneToVisible(selectedExpenseIds, visibleIds);
+    pruneToVisible(selectedIncomeIds, visibleIds);
+    // A shift-click anchor pointing at a row that's no longer visible would
+    // range-select against a row the user can't see.
+    if (lastClickedExpenseId && !visibleIds.has(lastClickedExpenseId)) {
+      lastClickedExpenseId = null;
+    }
+    if (lastClickedIncomeId && !visibleIds.has(lastClickedIncomeId)) {
+      lastClickedIncomeId = null;
+    }
   });
 
   function setRange(mode: RangeMode) {
@@ -333,13 +396,194 @@
       filteredTransactions.filter((t) => t.amount_minor_units > 0),
     ),
   );
+
+  // The selection restricted to rows this list is actually showing right
+  // now — after filters, and in "All Time" only the pages loaded so far.
+  // Every bulk action operates on this, never on the raw Set, so a select
+  // action can never reach a row the user can't see.
+  let visibleSelectedExpenseIds = $derived(
+    expenses.filter((t) => selectedExpenseIds.has(t.id)).map((t) => t.id),
+  );
+  let visibleSelectedIncomeIds = $derived(
+    income.filter((t) => selectedIncomeIds.has(t.id)).map((t) => t.id),
+  );
+
+  function selectionSet(kind: SelectionKind): Set<string> {
+    return kind === "expense" ? selectedExpenseIds : selectedIncomeIds;
+  }
+
+  function lastClickedId(kind: SelectionKind): string | null {
+    return kind === "expense" ? lastClickedExpenseId : lastClickedIncomeId;
+  }
+
+  function setLastClickedId(kind: SelectionKind, id: string | null) {
+    if (kind === "expense") lastClickedExpenseId = id;
+    else lastClickedIncomeId = id;
+  }
+
+  function toggleRowSelection(kind: SelectionKind, id: string) {
+    const set = selectionSet(kind);
+    if (set.has(id)) set.delete(id);
+    else set.add(id);
+  }
+
+  /** Plain click toggles just this row and becomes the new anchor.
+   * Shift-click extends from the last-clicked row (in the sorted order
+   * currently on screen) through this one, adding the whole range to the
+   * selection — it never deselects, matching the file-manager convention
+   * this is modeled on. Falls back to a plain toggle when there's no usable
+   * anchor (first click, or the anchor scrolled out of view). */
+  function handleRowCheckboxClick(
+    kind: SelectionKind,
+    id: string,
+    event: MouseEvent,
+  ) {
+    const items = kind === "expense" ? expenses : income;
+    const anchor = lastClickedId(kind);
+    if (event.shiftKey && anchor && anchor !== id) {
+      const anchorIndex = items.findIndex((t) => t.id === anchor);
+      const targetIndex = items.findIndex((t) => t.id === id);
+      if (anchorIndex !== -1 && targetIndex !== -1) {
+        const [start, end] =
+          anchorIndex < targetIndex
+            ? [anchorIndex, targetIndex]
+            : [targetIndex, anchorIndex];
+        const set = selectionSet(kind);
+        for (let i = start; i <= end; i++) set.add(items[i].id);
+        setLastClickedId(kind, id);
+        return;
+      }
+    }
+    toggleRowSelection(kind, id);
+    setLastClickedId(kind, id);
+  }
+
+  function toggleSelectAll(kind: SelectionKind) {
+    const items = kind === "expense" ? expenses : income;
+    const set = selectionSet(kind);
+    const allSelected = items.length > 0 && items.every((t) => set.has(t.id));
+    if (allSelected) {
+      set.clear();
+    } else {
+      for (const t of items) set.add(t.id);
+    }
+    // A range anchored on a row from before the select-all is a stale
+    // reference now that the whole list's checked state changed at once.
+    setLastClickedId(kind, null);
+  }
+
+  async function handleBulkDelete(kind: SelectionKind) {
+    const ids =
+      kind === "expense" ? visibleSelectedExpenseIds : visibleSelectedIncomeIds;
+    if (ids.length === 0) return;
+    try {
+      const outcome = await api.deleteTransactions(ids);
+      // The backend expands each id to its whole transfer group, so a
+      // counterpart leg can be removed even though it was never selected —
+      // and, since this page mixes every account, it's almost always
+      // already loaded here too (in the *other* list). Drop it locally by
+      // matching on transfer_group_id rather than trusting `ids` alone.
+      const idSet = new Set(ids);
+      const groupIds = new Set(
+        transactions
+          .filter((t) => idSet.has(t.id) && t.transfer_group_id)
+          .map((t) => t.transfer_group_id as string),
+      );
+      transactions = transactions.filter(
+        (t) =>
+          !idSet.has(t.id) &&
+          !(t.transfer_group_id && groupIds.has(t.transfer_group_id)),
+      );
+      selectionSet(kind).clear();
+      setLastClickedId(kind, null);
+      await refreshCount();
+      toast.success(
+        outcome.transfer_groups > 0
+          ? `${outcome.deleted} transactions deleted (${outcome.transfer_groups} transfer${outcome.transfer_groups === 1 ? "" : "s"} removed on both accounts).`
+          : `${outcome.deleted} transaction${outcome.deleted === 1 ? "" : "s"} deleted.`,
+      );
+    } catch (e) {
+      toast.error(String(e));
+    }
+  }
+
+  async function handleBulkRecategorize(kind: SelectionKind, categoryId: string) {
+    const ids =
+      kind === "expense" ? visibleSelectedExpenseIds : visibleSelectedIncomeIds;
+    if (ids.length === 0 || !categoryId) return;
+    try {
+      await api.setTransactionsCategory(ids, categoryId);
+      const idSet = new Set(ids);
+      transactions = transactions.map((t) =>
+        idSet.has(t.id) ? { ...t, category_id: categoryId } : t,
+      );
+      selectionSet(kind).clear();
+      setLastClickedId(kind, null);
+      // Only matters when a category filter is active — the prune effect
+      // then drops whatever rows no longer match it.
+      if (categoryFilter) await refreshCount();
+    } catch (e) {
+      toast.error(String(e));
+    }
+  }
 </script>
 
-{#snippet list(items: TransactionDto[])}
+{#snippet checkbox(props: {
+  checked: boolean;
+  indeterminate?: boolean;
+  ariaLabel: string;
+  onclick: (event: MouseEvent) => void;
+})}
+  <label class="checkbox" class:checked={props.checked} class:indeterminate={props.indeterminate}>
+    <input
+      type="checkbox"
+      checked={props.checked}
+      use:setIndeterminate={!!props.indeterminate}
+      aria-label={props.ariaLabel}
+      onmousedown={(event) => {
+        // A browser extends its own text selection from mousedown, before
+        // any click handler runs — preventing default here, on the
+        // checkbox only, is what stops a shift-click range-select from also
+        // sweeping up the row text as a selection. Everywhere else in the
+        // table (Date, Source, Amount…) is untouched, so dragging to select
+        // and copy still works there.
+        event.preventDefault();
+      }}
+      onclick={(event) => {
+        // The checked state is driven entirely by `props.checked` above —
+        // preventing the native toggle keeps that the single source of
+        // truth instead of racing it, and lets a shift-click select a whole
+        // range instead of just flipping the one row clicked.
+        event.preventDefault();
+        props.onclick(event);
+      }}
+    />
+    <span class="box">
+      {#if props.indeterminate}
+        <Minus size={13} strokeWidth={3} />
+      {:else if props.checked}
+        <Check size={13} strokeWidth={3} />
+      {/if}
+    </span>
+  </label>
+{/snippet}
+
+{#snippet list(items: TransactionDto[], kind: SelectionKind)}
+    {@const selected = selectionSet(kind)}
+    {@const anySelected = items.some((t) => selected.has(t.id))}
+    {@const allSelected = items.length > 0 && items.every((t) => selected.has(t.id))}
     <table>
       <thead>
         <tr>
-          <th
+          <th class="select-header">
+            {@render checkbox({
+              checked: allSelected,
+              indeterminate: anySelected && !allSelected,
+              ariaLabel: `Select all ${kind === "expense" ? "expenses" : "income"}`,
+              onclick: () => toggleSelectAll(kind),
+            })}
+          </th>
+          <th class="date-cell"
             ><button type="button" onclick={() => toggleSort("date")}
               >Date</button
             ></th
@@ -392,11 +636,19 @@
       </thead>
       <tbody>
         {#if items.length === 0}
-          <tr><td class="empty" colspan="6">No transactions.</td></tr>
+          <tr><td class="empty" colspan="7">No transactions.</td></tr>
         {:else}
           {#each items as t (t.id)}
             <tr>
-              <td>{t.date}</td>
+              <td class="select-cell">
+                {@render checkbox({
+                  checked: selected.has(t.id),
+                  ariaLabel: `Select transaction ${t.date} ${t.source}`,
+                  onclick: (event: MouseEvent) =>
+                    handleRowCheckboxClick(kind, t.id, event),
+                })}
+              </td>
+              <td class="date-cell">{t.date}</td>
               <td>{formatCurrency(t.amount_minor_units, t.currency)}</td>
               <td>
                 {t.source}
@@ -536,12 +788,64 @@
 {:else}
   <div class="lists">
     <section>
-      <h2>Expenses</h2>
-      {@render list(expenses)}
+      <div class="section-header">
+        <h2>Expenses</h2>
+        {#if visibleSelectedExpenseIds.length > 0}
+          <div
+            class="bulk-actions"
+            role="toolbar"
+            aria-label="Bulk actions for expenses"
+            aria-live="polite"
+          >
+            <span class="bulk-count">{visibleSelectedExpenseIds.length} selected</span>
+            <CategorySelect
+              options={categoryOptions}
+              value=""
+              onChange={(id) => handleBulkRecategorize("expense", id)}
+            >
+              {#snippet trigger()}
+                <Pencil size={14} aria-label="Recategorize selected expenses" />
+              {/snippet}
+            </CategorySelect>
+            <DeleteButton
+              compact
+              label={`Delete ${visibleSelectedExpenseIds.length} transactions`}
+              onConfirm={() => handleBulkDelete("expense")}
+            />
+          </div>
+        {/if}
+      </div>
+      {@render list(expenses, "expense")}
     </section>
     <section>
-      <h2>Income</h2>
-      {@render list(income)}
+      <div class="section-header">
+        <h2>Income</h2>
+        {#if visibleSelectedIncomeIds.length > 0}
+          <div
+            class="bulk-actions"
+            role="toolbar"
+            aria-label="Bulk actions for income"
+            aria-live="polite"
+          >
+            <span class="bulk-count">{visibleSelectedIncomeIds.length} selected</span>
+            <CategorySelect
+              options={categoryOptions}
+              value=""
+              onChange={(id) => handleBulkRecategorize("income", id)}
+            >
+              {#snippet trigger()}
+                <Pencil size={14} aria-label="Recategorize selected income" />
+              {/snippet}
+            </CategorySelect>
+            <DeleteButton
+              compact
+              label={`Delete ${visibleSelectedIncomeIds.length} transactions`}
+              onConfirm={() => handleBulkDelete("income")}
+            />
+          </div>
+        {/if}
+      </div>
+      {@render list(income, "income")}
     </section>
   </div>
   {#if rangeMode === "all"}
@@ -684,6 +988,16 @@
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 2rem;
+    /* Breathing room above "Expenses"/"Income", separate from the range
+       bar's own margin-bottom. */
+    margin-top: 1.5rem;
+  }
+
+  /* Thin cyan rule between the two lists — grid items stretch to the row's
+     full height by default, so this runs top to bottom without extra work. */
+  .lists > section:last-child {
+    border-left: .5px solid var(--color-accent);
+    padding-left: 1rem;
   }
 
   .scroll-sentinel {
@@ -709,6 +1023,96 @@
 
   h2 {
     font-size: 1.1rem;
+    margin: 0;
+  }
+
+  .section-header {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-bottom: 0.6rem;
+    /* Reserves the height the bulk-actions pill needs so the table below
+       doesn't shift down the moment a selection starts. */
+    min-height: 2rem;
+    /* Lines the heading up with "Date", not with the checkbox column to its
+       left: 2rem for .select-header's width plus the 0.5rem left padding
+       every th/td gets, so "Date" text and "Expenses"/"Income" text share
+       the same left edge. */
+    padding-left: 2.5rem;
+  }
+
+  .bulk-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    background-color: var(--color-shade-2);
+    border-radius: 999px;
+    padding: 0.2rem 0.5rem 0.2rem 0.8rem;
+  }
+
+  .bulk-count {
+    font-size: 0.8rem;
+    opacity: 0.75;
+    white-space: nowrap;
+  }
+
+  .select-header,
+  .select-cell {
+    width: 2rem;
+    padding-right: 0;
+    /* The row-separator line starts at the Date column, not out here. */
+    border-bottom: none;
+  }
+
+  /* Custom checkbox: a real (visually hidden) input for behavior and a11y,
+     with a styled box drawn next to it — native checkboxes can't have their
+     checkmark recolored independently of the box fill, and this one needs
+     to read as cyan-box / background-colored glyph, like every other icon
+     control in the app (see .icon-button in app.css). */
+  .checkbox {
+    display: inline-flex;
+    position: relative;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.1s;
+  }
+
+  .checkbox input {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    opacity: 0;
+    cursor: pointer;
+  }
+
+  .box {
+    width: 1.35rem;
+    height: 1.35rem;
+    border-radius: 5px;
+    border: 1.5px solid var(--color-shade-4);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--color-accent-contrast);
+    pointer-events: none;
+  }
+
+  .checkbox.checked .box,
+  .checkbox.indeterminate .box {
+    background-color: var(--color-accent);
+    border-color: var(--color-accent);
+  }
+
+  /* Hidden until its row/header is hovered, focused, or already checked —
+     a bare checkbox column would otherwise clutter every row for a feature
+     most visits never use. */
+  tr:hover .select-cell .checkbox,
+  thead tr:hover .select-header .checkbox,
+  .checkbox.checked,
+  .checkbox.indeterminate,
+  .checkbox:focus-within {
+    opacity: 1;
   }
 
   table {
@@ -744,8 +1148,11 @@
     border-bottom: 1px solid var(--color-shade-2);
   }
 
-  th:first-child,
-  td:first-child {
+  /* Targeted by class, not :first-child — the checkbox column sits to its
+     left now, and a position-based selector silently stops matching the
+     Date column the moment the column order changes again (already bit us
+     once when this column added the leading checkbox). */
+  .date-cell {
     white-space: nowrap;
   }
 

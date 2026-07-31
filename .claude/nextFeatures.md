@@ -3,16 +3,13 @@
 ## Transactions page
 
 ## Transactions selection
-On the left of the Expenses and Income lists there will be a selection checkbox. 
-The checkbox will be invisible by default and appear when hovered.
-Clicking on one checkbox on Expense list will make a global Expense checkbox appear.
-Clicking on one checkbox on Income list will make a global Income checkbox appear.
-With it you can select/unselect every transaction currently loaded.
-Selecting a transaction will make a new menu appear on the right of Expense or Income depending on which is selected.
-The menu will have the following features:
-- delete icon - delete selected transactions
-- pen icon - rename categories for selected transactions
-The menu disappears if no items are selected.
+UX improvments: 
+- The select all box should also appear on hovering.
+- Add padding between expenses/income and above: the list should not move if we select an item
+- The boxes should be cyan and the checkmark the same color as the background like other icons
+- the check boxes should be bigger
+- the dates should be on one lines not two. This issue has already happened before
+- The lines of the table should not extend up to the boxes on the left, only to the date
 
 ### Set dates
 Set by months first then by specific dates
