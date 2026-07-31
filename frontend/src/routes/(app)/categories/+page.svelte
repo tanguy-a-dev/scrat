@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { api, buildCategoryOptions, type CategoryDto } from "$lib/api";
   import CategoryCard from "$lib/CategoryCard.svelte";
+  import CategorySelect from "$lib/CategorySelect.svelte";
   import { toast } from "$lib/toasts.svelte";
 
   let categories = $state<CategoryDto[]>([]);
@@ -176,12 +177,14 @@
         "{pendingDelete.category.name}" still has transactions. Choose a
         category to move them to before deleting:
       </p>
-      <select bind:value={reassignTarget}>
-        <option value="" disabled selected>Select a category…</option>
-        {#each reassignOptions as option (option.id)}
-          <option value={option.id}>{option.label}</option>
-        {/each}
-      </select>
+      <div class="reassign-target">
+        <CategorySelect
+          options={reassignOptions}
+          value={reassignTarget}
+          onChange={(id) => (reassignTarget = id)}
+          placeholder="Select a category…"
+        />
+      </div>
       <div class="actions">
         <button
           type="button"
@@ -304,13 +307,13 @@
     margin: 0;
   }
 
-  .reassign-panel select {
-    border-radius: 6px;
-    border: 1px solid var(--color-shade-3);
-    background-color: var(--color-shade-1);
-    color: inherit;
-    padding: 0.45rem 0.6rem;
-    font-family: inherit;
+  .reassign-target :global(.category-select) {
+    max-width: none;
+    width: 100%;
+  }
+
+  .reassign-target :global(.trigger) {
+    width: 100%;
   }
 
   .actions {
