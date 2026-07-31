@@ -1,5 +1,10 @@
 # Features
 
+## Bug fix
+
+Transactions page:
+If I look for a category on income or expense, say income for instance, then all the income transactions from this category should load. I should not have to reload the page to see those. 
+
 ## Transactions page
 
 ## Transactions selection
