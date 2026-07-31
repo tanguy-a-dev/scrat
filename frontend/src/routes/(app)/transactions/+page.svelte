@@ -328,7 +328,12 @@
     </table>
 {/snippet}
 
-<h1>Transactions</h1>
+<div class="title">
+  <h1>Transactions</h1>
+  {#if !loading}
+    <span class="summary">{filteredTransactions.length} transactions</span>
+  {/if}
+</div>
 
 {#if error}<p class="error">{error}</p>{/if}
 
@@ -441,6 +446,18 @@
 <style>
   h1 {
     margin-top: 0;
+  }
+
+  .title {
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+  }
+
+  .summary {
+    font-size: 0.85rem;
+    opacity: 0.6;
+    white-space: nowrap;
   }
 
   .error {

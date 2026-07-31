@@ -1,9 +1,7 @@
 # Features
 
-## Comparison
-Must think about how first
+## Transactions
 
-## Overview
-I could add a graph with the evolution of accounts?
-
-
+- Add the loaded transactions next to the title like it was done with Categories
+- Loading time too long. Transactions loads batch by year and load more if you scroll down
+- On the left of the Expenses and Income there will be a selection

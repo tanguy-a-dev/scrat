@@ -219,11 +219,20 @@
 
   // Colored (but non-animated) breakdown of one root category's subcategories,
   // for rendering the expanded rows nested under it in the breakdown list.
-  function subCategoryBreakdown(txns: TransactionDto[], rootId: string) {
-    return withDonutSlices(buildBreakdown(txns, rootId).breakdown);
+  // Each row gets two percentages: `percent` is share of the parent category
+  // (e.g. Rent's share of Housing), `percentOfTotal` is share of the whole
+  // panel (e.g. Rent's share of all Expenses) — the two answer different
+  // questions and both are useful side by side.
+  function subCategoryBreakdown(txns: TransactionDto[], rootId: string, panelTotal: number) {
+    const panelTotalOrOne = panelTotal || 1;
+    const withTotalShare = buildBreakdown(txns, rootId).breakdown.map((slice) => ({
+      ...slice,
+      percentOfTotal: (slice.amountMinorUnits / panelTotalOrOne) * 100,
+    }));
+    return withDonutSlices(withTotalShare);
   }
 
-  function withDonutSlices(breakdown: ReturnType<typeof buildBreakdown>["breakdown"]) {
+  function withDonutSlices<T extends { percent: number }>(breakdown: T[]) {
     let cumulative = 0;
     return breakdown.map((slice, i) => {
       const length = (slice.percent / 100) * CIRCUMFERENCE;
@@ -241,7 +250,7 @@
   // Scales each slice's arc length/offset and each bar's width by
   // `fillProgress`, so the whole donut sweeps in from empty together rather
   // than each slice animating independently out of sync with the others.
-  function withAnimatedSlices(slices: ReturnType<typeof withDonutSlices>) {
+  function withAnimatedSlices<T extends { percent: number; dashoffset: number }>(slices: T[]) {
     return slices.map((slice) => {
       const animatedLength = (slice.percent / 100) * CIRCUMFERENCE * fillProgress;
       return {
@@ -400,19 +409,22 @@
 
             {#if hasChildren && expanded}
               <ul class="sub-breakdown">
-                {#each subCategoryBreakdown(txns, slice.categoryId) as sub (sub.categoryId)}
+                {#each subCategoryBreakdown(txns, slice.categoryId, total) as sub (sub.categoryId)}
                   <li class="sub-row">
                     <div class="row">
                       <span class="dot" style={`background-color:${sub.color}`}></span>
                       <span class="name">{sub.name}</span>
                       <span class="amount">{formatCurrency(sub.amountMinorUnits, currency)}</span>
-                      <span class="percent">{sub.percent.toFixed(1)}%</span>
+                      <span class="percent">{sub.percent.toFixed(1)}% of {slice.name}</span>
                     </div>
                     <div class="bar-track">
                       <div
                         class="bar-fill"
                         style={`width:${sub.percent}%;background-color:${sub.color}`}
                       ></div>
+                    </div>
+                    <div class="percent-of-total">
+                      {sub.percentOfTotal.toFixed(1)}% of total {label.toLowerCase()}
                     </div>
                   </li>
                 {/each}
@@ -723,6 +735,17 @@
   .sub-row .name {
     font-size: 0.9rem;
     opacity: 0.9;
+  }
+
+  .sub-row .percent {
+    font-size: 0.85rem;
+  }
+
+  .percent-of-total {
+    margin-top: 0.25rem;
+    font-size: 0.75rem;
+    opacity: 0.65;
+    text-align: right;
   }
 
   .row {

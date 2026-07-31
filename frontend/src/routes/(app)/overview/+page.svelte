@@ -7,6 +7,7 @@
     formatCurrency,
     formatCurrencyRounded,
     type AccountDto,
+    type CategoryDto,
     type RecurringChargeDto,
     type TransactionDto,
   } from "$lib/api";
@@ -41,6 +42,7 @@
   let accounts = $state<AccountDto[]>([]);
   let transactions = $state<TransactionDto[]>([]);
   let recurring = $state<RecurringChargeDto[]>([]);
+  let categories = $state<CategoryDto[]>([]);
   let loading = $state(true);
   let error = $state("");
 
@@ -85,14 +87,16 @@
       // Recurring detection has its own (much longer) lookback, decided
       // backend-side — it needs three occurrences of a charge, which a yearly
       // one can only reach across years.
-      const [a, t, r] = await Promise.all([
+      const [a, t, r, c] = await Promise.all([
         api.listAccounts(),
         api.listTransactions(start, end),
         api.listRecurringCharges(),
+        api.listCategories(),
       ]);
       accounts = a;
       transactions = t;
       recurring = r;
+      categories = c;
     } catch (e) {
       error = String(e);
     } finally {
@@ -113,14 +117,26 @@
    * the money really did move, so it counts there. */
   let reportableTransactions = $derived(transactions.filter(countsTowardTotals));
 
+  /** Category ids named "Rent" (case-insensitive) — seeded as a subcategory
+   * of Housing, but matched by name rather than a fixed id since the user can
+   * rename or recreate categories. */
+  let rentCategoryIds = $derived(
+    new Set(
+      categories.filter((c) => c.name.trim().toLowerCase() === "rent").map((c) => c.id),
+    ),
+  );
+
   /** The last `monthsCount` months (oldest first), zero-filled so a month with
-   * no transactions still shows up as an empty bar rather than a gap. */
+   * no transactions still shows up as an empty bar rather than a gap.
+   * `expenseWithoutRent` tracks the same spend minus anything filed under a
+   * "Rent" category, so the mean-spend card can show both figures. */
   function buildMonthlyTotals(monthsCount: number) {
     const months: {
       key: string;
       label: string;
       income: number;
       expense: number;
+      expenseWithoutRent: number;
       savings: number;
     }[] = [];
     for (let i = monthsCount - 1; i >= 0; i--) {
@@ -130,6 +146,7 @@
         label: MONTH_LABELS[d.getMonth()],
         income: 0,
         expense: 0,
+        expenseWithoutRent: 0,
         savings: 0,
       });
     }
@@ -137,8 +154,12 @@
     for (const t of reportableTransactions) {
       const bucket = byKey.get(t.date.slice(0, 7));
       if (!bucket) continue;
-      if (t.amount_minor_units < 0) bucket.expense += -t.amount_minor_units;
-      else bucket.income += t.amount_minor_units;
+      if (t.amount_minor_units < 0) {
+        bucket.expense += -t.amount_minor_units;
+        if (!rentCategoryIds.has(t.category_id)) bucket.expenseWithoutRent += -t.amount_minor_units;
+      } else {
+        bucket.income += t.amount_minor_units;
+      }
     }
     for (const m of months) m.savings = m.income - m.expense;
     return months;
@@ -198,8 +219,14 @@
 
   /** Mean expense/savings over the full `MONTHS_SHOWN`-month window — the same
    * months the bar chart plots, current partial month included. */
-  let meanSpend = $derived(
+  let meanSpendWithRent = $derived(
     Math.round(monthlyTotals.reduce((sum, m) => sum + m.expense, 0) / monthlyTotals.length),
+  );
+
+  let meanSpendWithoutRent = $derived(
+    Math.round(
+      monthlyTotals.reduce((sum, m) => sum + m.expenseWithoutRent, 0) / monthlyTotals.length,
+    ),
   );
 
   let meanSavings = $derived(
@@ -564,14 +591,21 @@
       <h2>Mean monthly spend</h2>
       <div class="month-stats">
         <div class="stat">
-          <span class="stat-amount">{formatCurrency(meanSpend, currency)}</span>
+          <span class="label">With rent</span>
+          <span class="stat-amount">{formatCurrency(meanSpendWithRent, currency)}</span>
+          <span class="hint">Over the last {MONTHS_SHOWN} months</span>
+        </div>
+
+        <div class="stat">
+          <span class="label">Without rent</span>
+          <span class="stat-amount">{formatCurrency(meanSpendWithoutRent, currency)}</span>
           <span class="hint">Over the last {MONTHS_SHOWN} months</span>
         </div>
       </div>
     </div>
 
     <div class="month-card">
-      <h2>Mean savings</h2>
+      <h2>Mean monthly savings</h2>
       <div class="month-stats">
         <div class="stat">
           <span class="stat-amount" class:over={meanSavings < 0} class:under={meanSavings >= 0}>

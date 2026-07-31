@@ -66,7 +66,6 @@ const EXPENSE_CATEGORIES: CategoryTree = &[
             "Games",
             "Hobbies",
             "Events",
-            "Streaming Services",
         ],
     ),
     ("Sports & Fitness", "dumbbell", &["Gym"]),
