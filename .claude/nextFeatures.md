@@ -14,6 +14,9 @@ The menu will have the following features:
 - pen icon - rename categories for selected transactions
 The menu disappears if no items are selected.
 
+### Set dates
+Set by months first then by specific dates
+
 ## Loading transactions
 
 - Transaction count on the top of the page, display count not currently loaded. If "Year" then the number is the count of transactions for the year, same for the other. It changes with filters like search source or category.
@@ -23,3 +26,4 @@ The menu disappears if no items are selected.
 
 If user is viewing Details by Year and goes to Category then back to Details, the page should still be on details by year filter.
 If user scrolls thourgh transaction and filters then changes pages and comes back, user should be back where he left at
+

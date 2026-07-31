@@ -97,6 +97,29 @@ pub fn list_transactions_page(
         .map(|txs| txs.into_iter().map(TransactionDto::from).collect())
 }
 
+/// Counts transactions in `[start, end]` matching the same category/source
+/// filters the transactions view applies, so the header can report an
+/// accurate total for the current view even when only part of it — e.g. one
+/// page of "All Time" — has actually been loaded into the frontend.
+#[tauri::command]
+pub fn count_transactions(
+    state: State<DbState>,
+    start: String,
+    end: String,
+    category_id: Option<String>,
+    source_contains: Option<String>,
+) -> Result<i64, String> {
+    let start = parse_date(&start)?;
+    let end = parse_date(&end)?;
+    let category_id = category_id
+        .map(|id| CategoryId::parse(&id))
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    with_service(&state, |s| {
+        s.count_in_range(start, end, category_id, source_contains.as_deref())
+    })
+}
+
 #[tauri::command]
 pub fn create_transaction(
     state: State<DbState>,

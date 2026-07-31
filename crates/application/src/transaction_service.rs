@@ -161,6 +161,18 @@ impl<'a> TransactionService<'a> {
         Ok(self.transactions.list_page(offset, limit)?)
     }
 
+    pub fn count_in_range(
+        &self,
+        start: NaiveDate,
+        end: NaiveDate,
+        category_id: Option<CategoryId>,
+        source_contains: Option<&str>,
+    ) -> Result<i64, ApplicationError> {
+        Ok(self
+            .transactions
+            .count_in_range(start, end, category_id, source_contains)?)
+    }
+
     /// Scans `[start, today]` for recurring commitments — subscriptions, rent,
     /// utilities. Nothing is stored: the result is derived from the ledger on
     /// every call, so cancelling a service and re-importing is all it takes to
@@ -778,6 +790,28 @@ mod tests {
                 .take(limit as usize)
                 .collect())
         }
+        fn count_in_range(
+            &self,
+            start: NaiveDate,
+            end: NaiveDate,
+            category_id: Option<CategoryId>,
+            source_contains: Option<&str>,
+        ) -> Result<i64, RepositoryError> {
+            let source_contains = source_contains.map(|s| s.to_lowercase());
+            Ok(self
+                .transactions
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|t| t.date() >= start && t.date() <= end)
+                .filter(|t| category_id.is_none_or(|id| t.category_id() == id))
+                .filter(|t| {
+                    source_contains
+                        .as_ref()
+                        .is_none_or(|s| t.source().as_str().to_lowercase().contains(s))
+                })
+                .count() as i64)
+        }
     }
 
     struct Fixture {
@@ -1016,6 +1050,46 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].source().as_str(), "In range");
+    }
+
+    #[test]
+    fn count_in_range_reflects_the_source_filter() {
+        let f = fixture();
+        let service = TransactionService::new(
+            &f.transactions,
+            &f.accounts,
+            &f.categories,
+            Currency::new("USD").unwrap(),
+        );
+        service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                -1_200,
+                "Whole Foods Market",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+        service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 16).unwrap(),
+                -500,
+                "Electric Co",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+
+        let count = service
+            .count_in_range(
+                NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
+                None,
+                Some("whole foods"),
+            )
+            .unwrap();
+
+        assert_eq!(count, 1);
     }
 
     #[test]

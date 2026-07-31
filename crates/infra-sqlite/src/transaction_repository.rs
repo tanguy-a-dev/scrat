@@ -209,6 +209,32 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
             .map_err(sql_err)?;
         Ok(rows)
     }
+
+    fn count_in_range(
+        &self,
+        start: NaiveDate,
+        end: NaiveDate,
+        category_id: Option<CategoryId>,
+        source_contains: Option<&str>,
+    ) -> Result<i64, RepositoryError> {
+        let count = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM transactions
+                     WHERE date >= ?1 AND date <= ?2
+                       AND (?3 IS NULL OR category_id = ?3)
+                       AND (?4 IS NULL OR LOWER(source) LIKE '%' || LOWER(?4) || '%')",
+                params![
+                    start.format("%Y-%m-%d").to_string(),
+                    end.format("%Y-%m-%d").to_string(),
+                    category_id.map(|id| id.as_string()),
+                    source_contains,
+                ],
+                |row| row.get(0),
+            )
+            .map_err(sql_err)?;
+        Ok(count)
+    }
 }
 
 #[cfg(test)]
@@ -433,6 +459,136 @@ mod tests {
             page.iter().map(|t| t.source().as_str()).collect::<Vec<_>>(),
             vec!["Newest", "Oldest"]
         );
+    }
+
+    #[test]
+    fn count_in_range_respects_the_date_bounds() {
+        let conn = test_conn();
+        let (account_id, category_id) = seed_account_and_category(&conn);
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        repo.insert(
+            &Transaction::new(
+                TransactionId::new(),
+                NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                Money::from_minor_units(-100, usd()),
+                SourceText::new("In range").unwrap(),
+                category_id,
+                account_id,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        repo.insert(
+            &Transaction::new(
+                TransactionId::new(),
+                NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+                Money::from_minor_units(-100, usd()),
+                SourceText::new("Out of range").unwrap(),
+                category_id,
+                account_id,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let count = repo
+            .count_in_range(
+                NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn count_in_range_filters_by_category() {
+        let conn = test_conn();
+        let (account_id, groceries_id) = seed_account_and_category(&conn);
+        let category_repo = crate::SqliteCategoryRepository::new(&conn);
+        let rent =
+            Category::new(CategoryId::new(), CategoryName::new("Rent").unwrap(), None).unwrap();
+        category_repo.insert(&rent).unwrap();
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        repo.insert(
+            &Transaction::new(
+                TransactionId::new(),
+                NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                Money::from_minor_units(-100, usd()),
+                SourceText::new("Supermarket").unwrap(),
+                groceries_id,
+                account_id,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        repo.insert(
+            &Transaction::new(
+                TransactionId::new(),
+                NaiveDate::from_ymd_opt(2026, 1, 16).unwrap(),
+                Money::from_minor_units(-90_000, usd()),
+                SourceText::new("Landlord").unwrap(),
+                rent.id(),
+                account_id,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let count = repo
+            .count_in_range(
+                NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
+                Some(groceries_id),
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn count_in_range_filters_by_source_case_insensitively() {
+        let conn = test_conn();
+        let (account_id, category_id) = seed_account_and_category(&conn);
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        repo.insert(
+            &Transaction::new(
+                TransactionId::new(),
+                NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                Money::from_minor_units(-100, usd()),
+                SourceText::new("WHOLE FOODS MARKET").unwrap(),
+                category_id,
+                account_id,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        repo.insert(
+            &Transaction::new(
+                TransactionId::new(),
+                NaiveDate::from_ymd_opt(2026, 1, 16).unwrap(),
+                Money::from_minor_units(-100, usd()),
+                SourceText::new("Electric Co").unwrap(),
+                category_id,
+                account_id,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let count = repo
+            .count_in_range(
+                NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
+                None,
+                Some("whole foods"),
+            )
+            .unwrap();
+
+        assert_eq!(count, 1);
     }
 
     #[test]

@@ -82,10 +82,15 @@
     loading = true;
     error = "";
     allTimeExhausted = false;
+    currentRange = computeRange(rangeMode, {
+      start: customStart,
+      end: customEnd,
+    });
     try {
       const [a, c] = await Promise.all([
         api.listAccounts(),
         api.listCategories(),
+        refreshCount(),
       ]);
       accounts = a;
       categories = c;
@@ -96,12 +101,10 @@
         nextOffset = batch.length;
         allTimeExhausted = batch.length < PAGE_SIZE;
       } else {
-        const range = computeRange(rangeMode, {
-          start: customStart,
-          end: customEnd,
-        });
-        currentRange = range;
-        transactions = await api.listTransactions(range.start, range.end);
+        transactions = await api.listTransactions(
+          currentRange.start,
+          currentRange.end,
+        );
       }
     } catch (e) {
       error = String(e);
@@ -155,6 +158,37 @@
   function scrollToTop() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
+
+  // The header count is the true total matching the current range and
+  // filters — not `transactions.length`, which for "All Time" is only
+  // whatever's been paged in so far.
+  let totalCount = $state(0);
+
+  async function refreshCount() {
+    try {
+      totalCount = await api.countTransactions(
+        currentRange.start,
+        currentRange.end,
+        categoryFilter || null,
+        sourceFilter.trim() || null,
+      );
+    } catch {
+      // Header count is supplementary — a failed refresh just leaves the
+      // previous total showing rather than surfacing its own error.
+    }
+  }
+
+  // `load()` calls `refreshCount()` directly (in step with `loading`, so the
+  // header never flashes a stale total when the range changes). This effect
+  // covers what `load()` doesn't — the category/source filters changing
+  // without a reload — debounced so typing in the source box doesn't fire
+  // an IPC call per keystroke.
+  $effect(() => {
+    categoryFilter;
+    sourceFilter;
+    const timer = setTimeout(refreshCount, 250);
+    return () => clearTimeout(timer);
+  });
 
   function setRange(mode: RangeMode) {
     rangeMode = mode;
@@ -232,6 +266,9 @@
       transactions = transactions.map((tx) =>
         tx.id === t.id ? { ...tx, category_id: categoryId } : tx,
       );
+      // Recategorizing can move this transaction in or out of an active
+      // category filter's count.
+      refreshCount();
     } catch (e) {
       toast.error(String(e));
     }
@@ -397,7 +434,7 @@
 <div class="title">
   <h1>Transactions</h1>
   {#if !loading}
-    <span class="summary">{filteredTransactions.length} transactions</span>
+    <span class="summary">{totalCount} transactions</span>
   {/if}
 </div>
 
@@ -663,7 +700,7 @@
   .scroll-top-button {
     position: fixed;
     bottom: 1.5rem;
-    left: 1.5rem;
+    right: 1.5rem;
     width: 2.5rem;
     height: 2.5rem;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);

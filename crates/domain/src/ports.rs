@@ -93,6 +93,19 @@ pub trait TransactionRepository {
     /// hundred thousand depending on the user, so only a row count keeps
     /// each batch cheap.
     fn list_page(&self, offset: i64, limit: i64) -> Result<Vec<Transaction>, RepositoryError>;
+    /// Counts transactions in `[start, end]`, optionally narrowed to a
+    /// category and/or a case-insensitive source substring — the same two
+    /// filters the transactions view applies. Pushed down to the query
+    /// (rather than counting a `list_in_range` result in the caller) so a
+    /// paginated view can show an accurate total for the current filters
+    /// without first pulling every matching row across the wire.
+    fn count_in_range(
+        &self,
+        start: NaiveDate,
+        end: NaiveDate,
+        category_id: Option<CategoryId>,
+        source_contains: Option<&str>,
+    ) -> Result<i64, RepositoryError>;
 }
 
 /// Port for persisting the rules that recognize an imported row as a

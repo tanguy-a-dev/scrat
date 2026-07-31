@@ -142,6 +142,18 @@ export const api = {
     invoke<TransactionDto[]>("list_transactions", { start, end }),
   listTransactionsPage: (offset: number, limit: number) =>
     invoke<TransactionDto[]>("list_transactions_page", { offset, limit }),
+  countTransactions: (
+    start: string,
+    end: string,
+    categoryId: string | null,
+    sourceContains: string | null,
+  ) =>
+    invoke<number>("count_transactions", {
+      start,
+      end,
+      categoryId,
+      sourceContains,
+    }),
   createTransaction: (
     date: string,
     amountMinorUnits: number,
