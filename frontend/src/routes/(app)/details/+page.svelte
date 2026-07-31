@@ -34,6 +34,31 @@
   ];
   const RADIUS = 80;
   const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
+  const SLICE_WIDTH = 24;
+
+  // Shading across the *thickness* of the ring is what makes a slice read as
+  // glass. Translucency alone does not: over a pure-black page there is nothing
+  // behind the arc to show through, so a lowered opacity just looks like a
+  // darker flat fill, and under saturated colour it disappears entirely.
+  //
+  // The shading has to be one continuous gradient, not concentric strokes at
+  // stepped opacities — those band, and the ring ends up looking like three
+  // flat rings stacked rather than one curved surface. A radial gradient in
+  // user space varies with distance from the centre, which for a ring *is* the
+  // cross-section direction, so a single overlay arc painted with it shades the
+  // slice smoothly from a dark inner edge to a lit outer edge.
+  //
+  // Stop offsets are fractions of OUTER_EDGE, so they read as radii: the ring
+  // spans RADIUS ± SLICE_WIDTH / 2, i.e. 0.74–1.0 of the gradient.
+  const OUTER_EDGE = RADIUS + SLICE_WIDTH / 2;
+  const TUBE_STOPS = [
+    { radius: RADIUS - SLICE_WIDTH / 2, color: "#000000", opacity: 0.42 },
+    { radius: 73, color: "#000000", opacity: 0.16 },
+    { radius: 79, color: "#000000", opacity: 0.02 },
+    { radius: 85, color: "#ffffff", opacity: 0.1 },
+    { radius: 90.5, color: "#ffffff", opacity: 0.22 },
+    { radius: OUTER_EDGE, color: "#ffffff", opacity: 0.06 },
+  ];
   // Surface showing between neighbouring slices (viewBox units), so identity
   // never rests on the color boundary alone.
   const SLICE_GAP = 2;
@@ -279,7 +304,7 @@
       );
       return {
         ...slice,
-        animatedDasharray: `${animatedLength} ${CIRCUMFERENCE - animatedLength}`,
+        animatedLength,
         animatedDashoffset: slice.dashoffset * fillProgress,
         animatedPercent: slice.percent * fillProgress,
       };
@@ -349,6 +374,30 @@
     <div class="graph-graphics">
       <div class="donut-wrap">
         <svg viewBox="0 0 200 200" class="donut">
+          <defs>
+            <!-- ids are per-panel: expense and income donuts coexist in one document -->
+            <radialGradient
+              id={`donut-tube-${panelKey}`}
+              gradientUnits="userSpaceOnUse"
+              cx="100"
+              cy="100"
+              r={OUTER_EDGE}
+            >
+              {#each TUBE_STOPS as stop (stop.radius)}
+                <stop
+                  offset={stop.radius / OUTER_EDGE}
+                  stop-color={stop.color}
+                  stop-opacity={stop.opacity}
+                />
+              {/each}
+            </radialGradient>
+            <linearGradient id={`donut-sheen-${panelKey}`} x1="0.05" y1="0" x2="0.75" y2="1">
+              <stop offset="0%" stop-color="#ffffff" stop-opacity="0.18" />
+              <stop offset="18%" stop-color="#ffffff" stop-opacity="0.08" />
+              <stop offset="42%" stop-color="#ffffff" stop-opacity="0.015" />
+              <stop offset="100%" stop-color="#ffffff" stop-opacity="0" />
+            </linearGradient>
+          </defs>
           <g transform="rotate(-90 100 100)">
             <circle
               cx="100"
@@ -356,26 +405,53 @@
               r={RADIUS}
               fill="none"
               stroke="var(--donut-track)"
-              stroke-width="24"
+              stroke-width={SLICE_WIDTH}
             />
             {#each slices as slice (slice.categoryId)}
-              <circle
-                cx="100"
-                cy="100"
-                r={RADIUS}
-                fill="none"
-                stroke={slice.color}
-                stroke-width="24"
-                stroke-dasharray={slice.animatedDasharray}
-                stroke-dashoffset={slice.animatedDashoffset}
+              {@const dasharray = `${slice.animatedLength} ${CIRCUMFERENCE - slice.animatedLength}`}
+              <!-- body + tube shading share one group, so the group opacity
+                   composites them as a single translucent pane rather than
+                   each layer fading independently -->
+              <g
                 class="slice"
                 class:dimmed={hoveredCategoryId !== null && hoveredCategoryId !== slice.categoryId}
                 role="presentation"
                 onmouseenter={() => (hoveredCategoryId = slice.categoryId)}
                 onmouseleave={() => (hoveredCategoryId = null)}
-              />
+              >
+                <circle
+                  cx="100"
+                  cy="100"
+                  r={RADIUS}
+                  fill="none"
+                  stroke={slice.color}
+                  stroke-width={SLICE_WIDTH}
+                  stroke-dasharray={dasharray}
+                  stroke-dashoffset={slice.animatedDashoffset}
+                />
+                <circle
+                  cx="100"
+                  cy="100"
+                  r={RADIUS}
+                  fill="none"
+                  stroke={`url(#donut-tube-${panelKey})`}
+                  stroke-width={SLICE_WIDTH}
+                  stroke-dasharray={dasharray}
+                  stroke-dashoffset={slice.animatedDashoffset}
+                />
+              </g>
             {/each}
           </g>
+          <!-- fixed light direction: the sheen sits outside the rotated group -->
+          <circle
+            cx="100"
+            cy="100"
+            r={RADIUS}
+            fill="none"
+            stroke={`url(#donut-sheen-${panelKey})`}
+            stroke-width={SLICE_WIDTH}
+            role="presentation"
+          />
         </svg>
         <div class="donut-center">
           <span class="total">{formatCurrency(total, currency)}</span>
@@ -596,6 +672,9 @@
   }
 
   .donut-wrap {
+    /* scoped to the component, not :root — a page-level :root block is
+       unmounted on navigation and takes its variables with it */
+    --donut-track: rgba(255, 255, 255, 0.07);
     position: relative;
     width: min(260px, 60vw);
     flex-shrink: 0;
@@ -605,9 +684,36 @@
     width: 100%;
     height: auto;
     display: block;
+    /* above the glass disc painted by .donut-wrap::before */
+    position: relative;
+    z-index: 1;
+  }
+
+  /* The disc the ring sits on. On a pure-black page there is nothing behind it
+     to refract, so the glass reads through the tinted fill, the hairline edge
+     and the sheen rather than through the blur — the blur only matters where
+     the panel overlaps content (hover states, the range bar on short viewports). */
+  .donut-wrap::before {
+    content: "";
+    position: absolute;
+    inset: 4%;
+    border-radius: 50%;
+    background: radial-gradient(
+      circle at 32% 25%,
+      rgba(255, 255, 255, 0.09),
+      rgba(255, 255, 255, 0.025) 45%,
+      rgba(255, 255, 255, 0.012) 100%
+    );
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(14px);
   }
 
   .slice {
+    /* 0.82 keeps the least luminous slot (#007fa9) at ~3.2:1 against the
+       disc — translucent enough to read as glass, opaque enough to stay
+       above the 3:1 floor for chart marks. The bloom filter puts back the
+       light the transparency takes away. */
+    opacity: 0.82;
     transition:
       opacity 0.15s ease,
       stroke-width 0.15s ease;
@@ -615,11 +721,7 @@
   }
 
   .slice.dimmed {
-    opacity: 0.35;
-  }
-
-  :root {
-    --donut-track: var(--color-shade-3);
+    opacity: 0.28;
   }
 
   .legend {
