@@ -458,6 +458,43 @@
     setLastClickedId(kind, id);
   }
 
+  // Click-and-drag multi-select: press the mouse down on a checkbox, then
+  // drag over other rows to sweep them into (or out of) the selection —
+  // same list only, and only while the button stays down.
+  let dragKind: SelectionKind | null = $state(null);
+  let dragPaintValue = $state(false);
+  // Not $state: only ever read from endRowDrag, which itself only runs from
+  // a real mouseup — no render depends on its value between those two.
+  let dragLastId: string | null = null;
+
+  /** Starts (or, for a shift-click, just performs) the row action on mouse
+   * down rather than click — has to happen this early so the drag can pick
+   * up the very next row the cursor enters, not just the ones after. */
+  function beginRowDrag(kind: SelectionKind, id: string, event: MouseEvent) {
+    handleRowCheckboxClick(kind, id, event);
+    if (event.shiftKey) return; // a discrete range-select, not a drag
+    dragKind = kind;
+    dragPaintValue = selectionSet(kind).has(id);
+    dragLastId = id;
+  }
+
+  /** Sweeps `id` into the drag's outcome — checked if the row the drag
+   * started on just became checked, unchecked if it just became unchecked —
+   * so dragging back over already-swept rows doesn't flicker them. */
+  function continueRowDrag(kind: SelectionKind, id: string) {
+    if (dragKind !== kind) return;
+    const set = selectionSet(kind);
+    if (dragPaintValue) set.add(id);
+    else set.delete(id);
+    dragLastId = id;
+  }
+
+  function endRowDrag() {
+    if (dragKind && dragLastId) setLastClickedId(dragKind, dragLastId);
+    dragKind = null;
+    dragLastId = null;
+  }
+
   function toggleSelectAll(kind: SelectionKind) {
     const items = kind === "expense" ? expenses : income;
     const set = selectionSet(kind);
@@ -528,11 +565,16 @@
   }
 </script>
 
+<!-- Catches the drag's mouseup wherever it lands, including outside any
+     row — the button can be released past the last row, past the edge of
+     the table, anywhere. -->
+<svelte:window onmouseup={endRowDrag} />
+
 {#snippet checkbox(props: {
   checked: boolean;
   indeterminate?: boolean;
   ariaLabel: string;
-  onclick: (event: MouseEvent) => void;
+  onpress: (event: MouseEvent) => void;
 })}
   <label class="checkbox" class:checked={props.checked} class:indeterminate={props.indeterminate}>
     <input
@@ -541,21 +583,24 @@
       use:setIndeterminate={!!props.indeterminate}
       aria-label={props.ariaLabel}
       onmousedown={(event) => {
-        // A browser extends its own text selection from mousedown, before
-        // any click handler runs — preventing default here, on the
-        // checkbox only, is what stops a shift-click range-select from also
-        // sweeping up the row text as a selection. Everywhere else in the
-        // table (Date, Source, Amount…) is untouched, so dragging to select
-        // and copy still works there.
+        // Fires on mousedown, not click, for two reasons: a browser starts
+        // extending its own text selection right here, before any click
+        // handler would even run, so preventing default is what stops a
+        // shift-click (or a drag) from also sweeping up the row text as a
+        // selection — and a following drag needs the state already applied
+        // by the time the cursor reaches the next row, not a beat later.
         event.preventDefault();
+        props.onpress(event);
       }}
       onclick={(event) => {
-        // The checked state is driven entirely by `props.checked` above —
-        // preventing the native toggle keeps that the single source of
-        // truth instead of racing it, and lets a shift-click select a whole
-        // range instead of just flipping the one row clicked.
+        // A checkbox's own checked-state flip is tied to the `click` event
+        // specifically (browsers pre-toggle it before dispatch, then revert
+        // if the click is prevented) — preventing mousedown's default above
+        // doesn't touch that. Without this, the native toggle fires right
+        // alongside our own, fighting `checked={props.checked}` for which
+        // one wins. All the actual logic already ran on mousedown; this is
+        // just here to keep the native behavior out of the way.
         event.preventDefault();
-        props.onclick(event);
       }}
     />
     <span class="box">
@@ -580,7 +625,7 @@
               checked: allSelected,
               indeterminate: anySelected && !allSelected,
               ariaLabel: `Select all ${kind === "expense" ? "expenses" : "income"}`,
-              onclick: () => toggleSelectAll(kind),
+              onpress: () => toggleSelectAll(kind),
             })}
           </th>
           <th class="date-cell"
@@ -639,13 +684,12 @@
           <tr><td class="empty" colspan="7">No transactions.</td></tr>
         {:else}
           {#each items as t (t.id)}
-            <tr>
+            <tr onmouseenter={() => continueRowDrag(kind, t.id)}>
               <td class="select-cell">
                 {@render checkbox({
                   checked: selected.has(t.id),
                   ariaLabel: `Select transaction ${t.date} ${t.source}`,
-                  onclick: (event: MouseEvent) =>
-                    handleRowCheckboxClick(kind, t.id, event),
+                  onpress: (event: MouseEvent) => beginRowDrag(kind, t.id, event),
                 })}
               </td>
               <td class="date-cell">{t.date}</td>
@@ -1079,6 +1123,12 @@
   }
 
   .checkbox input {
+    /* Without this, some engines keep hit-testing against the native
+       checkbox widget's own default-sized hotspot instead of the CSS box
+       `inset: 0` stretches it to — the visible part is all drawn by `.box`
+       below anyway, so the input has no native look left to preserve. */
+    appearance: none;
+    -webkit-appearance: none;
     position: absolute;
     inset: 0;
     margin: 0;
