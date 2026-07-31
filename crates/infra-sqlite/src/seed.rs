@@ -12,12 +12,7 @@ use crate::category_repository::SqliteCategoryRepository;
 type CategoryTree = &'static [(&'static str, &'static str, &'static [&'static str])];
 
 const EXPENSE_CATEGORIES: CategoryTree = &[
-    ("Food & Drink", "utensils", 
-        &[
-            "Restaurant",
-            "Bar",
-        ]
-    ),
+    ("Food & Drink", "utensils", &["Restaurant", "Bar"]),
     ("Groceries", "shopping-cart", &[]),
     (
         "Housing",
@@ -203,6 +198,19 @@ mod tests {
         crate::create_new(&path, "test passphrase").unwrap()
     }
 
+    /// Counted from the seed lists rather than written out: this assertion
+    /// is about every seeded category reaching the database, not about the
+    /// curated list being any particular length. Hardcoding the total meant
+    /// that curating the list — the whole point of it being a list — broke
+    /// an unrelated-looking test.
+    fn seeded_category_count() -> usize {
+        [EXPENSE_CATEGORIES, INCOME_CATEGORIES, TRANSFER_CATEGORIES]
+            .iter()
+            .flat_map(|tree| tree.iter())
+            .map(|(_, _, children)| 1 + children.len())
+            .sum()
+    }
+
     #[test]
     fn seeding_happens_automatically_on_create_new() {
         let conn = test_conn();
@@ -210,7 +218,8 @@ mod tests {
 
         let all = repo.list_all().unwrap();
 
-        assert_eq!(all.len(), 108);
+        assert_eq!(all.len(), seeded_category_count());
+        assert!(all.len() > 1, "the seed lists should not be empty");
     }
 
     #[test]

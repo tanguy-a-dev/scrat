@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use chrono::{Local, Months, NaiveDate};
-use scrat_application::transaction_service::TransactionService;
+use scrat_application::transaction_service::{TransactionService, RECONCILIATION_SOURCE};
 use scrat_domain::account::{Account, AccountId};
 use scrat_domain::category::{Category, CategoryId};
 use scrat_domain::ports::{AccountRepository, CategoryRepository};
@@ -25,6 +25,13 @@ pub struct TransactionDto {
     pub source: String,
     pub category_id: String,
     pub account_id: String,
+    /// `"normal"`, `"transfer"` or `"adjustment"`. Anything other than
+    /// `"normal"` moves or corrects money that was already the user's, so
+    /// it must be left out of income and expense totals — see
+    /// `TransactionRole` in the domain layer for why.
+    pub role: String,
+    /// Shared by both legs of a transfer; `null` otherwise.
+    pub transfer_group_id: Option<String>,
 }
 
 impl From<Transaction> for TransactionDto {
@@ -37,6 +44,8 @@ impl From<Transaction> for TransactionDto {
             source: transaction.source().as_str().to_string(),
             category_id: transaction.category_id().as_string(),
             account_id: transaction.account_id().as_string(),
+            role: transaction.role().as_str().to_string(),
+            transfer_group_id: transaction.transfer_group_id().map(|id| id.as_string()),
         }
     }
 }
@@ -97,6 +106,33 @@ pub fn create_transaction(
 pub fn delete_transaction(state: State<DbState>, id: String) -> Result<(), String> {
     let id = TransactionId::parse(&id).map_err(|e| e.to_string())?;
     with_service(&state, |s| s.delete_transaction(id))
+}
+
+/// Brings an account whose statements can't be imported back in line with
+/// the balance the user reads off their bank's own app, by posting the
+/// difference as a single adjustment entry.
+///
+/// Returns `null` when the ledger already agreed and nothing was written,
+/// so the UI can say "already up to date" rather than claiming a correction
+/// it didn't make.
+#[tauri::command]
+pub fn reconcile_account(
+    state: State<DbState>,
+    account_id: String,
+    observed_balance_minor_units: i64,
+    date: String,
+) -> Result<Option<TransactionDto>, String> {
+    let account_id = AccountId::parse(&account_id).map_err(|e| e.to_string())?;
+    let date = parse_date(&date)?;
+    with_service(&state, |s| {
+        // Adjustments get their own category, created on first use, so they
+        // are distinguishable in the ledger from anything the user filed by
+        // hand — and so they don't silently pad whatever the default
+        // category happens to be.
+        let category_id = s.get_or_create_category_by_name(RECONCILIATION_SOURCE)?;
+        s.reconcile_account(account_id, observed_balance_minor_units, category_id, date)
+    })
+    .map(|adjustment| adjustment.map(TransactionDto::from))
 }
 
 #[tauri::command]

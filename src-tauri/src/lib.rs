@@ -4,6 +4,7 @@ mod db;
 mod import;
 mod settings;
 mod transactions;
+mod transfer_rules;
 
 use db::DbState;
 
@@ -39,6 +40,11 @@ pub fn run() {
             transactions::suggest_category_for_source,
             transactions::export_transactions_csv,
             transactions::list_recurring_charges,
+            transactions::reconcile_account,
+            transfer_rules::list_transfer_rules,
+            transfer_rules::create_transfer_rule,
+            transfer_rules::delete_transfer_rule,
+            transfer_rules::apply_transfer_rules,
             import::preview_csv_import,
             import::commit_csv_import,
             settings::get_currency,

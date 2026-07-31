@@ -1,4 +1,6 @@
 <script lang="ts">
+  import type { Snippet } from "svelte";
+
   interface Option {
     id: string;
     label: string;
@@ -9,11 +11,13 @@
     value,
     onChange,
     placeholder = "Category…",
+    trigger,
   }: {
     options: Option[];
     value: string;
     onChange: (id: string) => void;
     placeholder?: string;
+    trigger?: Snippet<[{ label: string; active: boolean }]>;
   } = $props();
 
   let open = $state(false);
@@ -97,9 +101,19 @@
 
 <svelte:window onclick={handleWindowClick} />
 
-<div class="category-select" bind:this={containerEl}>
-  <button type="button" class="trigger" onclick={handleTriggerClick}>
-    {selectedLabel}
+<div class="category-select" class:icon-mode={!!trigger} bind:this={containerEl}>
+  <button
+    type="button"
+    class="trigger"
+    class:icon-trigger={!!trigger}
+    class:active={!!trigger && value !== ""}
+    onclick={handleTriggerClick}
+  >
+    {#if trigger}
+      {@render trigger({ label: selectedLabel, active: value !== "" })}
+    {:else}
+      {selectedLabel}
+    {/if}
   </button>
   {#if open}
     <div class="dropdown">
@@ -143,6 +157,10 @@
     max-width: 11rem;
   }
 
+  .category-select.icon-mode {
+    max-width: none;
+  }
+
   .trigger {
     width: 100%;
     border-radius: 4px;
@@ -157,6 +175,20 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .trigger.icon-trigger {
+    width: auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.3rem;
+  }
+
+  .trigger.icon-trigger.active {
+    background-color: var(--color-accent);
+    color: var(--color-accent-contrast);
+    border-color: var(--color-accent);
   }
 
   .dropdown {

@@ -8,3 +8,4 @@ pub mod money;
 pub mod ports;
 pub mod recurring;
 pub mod transaction;
+pub mod transfer_rule;

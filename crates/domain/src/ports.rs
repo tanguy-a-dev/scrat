@@ -3,7 +3,8 @@ use thiserror::Error;
 
 use crate::account::{Account, AccountId};
 use crate::category::{Category, CategoryId};
-use crate::transaction::{Transaction, TransactionId};
+use crate::transaction::{Transaction, TransactionId, TransferGroupId};
+use crate::transfer_rule::{TransferRule, TransferRuleId};
 
 #[derive(Debug, Error)]
 #[error("{0}")]
@@ -62,6 +63,12 @@ pub trait TransactionRepository {
     /// responsibility to avoid; this port does no deduplication.
     fn insert(&self, transaction: &Transaction) -> Result<(), RepositoryError>;
     fn delete(&self, id: TransactionId) -> Result<(), RepositoryError>;
+    fn find_by_id(&self, id: TransactionId) -> Result<Option<Transaction>, RepositoryError>;
+    /// Deletes both legs of a transfer at once. Deleting only the leg the
+    /// user is looking at would leave the counterpart account permanently
+    /// overstated by the transfer amount, with nothing on screen to explain
+    /// the gap — so removal is all-or-nothing, same as creation.
+    fn delete_transfer_group(&self, group_id: TransferGroupId) -> Result<(), RepositoryError>;
     /// Recategorizes an existing transaction — used when the user corrects
     /// or updates a transaction's category after the fact.
     fn update_category(
@@ -79,4 +86,12 @@ pub trait TransactionRepository {
     /// (`+262142-12-31`) that sorts before ordinary years in a TEXT
     /// comparison, so that combination silently matches nothing.
     fn list_all(&self) -> Result<Vec<Transaction>, RepositoryError>;
+}
+
+/// Port for persisting the rules that recognize an imported row as a
+/// transfer to another of the user's own accounts.
+pub trait TransferRuleRepository {
+    fn insert(&self, rule: &TransferRule) -> Result<(), RepositoryError>;
+    fn delete(&self, id: TransferRuleId) -> Result<(), RepositoryError>;
+    fn list_all(&self) -> Result<Vec<TransferRule>, RepositoryError>;
 }

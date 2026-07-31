@@ -20,6 +20,14 @@ export interface CategoryDto {
   is_default: boolean;
 }
 
+/** What a transaction means, as opposed to which way its amount points.
+ * Only "normal" is real income or spending: a transfer moves money between
+ * two of the user's own accounts, and an adjustment corrects an account
+ * whose statements can't be imported. Counting either one would inflate
+ * both sides of every report — use `countsTowardTotals` rather than
+ * comparing this by hand. */
+export type TransactionRole = "normal" | "transfer" | "adjustment";
+
 export interface TransactionDto {
   id: string;
   date: string;
@@ -28,6 +36,26 @@ export interface TransactionDto {
   source: string;
   category_id: string;
   account_id: string;
+  role: TransactionRole;
+  /** Shared by both legs of a transfer; null otherwise. Deleting either leg
+   * deletes the other, so the two accounts can't drift apart. */
+  transfer_group_id: string | null;
+}
+
+/** Recognizes an imported row as money moving to another of the user's own
+ * accounts. Matched as a case-insensitive substring of the row's source
+ * text. */
+export interface TransferRuleDto {
+  id: string;
+  pattern: string;
+  counterpart_account_id: string;
+}
+
+/** Whether a transaction belongs in income/expense reporting. Account
+ * balances are a different question — every role counts there, because the
+ * money really did move. */
+export function countsTowardTotals(t: { role: TransactionRole }): boolean {
+  return t.role === "normal";
 }
 
 export interface ImportPreviewRowDto {
@@ -49,6 +77,9 @@ export interface ImportPreviewDto {
 
 export interface ImportSummaryDto {
   imported: number;
+  /** How many imported rows were recognized as transfers, and so also wrote
+   * a mirrored leg on a counterpart account the user didn't import into. */
+  mirrored: number;
 }
 
 /** A commitment inferred from the ledger — never stored, recomputed on every
@@ -133,6 +164,33 @@ export const api = {
   exportTransactionsCsv: (destination: string) =>
     invoke<void>("export_transactions_csv", { destination }),
   listRecurringCharges: () => invoke<RecurringChargeDto[]>("list_recurring_charges"),
+  /** Posts the difference between `observedBalanceMinorUnits` and what the
+   * ledger says as a single adjustment. Resolves to null when the two
+   * already agreed and nothing was written. */
+  reconcileAccount: (
+    accountId: string,
+    observedBalanceMinorUnits: number,
+    date: string,
+  ) =>
+    invoke<TransactionDto | null>("reconcile_account", {
+      accountId,
+      observedBalanceMinorUnits,
+      date,
+    }),
+
+  listTransferRules: () => invoke<TransferRuleDto[]>("list_transfer_rules"),
+  /** Converts transactions already in the ledger that match `accountId`'s
+   * incoming-transfer rules, mirroring each onto that account — the
+   * catch-up for a rule added after those rows were imported. */
+  applyTransferRules: (accountId: string) =>
+    invoke<{ converted: number }>("apply_transfer_rules", { accountId }),
+  createTransferRule: (pattern: string, counterpartAccountId: string) =>
+    invoke<TransferRuleDto>("create_transfer_rule", {
+      pattern,
+      counterpartAccountId,
+    }),
+  deleteTransferRule: (id: string) =>
+    invoke<void>("delete_transfer_rule", { id }),
 
   previewCsvImport: (bytes: number[]) =>
     invoke<ImportPreviewDto>("preview_csv_import", { bytes }),

@@ -6,7 +6,10 @@ use scrat_domain::ports::{
     AccountRepository, CategoryRepository, RepositoryError, TransactionRepository,
 };
 use scrat_domain::recurring::{self, RecurringCharge};
-use scrat_domain::transaction::{SourceText, Transaction, TransactionError, TransactionId};
+use scrat_domain::transaction::{
+    SourceText, Transaction, TransactionError, TransactionId, TransactionRole, TransferGroupId,
+};
+use scrat_domain::transfer_rule::TransferRule;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -21,6 +24,8 @@ pub enum ApplicationError {
     AccountNotFound,
     #[error("category not found")]
     CategoryNotFound,
+    #[error("balance is too large to reconcile against")]
+    BalanceOutOfRange,
 }
 
 /// A single row a CSV importer has already parsed into a date/amount/source
@@ -38,8 +43,23 @@ pub struct ImportRow {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ImportOutcome {
+    /// Rows taken from the file. A transfer row counts once here even
+    /// though it writes two ledger entries — the user chose one row.
     pub imported: usize,
+    /// How many of those rows a transfer rule recognized, and so also
+    /// produced a mirrored leg on a counterpart account.
+    pub mirrored: usize,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RetroactiveTransferOutcome {
+    pub converted: usize,
+}
+
+/// The source text recorded on a reconciliation adjustment. Fixed rather
+/// than user-supplied so these entries are recognizable at a glance in the
+/// ledger, next to the imported rows they sit among.
+pub const RECONCILIATION_SOURCE: &str = "Balance adjustment";
 
 /// Constructed fresh per request against live repository borrows — see
 /// `AccountService` for why these borrow rather than own their repository.
@@ -95,8 +115,19 @@ impl<'a> TransactionService<'a> {
         Ok(transaction)
     }
 
+    /// Deletes a transaction — and, when it is one leg of a transfer, its
+    /// counterpart too. Removing a single leg would leave the other account
+    /// permanently overstated by the transfer amount, and nothing on that
+    /// account's screen would explain where the money came from.
     pub fn delete_transaction(&self, id: TransactionId) -> Result<(), ApplicationError> {
-        self.transactions.delete(id)?;
+        match self
+            .transactions
+            .find_by_id(id)?
+            .and_then(|t| t.transfer_group_id())
+        {
+            Some(group_id) => self.transactions.delete_transfer_group(group_id)?,
+            None => self.transactions.delete(id)?,
+        }
         Ok(())
     }
 
@@ -145,13 +176,27 @@ impl<'a> TransactionService<'a> {
     }
 
     /// Imports a batch of already-parsed rows (from a CSV, say) into the
-    /// given account, each under its own already-resolved category, skipping
-    /// any row whose dedup key already exists rather than erroring — makes
-    /// re-importing the same file (or an overlapping date range) idempotent.
+    /// given account, each under its own already-resolved category.
+    ///
+    /// This is *not* idempotent: re-importing a file, or an overlapping date
+    /// range, writes the rows again. Identical (account, date, amount,
+    /// source) transactions are legitimate — two identical coffees the same
+    /// day — so there's no safe automatic rule for telling a real repeat
+    /// from a re-import, and the caller is left to avoid it.
+    ///
+    /// A row whose source text matches a `transfer_rules` entry is money
+    /// moving to another of the user's own accounts, not spending. Those
+    /// rows are written as a pair: the outflow here, and a mirrored inflow
+    /// on the counterpart. This is the only way an account whose statements
+    /// can't be exported gets its incoming side of the ledger at all — and
+    /// because the pair is created and deleted together, a duplicated import
+    /// duplicates both legs symmetrically, so cleaning up the source account
+    /// cleans up the counterpart too.
     pub fn import_transactions(
         &self,
         rows: &[ImportRow],
         account_id: AccountId,
+        transfer_rules: &[TransferRule],
     ) -> Result<ImportOutcome, ApplicationError> {
         self.accounts
             .find_by_id(account_id)?
@@ -164,16 +209,165 @@ impl<'a> TransactionService<'a> {
                 .ok_or(ApplicationError::CategoryNotFound)?;
             let source = SourceText::new(&row.source)?;
             let amount = Money::from_minor_units(row.amount_minor_units, self.currency.clone());
-            let transaction = Transaction::new(
-                TransactionId::new(),
-                row.date,
-                amount,
-                source,
-                row.category_id,
-                account_id,
-            )?;
-            self.transactions.insert(&transaction)?;
+
+            // A rule pointing back at the account being imported would
+            // mirror the row onto itself, doubling it and netting the
+            // account's balance change to zero. Treat it as an ordinary row.
+            let counterpart_id = transfer_rules
+                .iter()
+                .find(|rule| rule.matches_source(&row.source))
+                .map(|rule| rule.counterpart_account_id())
+                .filter(|id| *id != account_id);
+
+            match counterpart_id {
+                Some(counterpart_id) => {
+                    self.accounts
+                        .find_by_id(counterpart_id)?
+                        .ok_or(ApplicationError::AccountNotFound)?;
+                    let group_id = TransferGroupId::new();
+                    let outflow = Transaction::new_with_role(
+                        TransactionId::new(),
+                        row.date,
+                        amount,
+                        source,
+                        row.category_id,
+                        account_id,
+                        TransactionRole::Transfer,
+                        Some(group_id),
+                    )?;
+                    let inflow = outflow.mirrored_onto(counterpart_id, group_id)?;
+                    self.transactions.insert(&outflow)?;
+                    self.transactions.insert(&inflow)?;
+                    outcome.mirrored += 1;
+                }
+                None => {
+                    let transaction = Transaction::new(
+                        TransactionId::new(),
+                        row.date,
+                        amount,
+                        source,
+                        row.category_id,
+                        account_id,
+                    )?;
+                    self.transactions.insert(&transaction)?;
+                }
+            }
             outcome.imported += 1;
+        }
+        Ok(outcome)
+    }
+
+    /// Brings an account whose statements can't be imported back in line
+    /// with the balance the user actually observes, by posting the
+    /// difference as a single [`TransactionRole::Adjustment`] entry.
+    ///
+    /// Returns `None` when the ledger already agrees — reconciling an
+    /// account that needs nothing should leave no trace, so repeatedly
+    /// checking doesn't litter the ledger with zero-value entries.
+    ///
+    /// The adjustment deliberately doesn't try to explain *why* the balance
+    /// drifted. For an account holding investments the drift is mostly
+    /// market movement, and it is not separable from ordinary spending on
+    /// the same account without the statements this exists to work around.
+    pub fn reconcile_account(
+        &self,
+        account_id: AccountId,
+        observed_balance_minor_units: i64,
+        category_id: CategoryId,
+        date: NaiveDate,
+    ) -> Result<Option<Transaction>, ApplicationError> {
+        let account = self
+            .accounts
+            .find_by_id(account_id)?
+            .ok_or(ApplicationError::AccountNotFound)?;
+        self.categories
+            .find_by_id(category_id)?
+            .ok_or(ApplicationError::CategoryNotFound)?;
+
+        let ledger_sum = self.accounts.sum_transactions_minor_units(account_id)?;
+        // The observed balance is typed in by hand, so every step here is
+        // checked: an extra digit or two shouldn't wrap a balance around.
+        let current = account
+            .opening_balance()
+            .minor_units()
+            .checked_add(ledger_sum)
+            .ok_or(ApplicationError::BalanceOutOfRange)?;
+        let delta = observed_balance_minor_units
+            .checked_sub(current)
+            .ok_or(ApplicationError::BalanceOutOfRange)?;
+        if delta == 0 {
+            return Ok(None);
+        }
+
+        let adjustment = Transaction::new_with_role(
+            TransactionId::new(),
+            date,
+            Money::from_minor_units(delta, self.currency.clone()),
+            SourceText::new(RECONCILIATION_SOURCE)?,
+            category_id,
+            account_id,
+            TransactionRole::Adjustment,
+            None,
+        )?;
+        self.transactions.insert(&adjustment)?;
+        Ok(Some(adjustment))
+    }
+
+    /// Catches up transactions already in the ledger to a transfer rule that
+    /// didn't exist yet when they were imported — the retroactive companion
+    /// to the rule-matching [`Self::import_transactions`] already does for
+    /// new rows. Without this, a transaction imported before the rule was
+    /// added stays filed as ordinary spending forever, and its counterpart
+    /// account never receives the mirrored leg it should have had all along.
+    ///
+    /// Only [`TransactionRole::Normal`] rows are candidates — an existing
+    /// transfer or adjustment is left alone, which is what makes running
+    /// this again (after adding another rule, say) safe: it can't
+    /// double-convert or double-mirror a row it already touched.
+    pub fn apply_transfer_rules_to_existing(
+        &self,
+        transfer_rules: &[TransferRule],
+    ) -> Result<RetroactiveTransferOutcome, ApplicationError> {
+        let mut outcome = RetroactiveTransferOutcome::default();
+        for transaction in self.transactions.list_all()? {
+            if transaction.role() != TransactionRole::Normal {
+                continue;
+            }
+            let Some(rule) = transfer_rules
+                .iter()
+                .find(|rule| rule.matches_source(transaction.source().as_str()))
+            else {
+                continue;
+            };
+            let counterpart_id = rule.counterpart_account_id();
+            // Same self-transfer guard as import: a rule pointing back at
+            // the row's own account would mirror it onto itself.
+            if counterpart_id == transaction.account_id() {
+                continue;
+            }
+            self.accounts
+                .find_by_id(counterpart_id)?
+                .ok_or(ApplicationError::AccountNotFound)?;
+
+            let group_id = TransferGroupId::new();
+            // Reuses the transaction's own id — it's being reclassified in
+            // place, not replaced by a new entry.
+            let outflow = Transaction::new_with_role(
+                transaction.id(),
+                transaction.date(),
+                transaction.amount().clone(),
+                transaction.source().clone(),
+                transaction.category_id(),
+                transaction.account_id(),
+                TransactionRole::Transfer,
+                Some(group_id),
+            )?;
+            let inflow = outflow.mirrored_onto(counterpart_id, group_id)?;
+
+            self.transactions.delete(transaction.id())?;
+            self.transactions.insert(&outflow)?;
+            self.transactions.insert(&inflow)?;
+            outcome.converted += 1;
         }
         Ok(outcome)
     }
@@ -390,13 +584,26 @@ fn tokenize(s: &str) -> std::collections::HashSet<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use scrat_domain::account::{Account, AccountName};
+    use scrat_domain::account::{Account, AccountName, SourcePattern};
     use scrat_domain::category::{Category, CategoryName};
+    use scrat_domain::transfer_rule::TransferRuleId;
     use std::sync::Mutex;
 
     #[derive(Default)]
     struct FakeAccountRepository {
         accounts: Mutex<Vec<Account>>,
+        /// Standing in for the transactions table's per-account sum. Kept
+        /// separate from `FakeTransactionRepository` on purpose: reconcile
+        /// tests need to describe an account that already has a ledger
+        /// history, without routing every prior movement through the
+        /// service under test.
+        ledger: Mutex<Vec<(AccountId, i64)>>,
+    }
+
+    impl FakeAccountRepository {
+        fn post(&self, account_id: AccountId, minor_units: i64) {
+            self.ledger.lock().unwrap().push((account_id, minor_units));
+        }
     }
 
     impl AccountRepository for FakeAccountRepository {
@@ -425,8 +632,15 @@ mod tests {
         fn transaction_count(&self, _id: AccountId) -> Result<u64, RepositoryError> {
             Ok(0)
         }
-        fn sum_transactions_minor_units(&self, _id: AccountId) -> Result<i64, RepositoryError> {
-            Ok(0)
+        fn sum_transactions_minor_units(&self, id: AccountId) -> Result<i64, RepositoryError> {
+            Ok(self
+                .ledger
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(account_id, _)| *account_id == id)
+                .map(|(_, minor_units)| minor_units)
+                .sum())
         }
     }
 
@@ -491,6 +705,22 @@ mod tests {
             self.transactions.lock().unwrap().retain(|t| t.id() != id);
             Ok(())
         }
+        fn find_by_id(&self, id: TransactionId) -> Result<Option<Transaction>, RepositoryError> {
+            Ok(self
+                .transactions
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|t| t.id() == id)
+                .cloned())
+        }
+        fn delete_transfer_group(&self, group_id: TransferGroupId) -> Result<(), RepositoryError> {
+            self.transactions
+                .lock()
+                .unwrap()
+                .retain(|t| t.transfer_group_id() != Some(group_id));
+            Ok(())
+        }
         fn update_category(
             &self,
             id: TransactionId,
@@ -499,13 +729,15 @@ mod tests {
             let mut transactions = self.transactions.lock().unwrap();
             if let Some(pos) = transactions.iter().position(|t| t.id() == id) {
                 let existing = &transactions[pos];
-                let updated = Transaction::new(
+                let updated = Transaction::new_with_role(
                     existing.id(),
                     existing.date(),
                     existing.amount().clone(),
                     existing.source().clone(),
                     category_id,
                     existing.account_id(),
+                    existing.role(),
+                    existing.transfer_group_id(),
                 )
                 .expect("recategorizing preserves validity");
                 transactions[pos] = updated;
@@ -536,6 +768,9 @@ mod tests {
         accounts: FakeAccountRepository,
         categories: FakeCategoryRepository,
         account_id: AccountId,
+        /// A second account standing in for one whose statements can't be
+        /// exported: it receives mirrored transfer legs and gets reconciled.
+        counterpart_account_id: AccountId,
         category_id: CategoryId,
     }
 
@@ -548,6 +783,14 @@ mod tests {
         );
         let account_id = account.id();
         accounts.insert(&account).unwrap();
+
+        let counterpart = Account::new(
+            AccountId::new(),
+            AccountName::new("Neobank").unwrap(),
+            Money::zero(Currency::new("USD").unwrap()),
+        );
+        let counterpart_account_id = counterpart.id();
+        accounts.insert(&counterpart).unwrap();
 
         let categories = FakeCategoryRepository::default();
         let category = Category::new(
@@ -564,7 +807,36 @@ mod tests {
             accounts,
             categories,
             account_id,
+            counterpart_account_id,
             category_id,
+        }
+    }
+
+    impl Fixture {
+        fn service(&self) -> TransactionService<'_> {
+            TransactionService::new(
+                &self.transactions,
+                &self.accounts,
+                &self.categories,
+                Currency::new("USD").unwrap(),
+            )
+        }
+
+        fn import_row(&self, source: &str, amount_minor_units: i64) -> ImportRow {
+            ImportRow {
+                date: NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                amount_minor_units,
+                source: source.to_string(),
+                category_id: self.category_id,
+            }
+        }
+
+        fn transfer_rule(&self, pattern: &str, counterpart: AccountId) -> TransferRule {
+            TransferRule::new(
+                TransferRuleId::new(),
+                SourcePattern::new(pattern).unwrap(),
+                counterpart,
+            )
         }
     }
 
@@ -765,14 +1037,442 @@ mod tests {
         };
 
         let first = service
-            .import_transactions(&[row.clone(), row.clone()], f.account_id)
+            .import_transactions(&[row.clone(), row.clone()], f.account_id, &[])
             .unwrap();
-        assert_eq!(first, ImportOutcome { imported: 2 });
+        assert_eq!(
+            first,
+            ImportOutcome {
+                imported: 2,
+                mirrored: 0
+            }
+        );
 
         // Re-importing the same "file" again adds two more — this port does
         // no deduplication, that's the caller's responsibility.
-        let second = service.import_transactions(&[row], f.account_id).unwrap();
-        assert_eq!(second, ImportOutcome { imported: 1 });
+        let second = service
+            .import_transactions(&[row], f.account_id, &[])
+            .unwrap();
+        assert_eq!(
+            second,
+            ImportOutcome {
+                imported: 1,
+                mirrored: 0
+            }
+        );
+    }
+
+    #[test]
+    fn import_writes_a_mirrored_leg_on_the_counterpart_account() {
+        let f = fixture();
+        let service = f.service();
+        let rules = [f.transfer_rule("n26", f.counterpart_account_id)];
+
+        let outcome = service
+            .import_transactions(
+                &[f.import_row("VIREMENT SEPA EMIS VERS N26", -25_000)],
+                f.account_id,
+                &rules,
+            )
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            ImportOutcome {
+                imported: 1,
+                mirrored: 1
+            }
+        );
+
+        let all = f.transactions.list_all().unwrap();
+        assert_eq!(all.len(), 2);
+        let outflow = all
+            .iter()
+            .find(|t| t.account_id() == f.account_id)
+            .expect("source account leg");
+        let inflow = all
+            .iter()
+            .find(|t| t.account_id() == f.counterpart_account_id)
+            .expect("counterpart leg");
+
+        assert_eq!(outflow.amount().minor_units(), -25_000);
+        assert_eq!(inflow.amount().minor_units(), 25_000);
+        assert_eq!(outflow.role(), TransactionRole::Transfer);
+        assert_eq!(inflow.role(), TransactionRole::Transfer);
+        assert_eq!(outflow.transfer_group_id(), inflow.transfer_group_id());
+        assert!(outflow.transfer_group_id().is_some());
+    }
+
+    /// The user's own money coming back the other way is still a transfer,
+    /// so the same rule has to work on an inflow without special-casing.
+    #[test]
+    fn import_mirrors_an_incoming_transfer_in_the_opposite_direction() {
+        let f = fixture();
+        let service = f.service();
+        let rules = [f.transfer_rule("virement n26", f.counterpart_account_id)];
+
+        service
+            .import_transactions(
+                &[f.import_row("VIREMENT N26 VERS COMPTE", 12_000)],
+                f.account_id,
+                &rules,
+            )
+            .unwrap();
+
+        let all = f.transactions.list_all().unwrap();
+        let inflow = all
+            .iter()
+            .find(|t| t.account_id() == f.account_id)
+            .expect("source account leg");
+        let outflow = all
+            .iter()
+            .find(|t| t.account_id() == f.counterpart_account_id)
+            .expect("counterpart leg");
+        assert_eq!(inflow.amount().minor_units(), 12_000);
+        assert_eq!(outflow.amount().minor_units(), -12_000);
+    }
+
+    #[test]
+    fn import_leaves_rows_no_rule_matches_as_ordinary_transactions() {
+        let f = fixture();
+        let service = f.service();
+        let rules = [f.transfer_rule("virement n26", f.counterpart_account_id)];
+
+        let outcome = service
+            .import_transactions(
+                &[f.import_row("CARTE 12/03 BOULANGERIE", -450)],
+                f.account_id,
+                &rules,
+            )
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            ImportOutcome {
+                imported: 1,
+                mirrored: 0
+            }
+        );
+        let all = f.transactions.list_all().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].role(), TransactionRole::Normal);
+        assert_eq!(all[0].transfer_group_id(), None);
+    }
+
+    /// A rule pointing back at the account being imported would mirror the
+    /// row onto itself: two entries on one account that cancel out, leaving
+    /// its balance unchanged by a movement that really happened.
+    #[test]
+    fn import_ignores_a_rule_whose_counterpart_is_the_imported_account() {
+        let f = fixture();
+        let service = f.service();
+        let rules = [f.transfer_rule("virement n26", f.account_id)];
+
+        let outcome = service
+            .import_transactions(
+                &[f.import_row("VIREMENT N26", -25_000)],
+                f.account_id,
+                &rules,
+            )
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            ImportOutcome {
+                imported: 1,
+                mirrored: 0
+            }
+        );
+        let all = f.transactions.list_all().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].role(), TransactionRole::Normal);
+    }
+
+    #[test]
+    fn import_rejects_a_rule_pointing_at_an_account_that_no_longer_exists() {
+        let f = fixture();
+        let service = f.service();
+        let rules = [f.transfer_rule("virement n26", AccountId::new())];
+
+        let result = service.import_transactions(
+            &[f.import_row("VIREMENT N26", -25_000)],
+            f.account_id,
+            &rules,
+        );
+
+        assert!(matches!(result, Err(ApplicationError::AccountNotFound)));
+    }
+
+    #[test]
+    fn deleting_either_leg_of_a_transfer_removes_both() {
+        let f = fixture();
+        let service = f.service();
+        let rules = [f.transfer_rule("virement n26", f.counterpart_account_id)];
+        service
+            .import_transactions(
+                &[f.import_row("VIREMENT N26", -25_000)],
+                f.account_id,
+                &rules,
+            )
+            .unwrap();
+        let inflow_id = f
+            .transactions
+            .list_all()
+            .unwrap()
+            .iter()
+            .find(|t| t.account_id() == f.counterpart_account_id)
+            .expect("counterpart leg")
+            .id();
+
+        // Delete the mirrored leg, not the one the import created first.
+        service.delete_transaction(inflow_id).unwrap();
+
+        assert!(f.transactions.list_all().unwrap().is_empty());
+    }
+
+    #[test]
+    fn deleting_an_ordinary_transaction_leaves_everything_else_alone() {
+        let f = fixture();
+        let service = f.service();
+        let kept = service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                -450,
+                "Boulangerie",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+        let removed = service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 16).unwrap(),
+                -900,
+                "Pharmacie",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+
+        service.delete_transaction(removed.id()).unwrap();
+
+        let all = f.transactions.list_all().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id(), kept.id());
+    }
+
+    #[test]
+    fn retroactive_apply_converts_a_matching_normal_transaction_into_a_mirrored_pair() {
+        let f = fixture();
+        let service = f.service();
+        let existing = service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                -25_000,
+                "VIREMENT N26",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+        let rules = [f.transfer_rule("n26", f.counterpart_account_id)];
+
+        let outcome = service.apply_transfer_rules_to_existing(&rules).unwrap();
+
+        assert_eq!(outcome, RetroactiveTransferOutcome { converted: 1 });
+        let all = f.transactions.list_all().unwrap();
+        assert_eq!(all.len(), 2);
+        let outflow = all
+            .iter()
+            .find(|t| t.account_id() == f.account_id)
+            .expect("source account leg");
+        let inflow = all
+            .iter()
+            .find(|t| t.account_id() == f.counterpart_account_id)
+            .expect("counterpart leg");
+        // The row keeps its original id — it's reclassified, not replaced.
+        assert_eq!(outflow.id(), existing.id());
+        assert_eq!(outflow.amount().minor_units(), -25_000);
+        assert_eq!(inflow.amount().minor_units(), 25_000);
+        assert_eq!(outflow.role(), TransactionRole::Transfer);
+        assert_eq!(outflow.transfer_group_id(), inflow.transfer_group_id());
+    }
+
+    #[test]
+    fn retroactive_apply_leaves_non_matching_transactions_untouched() {
+        let f = fixture();
+        let service = f.service();
+        service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                -450,
+                "Boulangerie",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+        let rules = [f.transfer_rule("n26", f.counterpart_account_id)];
+
+        let outcome = service.apply_transfer_rules_to_existing(&rules).unwrap();
+
+        assert_eq!(outcome, RetroactiveTransferOutcome { converted: 0 });
+        let all = f.transactions.list_all().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].role(), TransactionRole::Normal);
+    }
+
+    /// Running this a second time (e.g. after adding another rule) must not
+    /// touch a row it already converted — the pair it wrote is now a
+    /// `Transfer`, which never enters the matching branch again.
+    #[test]
+    fn retroactive_apply_does_not_reconvert_a_row_it_already_converted() {
+        let f = fixture();
+        let service = f.service();
+        service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                -25_000,
+                "VIREMENT N26",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+        let rules = [f.transfer_rule("n26", f.counterpart_account_id)];
+        service.apply_transfer_rules_to_existing(&rules).unwrap();
+
+        let second_pass = service.apply_transfer_rules_to_existing(&rules).unwrap();
+
+        assert_eq!(second_pass, RetroactiveTransferOutcome { converted: 0 });
+        assert_eq!(f.transactions.list_all().unwrap().len(), 2);
+    }
+
+    /// A rule pointing back at the row's own account would mirror it onto
+    /// itself — the same guard `import_transactions` applies.
+    #[test]
+    fn retroactive_apply_ignores_a_rule_whose_counterpart_is_the_rows_own_account() {
+        let f = fixture();
+        let service = f.service();
+        service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                -25_000,
+                "VIREMENT N26",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+        let rules = [f.transfer_rule("n26", f.account_id)];
+
+        let outcome = service.apply_transfer_rules_to_existing(&rules).unwrap();
+
+        assert_eq!(outcome, RetroactiveTransferOutcome { converted: 0 });
+        let all = f.transactions.list_all().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].role(), TransactionRole::Normal);
+    }
+
+    #[test]
+    fn reconcile_posts_the_difference_between_observed_and_ledger_balance() {
+        let f = fixture();
+        // The counterpart has received 250.00 in transfers, but the user
+        // spent 40.00 from it in ways no export can show.
+        f.accounts.post(f.counterpart_account_id, 25_000);
+        let service = f.service();
+
+        let adjustment = service
+            .reconcile_account(
+                f.counterpart_account_id,
+                21_000,
+                f.category_id,
+                NaiveDate::from_ymd_opt(2026, 2, 1).unwrap(),
+            )
+            .unwrap()
+            .expect("a drifted balance produces an adjustment");
+
+        assert_eq!(adjustment.amount().minor_units(), -4_000);
+        assert_eq!(adjustment.role(), TransactionRole::Adjustment);
+        assert_eq!(adjustment.account_id(), f.counterpart_account_id);
+        assert_eq!(adjustment.source().as_str(), RECONCILIATION_SOURCE);
+        assert_eq!(f.transactions.list_all().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn reconcile_counts_the_opening_balance_not_just_the_ledger() {
+        let f = fixture();
+        let opening = Account::new(
+            AccountId::new(),
+            AccountName::new("Neobank with history").unwrap(),
+            Money::from_minor_units(10_000, Currency::new("USD").unwrap()),
+        );
+        let account_id = opening.id();
+        f.accounts.insert(&opening).unwrap();
+        f.accounts.post(account_id, 5_000);
+        let service = f.service();
+
+        let adjustment = service
+            .reconcile_account(
+                account_id,
+                20_000,
+                f.category_id,
+                NaiveDate::from_ymd_opt(2026, 2, 1).unwrap(),
+            )
+            .unwrap()
+            .expect("a drifted balance produces an adjustment");
+
+        // 200.00 observed against 100.00 opening + 50.00 ledger.
+        assert_eq!(adjustment.amount().minor_units(), 5_000);
+    }
+
+    /// Checking an account that needs nothing shouldn't leave a trail of
+    /// zero-value entries — and a zero-amount transaction isn't even a
+    /// valid one.
+    #[test]
+    fn reconcile_writes_nothing_when_the_balance_already_agrees() {
+        let f = fixture();
+        f.accounts.post(f.counterpart_account_id, 25_000);
+        let service = f.service();
+
+        let adjustment = service
+            .reconcile_account(
+                f.counterpart_account_id,
+                25_000,
+                f.category_id,
+                NaiveDate::from_ymd_opt(2026, 2, 1).unwrap(),
+            )
+            .unwrap();
+
+        assert!(adjustment.is_none());
+        assert!(f.transactions.list_all().unwrap().is_empty());
+    }
+
+    /// The observed balance is typed in by hand, so a slip of the keyboard
+    /// must not wrap a balance around into a plausible-looking number.
+    #[test]
+    fn reconcile_rejects_an_observed_balance_that_would_overflow() {
+        let f = fixture();
+        f.accounts.post(f.counterpart_account_id, -1_000);
+        let service = f.service();
+
+        let result = service.reconcile_account(
+            f.counterpart_account_id,
+            i64::MAX,
+            f.category_id,
+            NaiveDate::from_ymd_opt(2026, 2, 1).unwrap(),
+        );
+
+        assert!(matches!(result, Err(ApplicationError::BalanceOutOfRange)));
+    }
+
+    #[test]
+    fn reconcile_rejects_an_unknown_account() {
+        let f = fixture();
+        let service = f.service();
+
+        let result = service.reconcile_account(
+            AccountId::new(),
+            21_000,
+            f.category_id,
+            NaiveDate::from_ymd_opt(2026, 2, 1).unwrap(),
+        );
+
+        assert!(matches!(result, Err(ApplicationError::AccountNotFound)));
     }
 
     #[test]
@@ -791,7 +1491,7 @@ mod tests {
             category_id: f.category_id,
         };
 
-        let result = service.import_transactions(&[row], AccountId::new());
+        let result = service.import_transactions(&[row], AccountId::new(), &[]);
 
         assert!(matches!(result, Err(ApplicationError::AccountNotFound)));
     }
@@ -812,7 +1512,7 @@ mod tests {
             category_id: CategoryId::new(),
         };
 
-        let result = service.import_transactions(&[row], f.account_id);
+        let result = service.import_transactions(&[row], f.account_id, &[]);
 
         assert!(matches!(result, Err(ApplicationError::CategoryNotFound)));
     }

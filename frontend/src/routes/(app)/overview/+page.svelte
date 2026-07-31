@@ -3,6 +3,7 @@
   import { scale } from "svelte/transition";
   import {
     api,
+    countsTowardTotals,
     formatCurrency,
     formatCurrencyRounded,
     type AccountDto,
@@ -102,6 +103,16 @@
   let currency = $derived(accounts[0]?.currency ?? transactions[0]?.currency ?? "EUR");
   let total = $derived(accounts.reduce((sum, a) => sum + a.balance_minor_units, 0));
 
+  /** Transactions that are real income or spending. Transfers between the
+   * user's own accounts and reconciliation adjustments are excluded: a
+   * transfer would otherwise land as an expense on one account and income on
+   * the other, inflating both bars of every month it appears in even though
+   * savings nets out to the right number.
+   *
+   * Balance figures deliberately keep using the unfiltered `transactions` —
+   * the money really did move, so it counts there. */
+  let reportableTransactions = $derived(transactions.filter(countsTowardTotals));
+
   /** The last `monthsCount` months (oldest first), zero-filled so a month with
    * no transactions still shows up as an empty bar rather than a gap. */
   function buildMonthlyTotals(monthsCount: number) {
@@ -123,7 +134,7 @@
       });
     }
     const byKey = new Map(months.map((m) => [m.key, m]));
-    for (const t of transactions) {
+    for (const t of reportableTransactions) {
       const bucket = byKey.get(t.date.slice(0, 7));
       if (!bucket) continue;
       if (t.amount_minor_units < 0) bucket.expense += -t.amount_minor_units;
@@ -159,7 +170,7 @@
   // ---------------------------------------------------------------------------
 
   let spentThisMonth = $derived(
-    transactions.reduce(
+    reportableTransactions.reduce(
       (sum, t) =>
         t.amount_minor_units < 0 && t.date.slice(0, 7) === currentMonthKey
           ? sum - t.amount_minor_units
@@ -172,7 +183,7 @@
    * comparison made on the 3rd isn't measured against a whole month. Days past
    * the end of a shorter month simply contribute nothing. */
   let spentLastMonthToDate = $derived(
-    transactions.reduce((sum, t) => {
+    reportableTransactions.reduce((sum, t) => {
       if (t.amount_minor_units >= 0) return sum;
       if (t.date.slice(0, 7) !== previousMonthKey) return sum;
       if (Number(t.date.slice(8, 10)) > dayOfMonth) return sum;

@@ -61,6 +61,15 @@ impl Money {
         self.minor_units < 0
     }
 
+    /// The same amount pointing the other way — an outflow seen as an
+    /// inflow. Saturating rather than wrapping: `i64::MIN` has no positive
+    /// counterpart, and while no amount reaching this point can be that
+    /// large (importers cap parsed values well below it), silently wrapping
+    /// a balance to the wrong sign is the worst available failure mode.
+    pub fn negated(&self) -> Money {
+        Money::from_minor_units(self.minor_units.saturating_neg(), self.currency.clone())
+    }
+
     pub fn add(&self, other: &Money) -> Result<Money, MoneyError> {
         if self.currency != other.currency {
             return Err(MoneyError::CurrencyMismatch(

@@ -7,7 +7,19 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (2, include_str!("0002_account_opening_balance.sql")),
     (3, include_str!("0003_category_icon.sql")),
     (4, include_str!("0004_drop_transactions_dedup_unique.sql")),
+    (5, include_str!("0005_transfers.sql")),
 ];
+
+/// The version a freshly created database ends up at. Derived from
+/// [`MIGRATIONS`] rather than written out, so adding a migration can't leave
+/// a stale number behind for a test to assert against.
+#[cfg(test)]
+pub fn latest_version() -> i64 {
+    MIGRATIONS
+        .last()
+        .map(|(version, _)| *version)
+        .unwrap_or_default()
+}
 
 /// Applies any migration whose version isn't yet recorded in
 /// `schema_migrations`, in order, each inside its own transaction. Safe to
@@ -39,4 +51,109 @@ pub fn run(conn: &mut Connection) -> rusqlite::Result<()> {
         tx.commit()?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Applies migrations up to and including `through`, leaving the
+    /// database at that version — the state a user's existing file is in
+    /// before an upgrade.
+    fn conn_at_version(through: i64) -> Connection {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        for (version, sql) in MIGRATIONS.iter().filter(|(v, _)| *v <= through) {
+            let tx = conn.transaction().unwrap();
+            tx.execute_batch(sql).unwrap();
+            tx.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, datetime('now'))",
+                [version],
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        conn
+    }
+
+    fn seed_one_transaction(conn: &Connection) {
+        conn.execute_batch(
+            "INSERT INTO accounts (id, name, created_at, updated_at)
+                 VALUES ('a', 'Checking', '2026-01-01', '2026-01-01');
+             INSERT INTO categories (id, name, created_at)
+                 VALUES ('c', 'Groceries', '2026-01-01');
+             INSERT INTO transactions
+                 (id, date, amount_minor_units, source, category_id, account_id,
+                  dedup_key, created_at)
+                 VALUES ('t', '2026-01-15', -1200, 'Whole Foods', 'c', 'a',
+                         'key', '2026-01-15');",
+        )
+        .unwrap();
+    }
+
+    /// Upgrading a database that already holds a ledger must not fail and
+    /// must not disturb what's in it. `role` is NOT NULL, so its default is
+    /// the only thing standing between an existing row and a failed
+    /// migration on the user's real file.
+    #[test]
+    fn migration_5_backfills_existing_transactions_as_normal() {
+        let mut conn = conn_at_version(4);
+        seed_one_transaction(&conn);
+
+        run(&mut conn).unwrap();
+
+        let (role, group_id): (String, Option<String>) = conn
+            .query_row(
+                "SELECT role, transfer_group_id FROM transactions WHERE id = 't'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(role, "normal");
+        assert_eq!(group_id, None);
+    }
+
+    #[test]
+    fn migration_5_preserves_existing_transaction_data() {
+        let mut conn = conn_at_version(4);
+        seed_one_transaction(&conn);
+
+        run(&mut conn).unwrap();
+
+        let (amount, source): (i64, String) = conn
+            .query_row(
+                "SELECT amount_minor_units, source FROM transactions WHERE id = 't'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(amount, -1_200);
+        assert_eq!(source, "Whole Foods");
+    }
+
+    #[test]
+    fn run_is_safe_to_call_again_on_an_already_migrated_database() {
+        let mut conn = conn_at_version(4);
+        seed_one_transaction(&conn);
+        run(&mut conn).unwrap();
+
+        run(&mut conn).unwrap();
+
+        let applied: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(applied, MIGRATIONS.len() as i64);
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
+    }
 }

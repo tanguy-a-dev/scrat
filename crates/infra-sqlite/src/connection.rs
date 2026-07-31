@@ -107,7 +107,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(applied_version, 4);
+        assert_eq!(applied_version, crate::migrations::latest_version());
     }
 
     #[test]

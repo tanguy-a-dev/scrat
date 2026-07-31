@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { message } from "@tauri-apps/plugin-dialog";
+  import { toast } from "$lib/toasts.svelte";
   import {
     api,
     buildCategoryOptions,
@@ -137,13 +138,21 @@
           });
         }
       });
-      await api.commitCsvImport(
+      const summary = await api.commitCsvImport(
         rows,
         selectedCategoryId || null,
         selectedAccountId || null,
       );
       onImported();
       onClose();
+      // Mirrored rows wrote entries on an account the user didn't import
+      // into, so its balance just changed without them asking. Say it
+      // plainly rather than let them find it later and wonder.
+      if (summary.mirrored > 0) {
+        toast.success(
+          `${summary.imported} imported, ${summary.mirrored} recognized as transfers and mirrored onto the other account.`,
+        );
+      }
     } catch (e) {
       await message(String(e), { title: "Import CSV", kind: "error" });
     } finally {

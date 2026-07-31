@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import {
     api,
+    countsTowardTotals,
     formatCurrency,
     computeRange,
     todayIsoDate,
@@ -159,9 +160,15 @@
 
   // Only categories with at least one transaction in the selected date
   // range are worth showing as a filter — an empty one is just noise.
+  /** This whole page is a breakdown of spending and income, so transfers
+   * between the user's own accounts and reconciliation adjustments are
+   * excluded outright — they would show up as a category slice representing
+   * money that was never spent. */
+  let reportableTransactions = $derived(transactions.filter(countsTowardTotals));
+
   let presentRootIds = $derived.by(() => {
     const ids = new Set<string>();
-    for (const t of transactions) ids.add(rootCategoryId(t.category_id));
+    for (const t of reportableTransactions) ids.add(rootCategoryId(t.category_id));
     return ids;
   });
 
@@ -170,7 +177,7 @@
   );
 
   let filteredTransactions = $derived(
-    transactions.filter((t) => !excludedRootIds.has(rootCategoryId(t.category_id))),
+    reportableTransactions.filter((t) => !excludedRootIds.has(rootCategoryId(t.category_id))),
   );
 
   let currency = $derived(transactions[0]?.currency ?? "EUR");

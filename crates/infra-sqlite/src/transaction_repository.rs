@@ -4,7 +4,9 @@ use scrat_domain::account::AccountId;
 use scrat_domain::category::CategoryId;
 use scrat_domain::money::{Currency, Money};
 use scrat_domain::ports::{RepositoryError, TransactionRepository};
-use scrat_domain::transaction::{SourceText, Transaction, TransactionId};
+use scrat_domain::transaction::{
+    SourceText, Transaction, TransactionId, TransactionRole, TransferGroupId,
+};
 
 pub struct SqliteTransactionRepository<'a> {
     conn: &'a Connection,
@@ -35,8 +37,26 @@ impl<'a> SqliteTransactionRepository<'a> {
             rusqlite::Error::InvalidColumnType(0, e.to_string(), rusqlite::types::Type::Text)
         })?;
 
+        let role: String = row.get("role")?;
+        let role = TransactionRole::parse(&role).map_err(invalid_column)?;
+        let transfer_group_id: Option<String> = row.get("transfer_group_id")?;
+        let transfer_group_id = transfer_group_id
+            .map(|raw| TransferGroupId::parse(&raw))
+            .transpose()
+            .map_err(invalid_column)?;
+
         let amount = Money::from_minor_units(amount_minor_units, self.currency.clone());
-        Transaction::new(id, date, amount, source, category_id, account_id).map_err(invalid_column)
+        Transaction::new_with_role(
+            id,
+            date,
+            amount,
+            source,
+            category_id,
+            account_id,
+            role,
+            transfer_group_id,
+        )
+        .map_err(invalid_column)
     }
 }
 
@@ -49,8 +69,14 @@ fn sql_err(e: rusqlite::Error) -> RepositoryError {
 }
 
 const INSERT_SQL: &str = "INSERT INTO transactions
-    (id, date, amount_minor_units, source, category_id, account_id, dedup_key, created_at)
- VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)";
+    (id, date, amount_minor_units, source, category_id, account_id, dedup_key, created_at,
+     role, transfer_group_id)
+ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)";
+
+/// Every column `row_to_transaction` reads, so the three read paths can't
+/// drift apart and silently drop a role or a transfer group.
+const SELECT_COLUMNS: &str = "id, date, amount_minor_units, source, category_id, account_id,
+     role, transfer_group_id";
 
 impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
     fn insert(&self, transaction: &Transaction) -> Result<(), RepositoryError> {
@@ -68,6 +94,8 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
                     transaction.account_id().as_string(),
                     transaction.dedup_key().as_str(),
                     now,
+                    transaction.role().as_str(),
+                    transaction.transfer_group_id().map(|id| id.as_string()),
                 ],
             )
             .map_err(sql_err)?;
@@ -79,6 +107,29 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
             .execute(
                 "DELETE FROM transactions WHERE id = ?1",
                 params![id.as_string()],
+            )
+            .map_err(sql_err)?;
+        Ok(())
+    }
+
+    fn find_by_id(&self, id: TransactionId) -> Result<Option<Transaction>, RepositoryError> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "SELECT {SELECT_COLUMNS} FROM transactions WHERE id = ?1"
+            ))
+            .map_err(sql_err)?;
+        let mut rows = stmt
+            .query_map(params![id.as_string()], |row| self.row_to_transaction(row))
+            .map_err(sql_err)?;
+        rows.next().transpose().map_err(sql_err)
+    }
+
+    fn delete_transfer_group(&self, group_id: TransferGroupId) -> Result<(), RepositoryError> {
+        self.conn
+            .execute(
+                "DELETE FROM transactions WHERE transfer_group_id = ?1",
+                params![group_id.as_string()],
             )
             .map_err(sql_err)?;
         Ok(())
@@ -105,10 +156,10 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
     ) -> Result<Vec<Transaction>, RepositoryError> {
         let mut stmt = self
             .conn
-            .prepare(
-                "SELECT id, date, amount_minor_units, source, category_id, account_id
-                 FROM transactions WHERE date >= ?1 AND date <= ?2 ORDER BY date DESC",
-            )
+            .prepare(&format!(
+                "SELECT {SELECT_COLUMNS}
+                     FROM transactions WHERE date >= ?1 AND date <= ?2 ORDER BY date DESC"
+            ))
             .map_err(sql_err)?;
         let rows = stmt
             .query_map(
@@ -127,10 +178,9 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
     fn list_all(&self) -> Result<Vec<Transaction>, RepositoryError> {
         let mut stmt = self
             .conn
-            .prepare(
-                "SELECT id, date, amount_minor_units, source, category_id, account_id
-                 FROM transactions ORDER BY date DESC",
-            )
+            .prepare(&format!(
+                "SELECT {SELECT_COLUMNS} FROM transactions ORDER BY date DESC"
+            ))
             .map_err(sql_err)?;
         let rows = stmt
             .query_map([], |row| self.row_to_transaction(row))
@@ -354,6 +404,115 @@ mod tests {
             .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].category_id(), other_category.id());
+    }
+
+    /// A stored row has to come back with the role and group it went in
+    /// with — a mirrored leg that reloads as `Normal` would quietly start
+    /// counting as income on the counterpart account.
+    #[test]
+    fn role_and_transfer_group_survive_a_roundtrip() {
+        let conn = test_conn();
+        let (account_id, category_id) = seed_account_and_category(&conn);
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        let group_id = TransferGroupId::new();
+        let transfer = Transaction::new_with_role(
+            TransactionId::new(),
+            NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+            Money::from_minor_units(-25_000, usd()),
+            SourceText::new("Virement N26").unwrap(),
+            category_id,
+            account_id,
+            TransactionRole::Transfer,
+            Some(group_id),
+        )
+        .unwrap();
+        repo.insert(&transfer).unwrap();
+
+        let reloaded = repo.find_by_id(transfer.id()).unwrap().unwrap();
+
+        assert_eq!(reloaded.role(), TransactionRole::Transfer);
+        assert_eq!(reloaded.transfer_group_id(), Some(group_id));
+    }
+
+    #[test]
+    fn an_ordinary_transaction_reloads_as_normal_with_no_group() {
+        let conn = test_conn();
+        let (account_id, category_id) = seed_account_and_category(&conn);
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        let transaction = Transaction::new(
+            TransactionId::new(),
+            NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+            Money::from_minor_units(-1_200, usd()),
+            SourceText::new("Whole Foods").unwrap(),
+            category_id,
+            account_id,
+        )
+        .unwrap();
+        repo.insert(&transaction).unwrap();
+
+        let reloaded = repo.find_by_id(transaction.id()).unwrap().unwrap();
+
+        assert_eq!(reloaded.role(), TransactionRole::Normal);
+        assert_eq!(reloaded.transfer_group_id(), None);
+    }
+
+    #[test]
+    fn find_by_id_returns_none_for_an_unknown_id() {
+        let conn = test_conn();
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+
+        assert!(repo.find_by_id(TransactionId::new()).unwrap().is_none());
+    }
+
+    /// Both legs go, and nothing else does.
+    #[test]
+    fn delete_transfer_group_removes_both_legs_and_leaves_others() {
+        let conn = test_conn();
+        let (account_id, category_id) = seed_account_and_category(&conn);
+        let counterpart_account_id = {
+            let account_repo = crate::SqliteAccountRepository::new(&conn, usd());
+            let account = Account::new(
+                AccountId::new(),
+                AccountName::new("Neobank").unwrap(),
+                Money::zero(usd()),
+            );
+            account_repo.insert(&account).unwrap();
+            account.id()
+        };
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        let group_id = TransferGroupId::new();
+        let outflow = Transaction::new_with_role(
+            TransactionId::new(),
+            NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+            Money::from_minor_units(-25_000, usd()),
+            SourceText::new("Virement N26").unwrap(),
+            category_id,
+            account_id,
+            TransactionRole::Transfer,
+            Some(group_id),
+        )
+        .unwrap();
+        let inflow = outflow
+            .mirrored_onto(counterpart_account_id, group_id)
+            .unwrap();
+        repo.insert(&outflow).unwrap();
+        repo.insert(&inflow).unwrap();
+        let unrelated = Transaction::new(
+            TransactionId::new(),
+            NaiveDate::from_ymd_opt(2026, 1, 16).unwrap(),
+            Money::from_minor_units(-450, usd()),
+            SourceText::new("Boulangerie").unwrap(),
+            category_id,
+            account_id,
+        )
+        .unwrap();
+        repo.insert(&unrelated).unwrap();
+
+        repo.delete_transfer_group(group_id).unwrap();
+
+        let remaining = repo.list_all().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id(), unrelated.id());
     }
 
     #[test]

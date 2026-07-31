@@ -2,7 +2,9 @@ use chrono::NaiveDate;
 use scrat_application::transaction_service::ImportRow;
 use scrat_domain::account::AccountId;
 use scrat_domain::category::CategoryId;
+use scrat_domain::ports::TransferRuleRepository;
 use scrat_infra_csv::build_preview;
+use scrat_infra_sqlite::SqliteTransferRuleRepository;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -88,6 +90,12 @@ pub struct ImportCommitRowDto {
 #[derive(Debug, Serialize)]
 pub struct ImportSummaryDto {
     pub imported: usize,
+    /// How many imported rows a transfer rule recognized as money moving to
+    /// another of the user's own accounts, and so also wrote a mirrored leg
+    /// on that account. Surfaced so the import confirmation can say the
+    /// counterpart was updated too — otherwise those entries appear on an
+    /// account the user never imported anything into.
+    pub mirrored: usize,
 }
 
 struct ParsedCommitRow {
@@ -124,7 +132,7 @@ pub fn commit_csv_import(
         })
         .collect::<Result<Vec<_>, String>>()?;
 
-    let (default_category_id, account_id) = {
+    let (default_category_id, account_id, transfer_rules) = {
         let guard = state.0.lock().unwrap();
         let conn = guard
             .as_ref()
@@ -139,7 +147,12 @@ pub fn commit_csv_import(
                 "no destination account chosen, and no default account is set — pick one, or set a default in Accounts".to_string()
             })?,
         };
-        (default_category_id, account_id)
+        // Read here rather than inside `with_service` below, which locks the
+        // same mutex and would deadlock.
+        let transfer_rules = SqliteTransferRuleRepository::new(conn)
+            .list_all()
+            .map_err(|e| e.to_string())?;
+        (default_category_id, account_id, transfer_rules)
     };
 
     with_service(&state, |s| {
@@ -177,9 +190,10 @@ pub fn commit_csv_import(
             })
             .collect::<Result<Vec<_>, scrat_application::transaction_service::ApplicationError>>(
             )?;
-        s.import_transactions(&import_rows, account_id)
+        s.import_transactions(&import_rows, account_id, &transfer_rules)
     })
     .map(|outcome| ImportSummaryDto {
         imported: outcome.imported,
+        mirrored: outcome.mirrored,
     })
 }

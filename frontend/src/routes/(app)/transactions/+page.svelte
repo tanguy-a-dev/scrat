@@ -17,8 +17,13 @@
   import ImportCsvDialog from "$lib/ImportCsvDialog.svelte";
   import DeleteButton from "$lib/DeleteButton.svelte";
   import CategorySelect from "$lib/CategorySelect.svelte";
+  import FilterPopover from "$lib/FilterPopover.svelte";
   import { toast } from "$lib/toasts.svelte";
-  import { FileUp, Plus } from "@lucide/svelte";
+  import { FileUp, Plus, Search } from "@lucide/svelte";
+
+  function autofocus(node: HTMLElement) {
+    node.focus();
+  }
 
   let showImportDialog = $state(false);
   let showAddForm = $state(false);
@@ -50,6 +55,8 @@
   type SortField = "date" | "amount" | "source" | "category";
   let sortField = $state<SortField>("date");
   let sortDir = $state<"asc" | "desc">("desc");
+  let categoryFilter = $state("");
+  let sourceFilter = $state("");
 
   let formDate = $state(todayIsoDate());
   let formAmount = $state("");
@@ -97,6 +104,10 @@
   }
 
   let categoryOptions = $derived(buildCategoryOptions(categories));
+  let categoryFilterOptions = $derived([
+    { id: "", label: "All categories" },
+    ...categoryOptions,
+  ]);
 
   async function handleSourceBlur() {
     const source = formSource.trim();
@@ -160,11 +171,18 @@
     }
   }
 
-  async function handleDelete(id: string) {
+  async function handleDelete(t: TransactionDto) {
     try {
-      await api.deleteTransaction(id);
+      await api.deleteTransaction(t.id);
       await load();
-      toast.success("Transaction deleted.");
+      // Deleting one leg of a transfer deletes the other, on an account the
+      // user may not even be looking at — say so rather than let a balance
+      // change somewhere else go unexplained.
+      toast.success(
+        t.role === "transfer"
+          ? "Transfer deleted, on both accounts."
+          : "Transaction deleted.",
+      );
     } catch (e) {
       toast.error(String(e));
     }
@@ -194,18 +212,27 @@
     });
   }
 
+  let filteredTransactions = $derived.by(() => {
+    const source = sourceFilter.trim().toLowerCase();
+    return transactions.filter(
+      (t) =>
+        (!categoryFilter || t.category_id === categoryFilter) &&
+        (!source || t.source.toLowerCase().includes(source)),
+    );
+  });
   let expenses = $derived(
-    sortTransactions(transactions.filter((t) => t.amount_minor_units < 0)),
+    sortTransactions(
+      filteredTransactions.filter((t) => t.amount_minor_units < 0),
+    ),
   );
   let income = $derived(
-    sortTransactions(transactions.filter((t) => t.amount_minor_units > 0)),
+    sortTransactions(
+      filteredTransactions.filter((t) => t.amount_minor_units > 0),
+    ),
   );
 </script>
 
 {#snippet list(items: TransactionDto[])}
-  {#if items.length === 0}
-    <p class="empty">No transactions.</p>
-  {:else}
     <table>
       <thead>
         <tr>
@@ -219,45 +246,86 @@
               >Amount</button
             ></th
           >
-          <th
-            ><button type="button" onclick={() => toggleSort("source")}
-              >Source</button
-            ></th
-          >
-          <th
-            ><button type="button" onclick={() => toggleSort("category")}
-              >Category</button
-            ></th
-          >
+          <th>
+            <div class="column-header">
+              <button type="button" onclick={() => toggleSort("source")}
+                >Source</button
+              >
+              <FilterPopover
+                active={sourceFilter.trim() !== ""}
+                ariaLabel="Filter by source"
+              >
+                <input
+                  bind:value={sourceFilter}
+                  use:autofocus
+                  placeholder="Search source…"
+                  spellcheck="false"
+                  autocomplete="off"
+                  autocorrect="off"
+                  autocapitalize="off"
+                />
+              </FilterPopover>
+            </div>
+          </th>
+          <th>
+            <div class="column-header">
+              <button type="button" onclick={() => toggleSort("category")}
+                >Category</button
+              >
+              <CategorySelect
+                options={categoryFilterOptions}
+                value={categoryFilter}
+                onChange={(id) => (categoryFilter = id)}
+              >
+                {#snippet trigger()}
+                  <Search size={14} aria-label="Filter by category" />
+                {/snippet}
+              </CategorySelect>
+            </div>
+          </th>
           <th>Account</th>
           <th></th>
         </tr>
       </thead>
       <tbody>
-        {#each items as t (t.id)}
-          <tr>
-            <td>{t.date}</td>
-            <td>{formatCurrency(t.amount_minor_units, t.currency)}</td>
-            <td>{t.source}</td>
-            <td>
-              <CategorySelect
-                options={categoryOptions}
-                value={t.category_id}
-                onChange={(categoryId) => handleCategoryChange(t, categoryId)}
-              />
-            </td>
-            <td>{accountName(t.account_id)}</td>
-            <td>
-              <DeleteButton
-                label="Delete transaction"
-                onConfirm={() => handleDelete(t.id)}
-              />
-            </td>
-          </tr>
-        {/each}
+        {#if items.length === 0}
+          <tr><td class="empty" colspan="6">No transactions.</td></tr>
+        {:else}
+          {#each items as t (t.id)}
+            <tr>
+              <td>{t.date}</td>
+              <td>{formatCurrency(t.amount_minor_units, t.currency)}</td>
+              <td>
+                {t.source}
+                {#if t.role === "transfer"}
+                  <span class="role-badge" title="Between your own accounts — not counted as spending"
+                    >transfer</span
+                  >
+                {:else if t.role === "adjustment"}
+                  <span class="role-badge" title="Reconciliation — not counted as spending"
+                    >adjustment</span
+                  >
+                {/if}
+              </td>
+              <td>
+                <CategorySelect
+                  options={categoryOptions}
+                  value={t.category_id}
+                  onChange={(categoryId) => handleCategoryChange(t, categoryId)}
+                />
+              </td>
+              <td>{accountName(t.account_id)}</td>
+              <td>
+                <DeleteButton
+                  label="Delete transaction"
+                  onConfirm={() => handleDelete(t)}
+                />
+              </td>
+            </tr>
+          {/each}
+        {/if}
       </tbody>
     </table>
-  {/if}
 {/snippet}
 
 <h1>Transactions</h1>
@@ -381,6 +449,21 @@
 
   .empty {
     opacity: 0.75;
+    padding: 0.6rem 0.5rem;
+  }
+
+  /* Marks a row that is deliberately absent from Overview and Details, so
+     the ledger and the reports can't look like they disagree. */
+  .role-badge {
+    margin-left: 0.4rem;
+    padding: 0.05rem 0.35rem;
+    border: 1px solid var(--color-border);
+    border-radius: 0.5rem;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    opacity: 0.7;
+    white-space: nowrap;
   }
 
   .range-bar {
@@ -486,6 +569,12 @@
     font-size: 0.85rem;
     cursor: pointer;
     color: inherit;
+  }
+
+  .column-header {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
   }
 
   td {
