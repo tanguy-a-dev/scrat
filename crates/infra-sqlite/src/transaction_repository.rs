@@ -189,6 +189,26 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
             .map_err(sql_err)?;
         Ok(rows)
     }
+
+    fn list_page(&self, offset: i64, limit: i64) -> Result<Vec<Transaction>, RepositoryError> {
+        // `id` breaks ties on same-day transactions — `ORDER BY date DESC`
+        // alone isn't a stable order across separate LIMIT/OFFSET queries,
+        // which would let a row be skipped or repeated as the caller pages
+        // through.
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "SELECT {SELECT_COLUMNS} FROM transactions
+                     ORDER BY date DESC, id DESC LIMIT ?1 OFFSET ?2"
+            ))
+            .map_err(sql_err)?;
+        let rows = stmt
+            .query_map(params![limit, offset], |row| self.row_to_transaction(row))
+            .map_err(sql_err)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sql_err)?;
+        Ok(rows)
+    }
 }
 
 #[cfg(test)]
@@ -339,6 +359,80 @@ mod tests {
         let results = repo.list_all().unwrap();
 
         assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn list_page_walks_the_whole_ledger_without_gaps_or_duplicates() {
+        let conn = test_conn();
+        let (account_id, category_id) = seed_account_and_category(&conn);
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        for day in 1..=25 {
+            repo.insert(
+                &Transaction::new(
+                    TransactionId::new(),
+                    NaiveDate::from_ymd_opt(2026, 1, day).unwrap(),
+                    Money::from_minor_units(-100 * day as i64, usd()),
+                    SourceText::new(&format!("Day {day}")).unwrap(),
+                    category_id,
+                    account_id,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        let mut offset = 0i64;
+        loop {
+            let page = repo.list_page(offset, 10).unwrap();
+            if page.is_empty() {
+                break;
+            }
+            for t in &page {
+                assert!(seen.insert(t.id()), "transaction returned on two pages");
+            }
+            offset += page.len() as i64;
+        }
+
+        assert_eq!(seen.len(), 25);
+    }
+
+    #[test]
+    fn list_page_orders_newest_first() {
+        let conn = test_conn();
+        let (account_id, category_id) = seed_account_and_category(&conn);
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        repo.insert(
+            &Transaction::new(
+                TransactionId::new(),
+                NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                Money::from_minor_units(-100, usd()),
+                SourceText::new("Oldest").unwrap(),
+                category_id,
+                account_id,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        repo.insert(
+            &Transaction::new(
+                TransactionId::new(),
+                NaiveDate::from_ymd_opt(2026, 6, 1).unwrap(),
+                Money::from_minor_units(-100, usd()),
+                SourceText::new("Newest").unwrap(),
+                category_id,
+                account_id,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let page = repo.list_page(0, 10).unwrap();
+
+        assert_eq!(
+            page.iter().map(|t| t.source().as_str()).collect::<Vec<_>>(),
+            vec!["Newest", "Oldest"]
+        );
     }
 
     #[test]

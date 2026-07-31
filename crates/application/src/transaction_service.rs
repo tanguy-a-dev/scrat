@@ -157,6 +157,10 @@ impl<'a> TransactionService<'a> {
         Ok(self.transactions.list_all()?)
     }
 
+    pub fn list_page(&self, offset: i64, limit: i64) -> Result<Vec<Transaction>, ApplicationError> {
+        Ok(self.transactions.list_page(offset, limit)?)
+    }
+
     /// Scans `[start, today]` for recurring commitments — subscriptions, rent,
     /// utilities. Nothing is stored: the result is derived from the ledger on
     /// every call, so cancelling a service and re-importing is all it takes to
@@ -760,6 +764,19 @@ mod tests {
         }
         fn list_all(&self) -> Result<Vec<Transaction>, RepositoryError> {
             Ok(self.transactions.lock().unwrap().clone())
+        }
+        fn list_page(&self, offset: i64, limit: i64) -> Result<Vec<Transaction>, RepositoryError> {
+            let mut sorted = self.transactions.lock().unwrap().clone();
+            sorted.sort_by(|a, b| {
+                b.date()
+                    .cmp(&a.date())
+                    .then(b.id().as_string().cmp(&a.id().as_string()))
+            });
+            Ok(sorted
+                .into_iter()
+                .skip(offset as usize)
+                .take(limit as usize)
+                .collect())
         }
     }
 

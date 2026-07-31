@@ -86,6 +86,13 @@ pub trait TransactionRepository {
     /// (`+262142-12-31`) that sorts before ordinary years in a TEXT
     /// comparison, so that combination silently matches nothing.
     fn list_all(&self) -> Result<Vec<Transaction>, RepositoryError>;
+    /// Newest-first, `limit` transactions starting at `offset` — lets a
+    /// caller walk the whole ledger in fixed-size batches instead of paying
+    /// for `list_all` up front. Batch size is a count, not a calendar
+    /// window, deliberately: a year of history can be one row or one
+    /// hundred thousand depending on the user, so only a row count keeps
+    /// each batch cheap.
+    fn list_page(&self, offset: i64, limit: i64) -> Result<Vec<Transaction>, RepositoryError>;
 }
 
 /// Port for persisting the rules that recognize an imported row as a

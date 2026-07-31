@@ -33,6 +33,7 @@ pub fn run() {
             categories::move_category,
             categories::delete_category,
             transactions::list_transactions,
+            transactions::list_transactions_page,
             transactions::create_transaction,
             transactions::delete_transaction,
             transactions::set_transaction_category,

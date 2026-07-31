@@ -84,6 +84,19 @@ pub fn list_transactions(
         .map(|txs| txs.into_iter().map(TransactionDto::from).collect())
 }
 
+/// Paginated counterpart to `list_transactions`, for the "All Time" view —
+/// walking the whole ledger in fixed-size batches instead of one query that
+/// scans every row up front.
+#[tauri::command]
+pub fn list_transactions_page(
+    state: State<DbState>,
+    offset: i64,
+    limit: i64,
+) -> Result<Vec<TransactionDto>, String> {
+    with_service(&state, |s| s.list_page(offset, limit))
+        .map(|txs| txs.into_iter().map(TransactionDto::from).collect())
+}
+
 #[tauri::command]
 pub fn create_transaction(
     state: State<DbState>,

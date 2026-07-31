@@ -19,7 +19,7 @@
   import CategorySelect from "$lib/CategorySelect.svelte";
   import FilterPopover from "$lib/FilterPopover.svelte";
   import { toast } from "$lib/toasts.svelte";
-  import { FileUp, Plus, Search } from "@lucide/svelte";
+  import { ArrowUp, FileUp, Plus, Search } from "@lucide/svelte";
 
   function autofocus(node: HTMLElement) {
     node.focus();
@@ -52,6 +52,18 @@
   let customEnd = $state(todayIsoDate());
   let currentRange = $state({ start: todayIsoDate(), end: todayIsoDate() });
 
+  // "All Time" fetches a fixed number of transactions per request instead of
+  // the whole ledger in one shot — a single query spanning decades was the
+  // slow path this pagination replaces. Batching by a row count rather than
+  // a calendar year is deliberate: a year of history can be one transaction
+  // or a hundred thousand depending on the user, so only a count keeps each
+  // batch cheap regardless of how activity is distributed over time.
+  const PAGE_SIZE = 300;
+  let nextOffset = $state(0);
+  let allTimeExhausted = $state(false);
+  let loadingMore = $state(false);
+  let sentinel = $state<HTMLDivElement | null>(null);
+
   type SortField = "date" | "amount" | "source" | "category";
   let sortField = $state<SortField>("date");
   let sortDir = $state<"asc" | "desc">("desc");
@@ -69,25 +81,79 @@
   async function load() {
     loading = true;
     error = "";
+    allTimeExhausted = false;
     try {
-      const range = computeRange(rangeMode, {
-        start: customStart,
-        end: customEnd,
-      });
-      currentRange = range;
-      const [a, c, t] = await Promise.all([
+      const [a, c] = await Promise.all([
         api.listAccounts(),
         api.listCategories(),
-        api.listTransactions(range.start, range.end),
       ]);
       accounts = a;
       categories = c;
-      transactions = t;
+
+      if (rangeMode === "all") {
+        const batch = await api.listTransactionsPage(0, PAGE_SIZE);
+        transactions = batch;
+        nextOffset = batch.length;
+        allTimeExhausted = batch.length < PAGE_SIZE;
+      } else {
+        const range = computeRange(rangeMode, {
+          start: customStart,
+          end: customEnd,
+        });
+        currentRange = range;
+        transactions = await api.listTransactions(range.start, range.end);
+      }
     } catch (e) {
       error = String(e);
     } finally {
       loading = false;
     }
+  }
+
+  async function loadMorePage() {
+    if (rangeMode !== "all" || allTimeExhausted || loadingMore) return;
+    loadingMore = true;
+    try {
+      const batch = await api.listTransactionsPage(nextOffset, PAGE_SIZE);
+      // The range mode (or the whole page) may have moved on while this was
+      // in flight — don't splice a stale batch into whatever's showing now.
+      if (rangeMode !== "all") return;
+      transactions = [...transactions, ...batch];
+      nextOffset += batch.length;
+      if (batch.length < PAGE_SIZE) allTimeExhausted = true;
+    } catch (e) {
+      error = String(e);
+    } finally {
+      loadingMore = false;
+    }
+  }
+
+  $effect(() => {
+    if (rangeMode !== "all" || !sentinel) return;
+    const target = sentinel;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) loadMorePage();
+      },
+      { rootMargin: "200px" },
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  });
+
+  let showScrollTop = $state(false);
+
+  $effect(() => {
+    function onScroll() {
+      showScrollTop = window.scrollY > 400;
+    }
+    window.addEventListener("scroll", onScroll);
+    onScroll();
+    return () => window.removeEventListener("scroll", onScroll);
+  });
+
+  function scrollToTop() {
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   function setRange(mode: RangeMode) {
@@ -441,6 +507,27 @@
       {@render list(income)}
     </section>
   </div>
+  {#if rangeMode === "all"}
+    <div bind:this={sentinel} class="scroll-sentinel">
+      {#if loadingMore}
+        <p class="scroll-status">Loading more…</p>
+      {:else if allTimeExhausted}
+        <p class="scroll-status">All transactions loaded.</p>
+      {/if}
+    </div>
+  {/if}
+{/if}
+
+{#if showScrollTop}
+  <button
+    type="button"
+    class="icon-button scroll-top-button"
+    aria-label="Scroll to top"
+    title="Scroll to top"
+    onclick={scrollToTop}
+  >
+    <ArrowUp size={18} />
+  </button>
 {/if}
 
 <style>
@@ -560,6 +647,27 @@
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 2rem;
+  }
+
+  .scroll-sentinel {
+    min-height: 1px;
+  }
+
+  .scroll-status {
+    text-align: center;
+    opacity: 0.6;
+    font-size: 0.85rem;
+    padding: 1rem 0;
+  }
+
+  .scroll-top-button {
+    position: fixed;
+    bottom: 1.5rem;
+    left: 1.5rem;
+    width: 2.5rem;
+    height: 2.5rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    z-index: 10;
   }
 
   h2 {

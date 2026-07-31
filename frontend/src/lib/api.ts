@@ -140,6 +140,8 @@ export const api = {
 
   listTransactions: (start: string, end: string) =>
     invoke<TransactionDto[]>("list_transactions", { start, end }),
+  listTransactionsPage: (offset: number, limit: number) =>
+    invoke<TransactionDto[]>("list_transactions_page", { offset, limit }),
   createTransaction: (
     date: string,
     amountMinorUnits: number,
