@@ -462,20 +462,20 @@
         </div>
       </div>
 
-      {#if slices.length > 0}
-        <ul class="legend">
-          {#each slices as slice (slice.categoryId)}
-            <li
-              class:dimmed={hoveredCategoryId !== null && hoveredCategoryId !== slice.categoryId}
-              onmouseenter={() => (hoveredCategoryId = slice.categoryId)}
-              onmouseleave={() => (hoveredCategoryId = null)}
-            >
-              <span class="dot" style={`background-color:${slice.color}`}></span>
-              <span class="name">{slice.name}</span>
-            </li>
-          {/each}
-        </ul>
-      {/if}
+      <!-- Rendered even when empty: it holds the column that keeps this panel's
+           donut horizontally aligned with the other panel's. -->
+      <ul class="legend">
+        {#each slices as slice (slice.categoryId)}
+          <li
+            class:dimmed={hoveredCategoryId !== null && hoveredCategoryId !== slice.categoryId}
+            onmouseenter={() => (hoveredCategoryId = slice.categoryId)}
+            onmouseleave={() => (hoveredCategoryId = null)}
+          >
+            <span class="dot" style={`background-color:${slice.color}`}></span>
+            <span class="name">{slice.name}</span>
+          </li>
+        {/each}
+      </ul>
     </div>
 
     {#if slices.length === 0}
@@ -667,10 +667,26 @@
   }
 
   .graph-graphics {
-    display: flex;
+    /* The expense and income donuts must sit at the same spot in both columns
+       whatever each one's category count is. As a plain flex row this was sized
+       by its tallest/widest child — the legend — so the panel with more
+       categories pushed its own donut down and sideways relative to the other.
+       A fixed grid instead makes the legend a passenger that can never move the
+       graph: the donut track is the donut's own size, and the row's height is
+       that same size, so a long legend scrolls rather than growing the row.
+
+       The legend track is minmax(0, 8.5rem) rather than a flat 8.5rem so it can
+       give width back when the column is tight (the app's own default 1100px
+       window is tight) instead of forcing the column wider and overflowing.
+       Both columns are equal `1fr`, so the track resolves to the same width in
+       each — the donuts stay aligned at every window size, just closer in. */
+    --donut-size: min(260px, 60vw);
+    display: grid;
+    grid-template-columns: var(--donut-size) minmax(0, 8.5rem);
     align-items: center;
     justify-content: center;
     gap: 1.5rem;
+    height: var(--donut-size);
     margin-bottom: 1.5rem;
   }
 
@@ -679,8 +695,7 @@
        unmounted on navigation and takes its variables with it */
     --donut-track: rgba(255, 255, 255, 0.07);
     position: relative;
-    width: min(260px, 60vw);
-    flex-shrink: 0;
+    width: var(--donut-size);
   }
 
   .donut {
@@ -734,7 +749,15 @@
     display: flex;
     flex-direction: column;
     gap: 0.35rem;
-    max-width: 8.5rem;
+    /* Fills its grid track rather than sizing to its own content: a legend that
+       shrank to fit two short category names would slide its donut sideways
+       while the other panel's stayed put. It also stays rendered (empty) when a
+       panel has no slices, so that track keeps its width. The row gives the
+       height a definite 100% to resolve against, so a long list scrolls here
+       instead of growing the row and dragging the donut down with it. */
+    min-width: 0;
+    max-height: 100%;
+    overflow-y: auto;
     font-size: 0.8rem;
   }
 
