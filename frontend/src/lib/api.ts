@@ -345,6 +345,14 @@ export function todayIsoDate(): string {
   return toIsoDate(new Date());
 }
 
+/** A month-wide default is what makes opening "Set Dates" show a range with
+ * transactions in it right away, instead of a same-day range that's empty
+ * until the user has picked both ends themselves. */
+export function oneMonthAgoIsoDate(): string {
+  const now = new Date();
+  return toIsoDate(new Date(now.getFullYear(), now.getMonth() - 1, now.getDate()));
+}
+
 /** Computes the [start, end] ISO date bounds for a range mode. */
 export function computeRange(
   mode: RangeMode,

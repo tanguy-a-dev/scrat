@@ -6,10 +6,12 @@
     formatCurrency,
     computeRange,
     todayIsoDate,
+    oneMonthAgoIsoDate,
     type CategoryDto,
     type TransactionDto,
     type RangeMode,
   } from "$lib/api";
+  import DateRangePicker from "$lib/DateRangePicker.svelte";
 
   // Validated categorical palette (dark-mode steps) — passes CVD/contrast
   // checks against this app's dark surface. See dataviz skill's palette.md.
@@ -77,7 +79,7 @@
   let error = $state("");
 
   let rangeMode = $state<RangeMode>("month");
-  let customStart = $state(todayIsoDate());
+  let customStart = $state(oneMonthAgoIsoDate());
   let customEnd = $state(todayIsoDate());
 
   let excludedRootIds = $state<Set<string>>(new Set());
@@ -356,9 +358,15 @@
     >
   </div>
   {#if rangeMode === "custom"}
-    <input type="date" bind:value={customStart} onchange={load} />
-    <span>to</span>
-    <input type="date" bind:value={customEnd} onchange={load} />
+    <DateRangePicker
+      start={customStart}
+      end={customEnd}
+      onChange={(s, e) => {
+        customStart = s;
+        customEnd = e;
+        load();
+      }}
+    />
   {/if}
 </div>
 
@@ -642,15 +650,6 @@
     font-size: 1.3rem;
     font-weight: 700;
     white-space: nowrap;
-  }
-
-  input[type="date"] {
-    border-radius: 6px;
-    border: 1px solid var(--color-shade-3);
-    background-color: var(--color-shade-2);
-    color: inherit;
-    padding: 0.4rem 0.6rem;
-    font-family: inherit;
   }
 
   .layout {
