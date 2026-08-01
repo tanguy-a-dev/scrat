@@ -272,10 +272,22 @@
      compared side by side rather than by scrolling. Grid's default stretch
      (no align-items override) makes every card in a row match the row's
      tallest card; CategoryCard.svelte fills that height and grows its
-     subcategory area to absorb the extra space. */
+     subcategory area to absorb the extra space.
+
+     The 22.5rem track floor is tuned against the nav rail, not picked for
+     looks: hovering the rail widens it 4.75rem -> 8.5rem, so `main` loses
+     3.75rem of width mid-interaction. At the previous 19rem floor that swing
+     straddled a column boundary at 1728px (5 columns collapsed, 4 expanded)
+     and again at 1440px (4 -> 3), so just moving the pointer toward the menu
+     reshuffled every card. auto-fill boundaries are 3.75rem-wide danger zones
+     wherever they land, so this floor doesn't remove them — it relocates them:
+     at 22.5rem the column count holds steady across the rail swing at 1366,
+     1440, 1512, 1600, 1680, 1728, 1792, 1920, 2056 and 2560px, leaving only
+     narrow ~1280px windows unstable. Don't retune this without re-checking the
+     count at both nav states across that range. */
   .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(22.5rem, 1fr));
     gap: 0.75rem;
   }
 
