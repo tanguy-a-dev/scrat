@@ -206,20 +206,17 @@
     return cmpMonth(cell, lo) >= 0 && cmpMonth(cell, hi) <= 0;
   }
 
+  // A pending click starts a fresh pick and replaces the old committed range
+  // in the display entirely — otherwise the old start, the old end, and the
+  // new pending click would all show as endpoints at once.
   function isDayEndpoint(cell: Ymd): boolean {
-    return (
-      isSameDay(cell, selectedStart) ||
-      isSameDay(cell, selectedEnd) ||
-      (!!pendingStart && isSameDay(cell, pendingStart))
-    );
+    if (pendingStart) return isSameDay(cell, pendingStart);
+    return isSameDay(cell, selectedStart) || isSameDay(cell, selectedEnd);
   }
 
   function isMonthEndpoint(cell: Ymd): boolean {
-    return (
-      isSameMonth(cell, selectedStart) ||
-      isSameMonth(cell, selectedEnd) ||
-      (!!pendingStart && isSameMonth(cell, pendingStart))
-    );
+    if (pendingStart) return isSameMonth(cell, pendingStart);
+    return isSameMonth(cell, selectedStart) || isSameMonth(cell, selectedEnd);
   }
 </script>
 

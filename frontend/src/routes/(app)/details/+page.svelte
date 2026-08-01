@@ -82,8 +82,6 @@
   let customStart = $state(oneMonthAgoIsoDate());
   let customEnd = $state(todayIsoDate());
 
-  let excludedRootIds = $state<Set<string>>(new Set());
-
   // Hovering the donut slice or the legend entry for a category highlights
   // both plus the matching breakdown row — but not the reverse: hovering the
   // breakdown row only highlights itself, it never drives the graph/legend.
@@ -95,6 +93,16 @@
   // its subcategories as extra rows underneath it, inline in the same list,
   // rather than replacing the panel's own root-level breakdown.
   let expandedCategoryIds = $state<Record<PanelKey, Set<string>>>({
+    expense: new Set(),
+    income: new Set(),
+  });
+
+  // Categories the user has hidden via the eye toggle, per panel. Hiding is
+  // per-panel because the toggle lives on a panel's own breakdown row: hiding
+  // a category from Expenses shouldn't silently reshape the Income donut.
+  // A hidden category's transactions drop out of that panel's total, so every
+  // other category's percentage recomputes over what's left.
+  let hiddenCategoryIds = $state<Record<PanelKey, Set<string>>>({
     expense: new Set(),
     income: new Set(),
   });
@@ -176,11 +184,19 @@
     load();
   }
 
-  function toggleRootCategory(id: string) {
-    const next = new Set(excludedRootIds);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    excludedRootIds = next;
+  function toggleHidden(panel: PanelKey, categoryId: string) {
+    const next = new Set(hiddenCategoryIds[panel]);
+    if (next.has(categoryId)) next.delete(categoryId);
+    else next.add(categoryId);
+    hiddenCategoryIds = { ...hiddenCategoryIds, [panel]: next };
+  }
+
+  // Hiding a root hides everything under it, so a subcategory is out whenever
+  // it is hidden itself *or* its root is — otherwise unhiding a root would
+  // have to re-add each of its children one by one.
+  function isHidden(panel: PanelKey, categoryId: string): boolean {
+    const hidden = hiddenCategoryIds[panel];
+    return hidden.has(categoryId) || hidden.has(rootCategoryId(categoryId));
   }
 
   let rootMap = $derived.by(() => {
@@ -205,39 +221,37 @@
     return categories.find((c) => c.id === id)?.name ?? "Uncategorized";
   }
 
-  // Only categories with at least one transaction in the selected date
-  // range are worth showing as a filter — an empty one is just noise.
   /** This whole page is a breakdown of spending and income, so transfers
    * between the user's own accounts and reconciliation adjustments are
    * excluded outright — they would show up as a category slice representing
    * money that was never spent. */
   let reportableTransactions = $derived(transactions.filter(countsTowardTotals));
 
-  let presentRootIds = $derived.by(() => {
-    const ids = new Set<string>();
-    for (const t of reportableTransactions) ids.add(rootCategoryId(t.category_id));
-    return ids;
-  });
-
-  let rootCategories = $derived(
-    categories.filter((c) => c.parent_id === null && presentRootIds.has(c.id)),
-  );
-
-  let filteredTransactions = $derived(
-    reportableTransactions.filter((t) => !excludedRootIds.has(rootCategoryId(t.category_id))),
-  );
-
   let currency = $derived(transactions[0]?.currency ?? "EUR");
 
-  let netLeftMinorUnits = $derived(
-    filteredTransactions.reduce((sum, t) => sum + t.amount_minor_units, 0),
-  );
-
+  // Each panel keeps both sets: the visible transactions drive the donut and
+  // every percentage, while the full set is what still knows a hidden
+  // category exists at all — its row has to stay in the list, or there'd be
+  // no eye left to click to bring it back.
   let expenseTransactions = $derived(
-    filteredTransactions.filter((t) => t.amount_minor_units < 0),
+    reportableTransactions.filter((t) => t.amount_minor_units < 0),
   );
   let incomeTransactions = $derived(
-    filteredTransactions.filter((t) => t.amount_minor_units > 0),
+    reportableTransactions.filter((t) => t.amount_minor_units > 0),
+  );
+
+  let visibleExpenseTransactions = $derived(
+    expenseTransactions.filter((t) => !isHidden("expense", t.category_id)),
+  );
+  let visibleIncomeTransactions = $derived(
+    incomeTransactions.filter((t) => !isHidden("income", t.category_id)),
+  );
+
+  let netLeftMinorUnits = $derived(
+    [...visibleExpenseTransactions, ...visibleIncomeTransactions].reduce(
+      (sum, t) => sum + t.amount_minor_units,
+      0,
+    ),
   );
 
   // scopeRootId narrows to one root category's transactions and groups by
@@ -262,6 +276,32 @@
       }))
       .sort((a, b) => b.amountMinorUnits - a.amountMinorUnits);
     return { total, breakdown };
+  }
+
+  // Rows for the categories this panel is currently hiding: they carry their
+  // real amount (so the user can see what they're leaving out) but no share,
+  // since by definition they're no longer part of the total the shares are of.
+  function hiddenRows(
+    panel: PanelKey,
+    txns: TransactionDto[],
+    scopeRootId: string | null,
+  ) {
+    const hidden = hiddenCategoryIds[panel];
+    const sums = new Map<string, number>();
+    for (const t of txns) {
+      const root = rootCategoryId(t.category_id);
+      if (scopeRootId !== null && root !== scopeRootId) continue;
+      const key = scopeRootId ? t.category_id : root;
+      if (!hidden.has(key)) continue;
+      sums.set(key, (sums.get(key) ?? 0) + Math.abs(t.amount_minor_units));
+    }
+    return [...sums.entries()]
+      .map(([categoryId, amountMinorUnits]) => ({
+        categoryId,
+        name: categoryName(categoryId),
+        amountMinorUnits,
+      }))
+      .sort((a, b) => b.amountMinorUnits - a.amountMinorUnits);
   }
 
   // Colored (but non-animated) breakdown of one root category's subcategories,
@@ -313,8 +353,8 @@
     });
   }
 
-  let expenseData = $derived.by(() => buildBreakdown(expenseTransactions, null));
-  let incomeData = $derived.by(() => buildBreakdown(incomeTransactions, null));
+  let expenseData = $derived.by(() => buildBreakdown(visibleExpenseTransactions, null));
+  let incomeData = $derived.by(() => buildBreakdown(visibleIncomeTransactions, null));
 
   let animatedExpenseSlices = $derived(
     withAnimatedSlices(withDonutSlices(expenseData.breakdown)),
@@ -322,6 +362,9 @@
   let animatedIncomeSlices = $derived(
     withAnimatedSlices(withDonutSlices(incomeData.breakdown)),
   );
+
+  let expenseHiddenRows = $derived(hiddenRows("expense", expenseTransactions, null));
+  let incomeHiddenRows = $derived(hiddenRows("income", incomeTransactions, null));
 
   $effect(() => {
     expenseData;
@@ -370,12 +413,32 @@
   {/if}
 </div>
 
+{#snippet eyeToggle(panel: PanelKey, categoryId: string, name: string, hidden: boolean)}
+  <button
+    type="button"
+    class="eye-btn"
+    class:is-hidden={hidden}
+    aria-pressed={hidden}
+    title={hidden ? `Show ${name}` : `Hide ${name}`}
+    aria-label={hidden ? `Show ${name}` : `Hide ${name}`}
+    onclick={() => toggleHidden(panel, categoryId)}
+  >
+    <svg class="eye" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M2 12s3.8-6.6 10-6.6 10 6.6 10 6.6-3.8 6.6-10 6.6S2 12 2 12Z" />
+      <circle cx="12" cy="12" r="3.1" />
+      {#if hidden}<line x1="4" y1="20" x2="20" y2="4" />{/if}
+    </svg>
+  </button>
+{/snippet}
+
 {#snippet donutPanel(
   label: string,
   panelKey: PanelKey,
   total: number,
   slices: typeof animatedExpenseSlices,
   txns: TransactionDto[],
+  allTxns: TransactionDto[],
+  hidden: { categoryId: string; name: string; amountMinorUnits: number }[],
 )}
   <div class="graph-column">
     <h2 class="panel-title">{label}</h2>
@@ -486,61 +549,120 @@
       </ul>
     </div>
 
-    {#if slices.length === 0}
+    {#if slices.length === 0 && hidden.length === 0}
       <p class="empty">No {label.toLowerCase()} in this range.</p>
     {:else}
       <ul class="breakdown">
         {#each slices as slice (slice.categoryId)}
-          {@const hasChildren = hasVisibleSubcategories(txns, slice.categoryId)}
+          {@const hasChildren = hasVisibleSubcategories(allTxns, slice.categoryId)}
           {@const expanded = expandedCategoryIds[panelKey].has(slice.categoryId)}
+          {@const subHidden = hiddenRows(panelKey, allTxns, slice.categoryId)}
           <li
             class:dimmed={hoveredCategoryId !== null && hoveredCategoryId !== slice.categoryId}
           >
-            <button
-              type="button"
-              class="breakdown-row"
-              class:clickable={hasChildren}
-              disabled={!hasChildren}
-              onclick={() => toggleExpand(panelKey, slice.categoryId)}
-            >
-              <div class="row">
-                <span class="chevron" class:expanded class:hidden={!hasChildren}>›</span>
-                <span class="dot" style={`background-color:${slice.color}`}></span>
-                <span class="name">{slice.name}</span>
-                <span class="amount">{formatCurrency(slice.amountMinorUnits, currency)}</span>
-                <span class="percent">{slice.percent.toFixed(1)}%</span>
-              </div>
-              <div class="bar-track">
-                <div
-                  class="bar-fill"
-                  style={`width:${slice.animatedPercent}%;background-color:${slice.color}`}
-                ></div>
-              </div>
-            </button>
+            <div class="breakdown-row">
+              <button
+                type="button"
+                class="row-main"
+                class:clickable={hasChildren}
+                disabled={!hasChildren}
+                onclick={() => toggleExpand(panelKey, slice.categoryId)}
+              >
+                <div class="row">
+                  <span class="chevron" class:expanded class:invisible={!hasChildren}>›</span>
+                  <span class="dot" style={`background-color:${slice.color}`}></span>
+                  <span class="name">{slice.name}</span>
+                  <span class="amount">{formatCurrency(slice.amountMinorUnits, currency)}</span>
+                  <span class="percent">{slice.percent.toFixed(1)}%</span>
+                </div>
+                <div class="bar-track">
+                  <div
+                    class="bar-fill"
+                    style={`width:${slice.animatedPercent}%;background-color:${slice.color}`}
+                  ></div>
+                </div>
+              </button>
+              {@render eyeToggle(panelKey, slice.categoryId, slice.name, false)}
+            </div>
 
             {#if hasChildren && expanded}
               <ul class="sub-breakdown">
                 {#each subCategoryBreakdown(txns, slice.categoryId, total) as sub (sub.categoryId)}
                   <li class="sub-row">
-                    <div class="row">
-                      <span class="dot" style={`background-color:${sub.color}`}></span>
-                      <span class="name">{sub.name}</span>
-                      <span class="amount">{formatCurrency(sub.amountMinorUnits, currency)}</span>
-                      <span class="percent">{sub.percent.toFixed(1)}% of {slice.name}</span>
+                    <div class="breakdown-row">
+                      <div class="row-main">
+                        <div class="row">
+                          <span class="dot" style={`background-color:${sub.color}`}></span>
+                          <span class="name">{sub.name}</span>
+                          <span class="amount"
+                            >{formatCurrency(sub.amountMinorUnits, currency)}</span
+                          >
+                          <span class="percent">{sub.percent.toFixed(1)}% of {slice.name}</span>
+                        </div>
+                        <div class="bar-track">
+                          <div
+                            class="bar-fill"
+                            style={`width:${sub.percent}%;background-color:${sub.color}`}
+                          ></div>
+                        </div>
+                        <div class="percent-of-total">
+                          {sub.percentOfTotal.toFixed(1)}% of total {label.toLowerCase()}
+                        </div>
+                      </div>
+                      <!-- A parent's transactions logged directly against it
+                           (rather than a child) surface as a sub-row carrying
+                           the parent's own id — so an eye here would be the
+                           parent's eye, hiding the whole branch from inside
+                           itself. The parent row above already owns that
+                           toggle; this row just gets a spacer to stay aligned. -->
+                      {#if sub.categoryId === slice.categoryId}
+                        <span class="eye-spacer"></span>
+                      {:else}
+                        {@render eyeToggle(panelKey, sub.categoryId, sub.name, false)}
+                      {/if}
                     </div>
-                    <div class="bar-track">
-                      <div
-                        class="bar-fill"
-                        style={`width:${sub.percent}%;background-color:${sub.color}`}
-                      ></div>
-                    </div>
-                    <div class="percent-of-total">
-                      {sub.percentOfTotal.toFixed(1)}% of total {label.toLowerCase()}
+                  </li>
+                {/each}
+
+                {#each subHidden as sub (sub.categoryId)}
+                  <li class="sub-row hidden-cat">
+                    <div class="breakdown-row">
+                      <div class="row-main">
+                        <div class="row">
+                          <span class="dot muted"></span>
+                          <span class="name">{sub.name}</span>
+                          <span class="amount"
+                            >{formatCurrency(sub.amountMinorUnits, currency)}</span
+                          >
+                          <span class="percent">—</span>
+                        </div>
+                      </div>
+                      {@render eyeToggle(panelKey, sub.categoryId, sub.name, true)}
                     </div>
                   </li>
                 {/each}
               </ul>
             {/if}
+          </li>
+        {/each}
+
+        <!-- Hidden categories sink to the bottom of the list: they're out of
+             the ranking, and keeping them in place would leave gaps in what
+             reads as a sorted top-to-bottom breakdown. -->
+        {#each hidden as row (row.categoryId)}
+          <li class="hidden-cat">
+            <div class="breakdown-row">
+              <div class="row-main">
+                <div class="row">
+                  <span class="chevron invisible">›</span>
+                  <span class="dot muted"></span>
+                  <span class="name">{row.name}</span>
+                  <span class="amount">{formatCurrency(row.amountMinorUnits, currency)}</span>
+                  <span class="percent">—</span>
+                </div>
+              </div>
+              {@render eyeToggle(panelKey, row.categoryId, row.name, true)}
+            </div>
           </li>
         {/each}
       </ul>
@@ -552,36 +674,30 @@
   <p>Loading…</p>
 {:else}
   <div class="layout">
-    {@render donutPanel("Expenses", "expense", expenseData.total, animatedExpenseSlices, expenseTransactions)}
+    {@render donutPanel(
+      "Expenses",
+      "expense",
+      expenseData.total,
+      animatedExpenseSlices,
+      visibleExpenseTransactions,
+      expenseTransactions,
+      expenseHiddenRows,
+    )}
 
     <div class="net-summary">
       <span class="net-summary-label">Left this period</span>
       <strong>{formatCurrency(netLeftMinorUnits, currency)}</strong>
     </div>
 
-    {@render donutPanel("Income", "income", incomeData.total, animatedIncomeSlices, incomeTransactions)}
-
-    <aside class="filters">
-      <h2>Categories</h2>
-      {#if rootCategories.length === 0}
-        <p class="empty">No categories yet.</p>
-      {:else}
-        <ul>
-          {#each rootCategories as cat (cat.id)}
-            <li>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={!excludedRootIds.has(cat.id)}
-                  onchange={() => toggleRootCategory(cat.id)}
-                />
-                {cat.name}
-              </label>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-    </aside>
+    {@render donutPanel(
+      "Income",
+      "income",
+      incomeData.total,
+      animatedIncomeSlices,
+      visibleIncomeTransactions,
+      incomeTransactions,
+      incomeHiddenRows,
+    )}
   </div>
 {/if}
 
@@ -654,7 +770,7 @@
 
   .layout {
     display: grid;
-    grid-template-columns: 1fr auto 1fr 16rem;
+    grid-template-columns: 1fr auto 1fr;
     gap: 2rem;
     align-items: start;
   }
@@ -830,8 +946,17 @@
   }
 
   .breakdown-row {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+  }
+
+  .row-main {
     display: block;
-    width: 100%;
+    /* min-width:0 so a long category name ellipsises inside the flex row
+       instead of pushing the eye button off the edge of the column */
+    flex: 1;
+    min-width: 0;
     background: none;
     border: none;
     color: inherit;
@@ -839,16 +964,78 @@
     text-align: left;
     border-radius: 4px;
     padding: 0.2rem 0.3rem;
-    margin: -0.2rem -0.3rem;
+    margin: -0.2rem 0 -0.2rem -0.3rem;
     cursor: default;
     transition: background-color 0.15s ease;
   }
 
-  .breakdown-row.clickable {
+  .row-main.clickable {
     cursor: pointer;
   }
 
-  .breakdown-row.clickable:hover {
+  .row-main.clickable:hover {
+    background-color: var(--color-shade-3);
+  }
+
+  /* The eye is an always-visible affordance rather than hover-only: it's the
+     page's only remaining way to filter a category, so it can't be
+     undiscoverable — but it sits back at low opacity until pointed at. */
+  .eye-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    background: none;
+    border: none;
+    color: inherit;
+    padding: 0.25rem;
+    border-radius: 4px;
+    cursor: pointer;
+    opacity: 0.35;
+    transition:
+      opacity 0.15s ease,
+      background-color 0.15s ease;
+  }
+
+  .eye-btn:hover,
+  .eye-btn:focus-visible {
+    opacity: 1;
+    background-color: var(--color-shade-3);
+  }
+
+  .eye-btn.is-hidden {
+    opacity: 0.8;
+  }
+
+  .eye-spacer {
+    flex-shrink: 0;
+    width: 1.5rem;
+  }
+
+  .eye {
+    width: 1rem;
+    height: 1rem;
+    display: block;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.7;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .hidden-cat .row-main {
+    opacity: 0.45;
+  }
+
+  .hidden-cat .name {
+    text-decoration: line-through;
+  }
+
+  .hidden-cat .row {
+    margin-bottom: 0;
+  }
+
+  .dot.muted {
     background-color: var(--color-shade-3);
   }
 
@@ -865,7 +1052,7 @@
     transform: rotate(90deg);
   }
 
-  .chevron.hidden {
+  .chevron.invisible {
     visibility: hidden;
   }
 
@@ -934,50 +1121,6 @@
 
   .bar-fill {
     height: 100%;
-  }
-
-  .filters {
-    border-left: 1px solid var(--color-shade-3);
-    padding-left: 1.5rem;
-  }
-
-  .filters h2 {
-    font-size: 1rem;
-    margin-top: 0;
-  }
-
-  .filters ul {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-  }
-
-  .filters label {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    cursor: pointer;
-  }
-
-  .filters input[type="checkbox"] {
-    accent-color: var(--color-accent);
-  }
-
-  @media (max-width: 1100px) {
-    .layout {
-      grid-template-columns: 1fr auto 1fr;
-    }
-
-    .filters {
-      grid-column: 1 / -1;
-      border-left: none;
-      padding-left: 0;
-      border-top: 1px solid var(--color-shade-3);
-      padding-top: 1rem;
-    }
   }
 
   @media (max-width: 640px) {
