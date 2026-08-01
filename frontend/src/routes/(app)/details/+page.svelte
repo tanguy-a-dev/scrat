@@ -442,7 +442,9 @@
               </g>
             {/each}
           </g>
-          <!-- fixed light direction: the sheen sits outside the rotated group -->
+          <!-- Fixed light direction: the sheen sits outside the rotated group.
+               It covers the whole ring, so without pointer-events="none" it
+               swallows every hover meant for the slices underneath it. -->
           <circle
             cx="100"
             cy="100"
@@ -450,6 +452,7 @@
             fill="none"
             stroke={`url(#donut-sheen-${panelKey})`}
             stroke-width={SLICE_WIDTH}
+            pointer-events="none"
             role="presentation"
           />
         </svg>
