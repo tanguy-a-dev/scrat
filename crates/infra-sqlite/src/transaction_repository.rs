@@ -234,20 +234,40 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
         Ok(rows)
     }
 
-    fn list_page(&self, offset: i64, limit: i64) -> Result<Vec<Transaction>, RepositoryError> {
+    fn list_page(
+        &self,
+        offset: i64,
+        limit: i64,
+        category_id: Option<CategoryId>,
+        source_contains: Option<&str>,
+    ) -> Result<Vec<Transaction>, RepositoryError> {
         // `id` breaks ties on same-day transactions — `ORDER BY date DESC`
         // alone isn't a stable order across separate LIMIT/OFFSET queries,
         // which would let a row be skipped or repeated as the caller pages
         // through.
+        //
+        // The two filters use the same `?N IS NULL OR …` shape as
+        // `count_in_range`, so a page and the header count it sits under are
+        // answering the identical question.
         let mut stmt = self
             .conn
             .prepare(&format!(
                 "SELECT {SELECT_COLUMNS} FROM transactions
+                     WHERE (?3 IS NULL OR category_id = ?3)
+                       AND (?4 IS NULL OR LOWER(source) LIKE '%' || LOWER(?4) || '%')
                      ORDER BY date DESC, id DESC LIMIT ?1 OFFSET ?2"
             ))
             .map_err(sql_err)?;
         let rows = stmt
-            .query_map(params![limit, offset], |row| self.row_to_transaction(row))
+            .query_map(
+                params![
+                    limit,
+                    offset,
+                    category_id.map(|id| id.as_string()),
+                    source_contains,
+                ],
+                |row| self.row_to_transaction(row),
+            )
             .map_err(sql_err)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(sql_err)?;
@@ -454,7 +474,7 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         let mut offset = 0i64;
         loop {
-            let page = repo.list_page(offset, 10).unwrap();
+            let page = repo.list_page(offset, 10, None, None).unwrap();
             if page.is_empty() {
                 break;
             }
@@ -497,12 +517,252 @@ mod tests {
         )
         .unwrap();
 
-        let page = repo.list_page(0, 10).unwrap();
+        let page = repo.list_page(0, 10, None, None).unwrap();
 
         assert_eq!(
             page.iter().map(|t| t.source().as_str()).collect::<Vec<_>>(),
             vec!["Newest", "Oldest"]
         );
+    }
+
+    /// Regression test for the transactions view's category filter. The
+    /// filter used to be applied in the frontend, over only the pages that
+    /// had been fetched so far — so picking a category whose transactions
+    /// all sit deeper in the ledger (here: every income row is older than a
+    /// full page of expenses) showed an empty list until the user had
+    /// scrolled the whole ledger in. Pushed down to the query, the first
+    /// page of a filtered walk holds the matches themselves, wherever in
+    /// the ledger they live.
+    #[test]
+    fn list_page_filtered_by_category_reaches_matches_beyond_the_first_page() {
+        let conn = test_conn();
+        let (account_id, groceries_id) = seed_account_and_category(&conn);
+        let category_repo = crate::SqliteCategoryRepository::new(&conn);
+        let salary = Category::new(
+            CategoryId::new(),
+            CategoryName::new("Salary").unwrap(),
+            None,
+        )
+        .unwrap();
+        category_repo.insert(&salary).unwrap();
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+
+        // 25 recent expenses — more than two 10-row pages of them.
+        for day in 1..=25 {
+            repo.insert(
+                &Transaction::new(
+                    TransactionId::new(),
+                    NaiveDate::from_ymd_opt(2026, 2, day).unwrap(),
+                    Money::from_minor_units(-100 * day as i64, usd()),
+                    SourceText::new(&format!("Supermarket {day}")).unwrap(),
+                    groceries_id,
+                    account_id,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        // …and 3 older income rows, which a newest-first unfiltered walk
+        // would only reach on its third page.
+        for month in 1..=3 {
+            repo.insert(
+                &Transaction::new(
+                    TransactionId::new(),
+                    NaiveDate::from_ymd_opt(2025, month, 28).unwrap(),
+                    Money::from_minor_units(250_000, usd()),
+                    SourceText::new(&format!("Employer {month}")).unwrap(),
+                    salary.id(),
+                    account_id,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+
+        let first_page = repo.list_page(0, 10, Some(salary.id()), None).unwrap();
+
+        assert_eq!(first_page.len(), 3);
+        assert!(first_page.iter().all(|t| t.category_id() == salary.id()));
+        assert_eq!(
+            first_page
+                .iter()
+                .map(|t| t.source().as_str())
+                .collect::<Vec<_>>(),
+            vec!["Employer 3", "Employer 2", "Employer 1"],
+            "a filtered page is still newest-first"
+        );
+    }
+
+    /// The filtered walk has to page like the unfiltered one does — the
+    /// offset counts matching rows, so no match is skipped or repeated even
+    /// when non-matching rows are interleaved between them.
+    #[test]
+    fn list_page_paginates_within_the_filtered_set() {
+        let conn = test_conn();
+        let (account_id, groceries_id) = seed_account_and_category(&conn);
+        let category_repo = crate::SqliteCategoryRepository::new(&conn);
+        let salary = Category::new(
+            CategoryId::new(),
+            CategoryName::new("Salary").unwrap(),
+            None,
+        )
+        .unwrap();
+        category_repo.insert(&salary).unwrap();
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+
+        // Alternating categories, so every filtered page straddles rows it
+        // must skip over.
+        for day in 1..=24 {
+            let income = day % 2 == 0;
+            repo.insert(
+                &Transaction::new(
+                    TransactionId::new(),
+                    NaiveDate::from_ymd_opt(2026, 1, day).unwrap(),
+                    Money::from_minor_units(if income { 1_000 } else { -1_000 }, usd()),
+                    SourceText::new(&format!("Row {day}")).unwrap(),
+                    if income { salary.id() } else { groceries_id },
+                    account_id,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        let mut offset = 0i64;
+        loop {
+            let page = repo.list_page(offset, 5, Some(salary.id()), None).unwrap();
+            if page.is_empty() {
+                break;
+            }
+            for t in &page {
+                assert_eq!(t.category_id(), salary.id());
+                assert!(seen.insert(t.id()), "transaction returned on two pages");
+            }
+            offset += page.len() as i64;
+        }
+
+        assert_eq!(seen.len(), 12, "every income row, exactly once");
+    }
+
+    #[test]
+    fn list_page_filters_by_source_case_insensitively() {
+        let conn = test_conn();
+        let (account_id, category_id) = seed_account_and_category(&conn);
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        for source in ["WHOLE FOODS MARKET", "Electric Co", "whole foods #22"] {
+            repo.insert(
+                &Transaction::new(
+                    TransactionId::new(),
+                    NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                    Money::from_minor_units(-100, usd()),
+                    SourceText::new(source).unwrap(),
+                    category_id,
+                    account_id,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+
+        let page = repo.list_page(0, 10, None, Some("Whole Foods")).unwrap();
+
+        assert_eq!(page.len(), 2);
+        assert!(page
+            .iter()
+            .all(|t| t.source().as_str().to_lowercase().contains("whole foods")));
+    }
+
+    /// Both filters at once narrow further, rather than one quietly
+    /// replacing the other.
+    #[test]
+    fn list_page_applies_category_and_source_filters_together() {
+        let conn = test_conn();
+        let (account_id, groceries_id) = seed_account_and_category(&conn);
+        let category_repo = crate::SqliteCategoryRepository::new(&conn);
+        let salary = Category::new(
+            CategoryId::new(),
+            CategoryName::new("Salary").unwrap(),
+            None,
+        )
+        .unwrap();
+        category_repo.insert(&salary).unwrap();
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        for (source, category_id) in [
+            ("Employer payroll", salary.id()),
+            ("Employer canteen", groceries_id),
+            ("Side gig payroll", salary.id()),
+        ] {
+            repo.insert(
+                &Transaction::new(
+                    TransactionId::new(),
+                    NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                    Money::from_minor_units(1_000, usd()),
+                    SourceText::new(source).unwrap(),
+                    category_id,
+                    account_id,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+
+        let page = repo
+            .list_page(0, 10, Some(salary.id()), Some("employer"))
+            .unwrap();
+
+        assert_eq!(
+            page.iter().map(|t| t.source().as_str()).collect::<Vec<_>>(),
+            vec!["Employer payroll"]
+        );
+    }
+
+    /// A filtered page and the header count above it must be answering the
+    /// same question — the view shows one on top of the other, and a
+    /// mismatch reads as missing transactions.
+    #[test]
+    fn list_page_and_count_in_range_agree_on_the_same_filters() {
+        let conn = test_conn();
+        let (account_id, groceries_id) = seed_account_and_category(&conn);
+        let category_repo = crate::SqliteCategoryRepository::new(&conn);
+        let salary = Category::new(
+            CategoryId::new(),
+            CategoryName::new("Salary").unwrap(),
+            None,
+        )
+        .unwrap();
+        category_repo.insert(&salary).unwrap();
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        for day in 1..=9 {
+            repo.insert(
+                &Transaction::new(
+                    TransactionId::new(),
+                    NaiveDate::from_ymd_opt(2026, 1, day).unwrap(),
+                    Money::from_minor_units(1_000, usd()),
+                    SourceText::new(&format!("Row {day}")).unwrap(),
+                    if day % 3 == 0 {
+                        salary.id()
+                    } else {
+                        groceries_id
+                    },
+                    account_id,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+
+        let page = repo.list_page(0, 100, Some(salary.id()), None).unwrap();
+        let count = repo
+            .count_in_range(
+                NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
+                Some(salary.id()),
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(page.len() as i64, count);
     }
 
     #[test]

@@ -148,8 +148,22 @@ export const api = {
 
   listTransactions: (start: string, end: string) =>
     invoke<TransactionDto[]>("list_transactions", { start, end }),
-  listTransactionsPage: (offset: number, limit: number) =>
-    invoke<TransactionDto[]>("list_transactions_page", { offset, limit }),
+  /** One newest-first batch of the whole ledger, narrowed by the same two
+   * filters `countTransactions` takes — the filters are applied in the query
+   * so a batch is a page of *matching* rows, not a page of everything that
+   * then has to be filtered down to almost nothing on this side. */
+  listTransactionsPage: (
+    offset: number,
+    limit: number,
+    categoryId: string | null,
+    sourceContains: string | null,
+  ) =>
+    invoke<TransactionDto[]>("list_transactions_page", {
+      offset,
+      limit,
+      categoryId,
+      sourceContains,
+    }),
   countTransactions: (
     start: string,
     end: string,

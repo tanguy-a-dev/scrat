@@ -87,14 +87,27 @@ pub fn list_transactions(
 /// Paginated counterpart to `list_transactions`, for the "All Time" view —
 /// walking the whole ledger in fixed-size batches instead of one query that
 /// scans every row up front.
+///
+/// Takes the view's category/source filters so each batch is a page of the
+/// *matching* rows: filtering client-side, over only the pages fetched so
+/// far, made a filter look like it had found nothing until the user had
+/// scrolled the whole ledger in.
 #[tauri::command]
 pub fn list_transactions_page(
     state: State<DbState>,
     offset: i64,
     limit: i64,
+    category_id: Option<String>,
+    source_contains: Option<String>,
 ) -> Result<Vec<TransactionDto>, String> {
-    with_service(&state, |s| s.list_page(offset, limit))
-        .map(|txs| txs.into_iter().map(TransactionDto::from).collect())
+    let category_id = category_id
+        .map(|id| CategoryId::parse(&id))
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    with_service(&state, |s| {
+        s.list_page(offset, limit, category_id, source_contains.as_deref())
+    })
+    .map(|txs| txs.into_iter().map(TransactionDto::from).collect())
 }
 
 /// Counts transactions in `[start, end]` matching the same category/source

@@ -221,8 +221,16 @@ impl<'a> TransactionService<'a> {
         Ok(self.transactions.list_all()?)
     }
 
-    pub fn list_page(&self, offset: i64, limit: i64) -> Result<Vec<Transaction>, ApplicationError> {
-        Ok(self.transactions.list_page(offset, limit)?)
+    pub fn list_page(
+        &self,
+        offset: i64,
+        limit: i64,
+        category_id: Option<CategoryId>,
+        source_contains: Option<&str>,
+    ) -> Result<Vec<Transaction>, ApplicationError> {
+        Ok(self
+            .transactions
+            .list_page(offset, limit, category_id, source_contains)?)
     }
 
     pub fn count_in_range(
@@ -874,8 +882,27 @@ mod tests {
         fn list_all(&self) -> Result<Vec<Transaction>, RepositoryError> {
             Ok(self.transactions.lock().unwrap().clone())
         }
-        fn list_page(&self, offset: i64, limit: i64) -> Result<Vec<Transaction>, RepositoryError> {
-            let mut sorted = self.transactions.lock().unwrap().clone();
+        fn list_page(
+            &self,
+            offset: i64,
+            limit: i64,
+            category_id: Option<CategoryId>,
+            source_contains: Option<&str>,
+        ) -> Result<Vec<Transaction>, RepositoryError> {
+            let source_contains = source_contains.map(|s| s.to_lowercase());
+            let mut sorted: Vec<Transaction> = self
+                .transactions
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|t| category_id.is_none_or(|id| t.category_id() == id))
+                .filter(|t| {
+                    source_contains
+                        .as_ref()
+                        .is_none_or(|s| t.source().as_str().to_lowercase().contains(s))
+                })
+                .cloned()
+                .collect();
             sorted.sort_by(|a, b| {
                 b.date()
                     .cmp(&a.date())
@@ -1187,6 +1214,88 @@ mod tests {
             .unwrap();
 
         assert_eq!(count, 1);
+    }
+
+    /// The "All Time" view pages the ledger, so a category filter it can't
+    /// push down here would only ever match inside the pages already
+    /// fetched — the income rows below sit past the first page precisely to
+    /// pin that down.
+    #[test]
+    fn list_page_narrows_to_the_requested_category() {
+        let f = fixture();
+        let salary = Category::new(
+            CategoryId::new(),
+            CategoryName::new("Salary").unwrap(),
+            None,
+        )
+        .unwrap();
+        f.categories.insert(&salary).unwrap();
+        let service = f.service();
+        for day in 1..=5 {
+            service
+                .create_transaction(
+                    NaiveDate::from_ymd_opt(2026, 2, day).unwrap(),
+                    -1_200,
+                    &format!("Supermarket {day}"),
+                    f.category_id,
+                    f.account_id,
+                )
+                .unwrap();
+        }
+        service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
+                250_000,
+                "Employer",
+                salary.id(),
+                f.account_id,
+            )
+            .unwrap();
+
+        let unfiltered = service.list_page(0, 3, None, None).unwrap();
+        let filtered = service.list_page(0, 3, Some(salary.id()), None).unwrap();
+
+        assert!(
+            !unfiltered.iter().any(|t| t.category_id() == salary.id()),
+            "the income row is past the first unfiltered page — otherwise \
+             this test proves nothing"
+        );
+        assert_eq!(
+            filtered
+                .iter()
+                .map(|t| t.source().as_str())
+                .collect::<Vec<_>>(),
+            vec!["Employer"]
+        );
+    }
+
+    #[test]
+    fn list_page_narrows_to_the_requested_source() {
+        let f = fixture();
+        let service = f.service();
+        service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                -1_200,
+                "Whole Foods Market",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+        service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 16).unwrap(),
+                -500,
+                "Electric Co",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+
+        let page = service.list_page(0, 10, None, Some("whole foods")).unwrap();
+
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].source().as_str(), "Whole Foods Market");
     }
 
     #[test]

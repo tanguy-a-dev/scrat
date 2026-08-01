@@ -1,28 +1,18 @@
 # Features
 
-## Bug fix
+## Details page
 
-Transactions page:
-If I look for a category on income or expense, say income for instance, then all the income transactions from this category should load. I should not have to reload the page to see those. 
+There's a list of categories on the right, if unchecked the category is masked.
+I'd like to keep the feature but remove this list. Instead there will be an eye icon which can be clicked. Eye is barred if it has been clicked to show a category is hidden. Hidding a category updates the other categories %. 
+This can also be applied for sub categories. 
 
 ## Transactions page
 
-## Transactions selection
-UX improvments: 
-- The select all box should also appear on hovering.
-- Add padding between expenses/income and above: the list should not move if we select an item
-- The boxes should be cyan and the checkmark the same color as the background like other icons
-- the check boxes should be bigger
-- the dates should be on one lines not two. This issue has already happened before
-- The lines of the table should not extend up to the boxes on the left, only to the date
-
 ### Set dates
-Set by months first then by specific dates
 
-## Loading transactions
-
-- Transaction count on the top of the page, display count not currently loaded. If "Year" then the number is the count of transactions for the year, same for the other. It changes with filters like search source or category.
-- icon arrow up button to go back up the page -> icon on the right instead of left
+When clicking on Set Dates the From is set "now - 1 month" instead of today.
+The date picker's ux should be adapted to the app. 
+The date picker should let the user click on a month as well as a date. Example: From July to September will select from July's first day to September's last day. Or by date: from July 1 to to September 27.
 
 ## Page Cache
 

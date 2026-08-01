@@ -105,7 +105,21 @@ pub trait TransactionRepository {
     /// window, deliberately: a year of history can be one row or one
     /// hundred thousand depending on the user, so only a row count keeps
     /// each batch cheap.
-    fn list_page(&self, offset: i64, limit: i64) -> Result<Vec<Transaction>, RepositoryError>;
+    ///
+    /// The optional category / case-insensitive source filters are the same
+    /// two `count_in_range` takes, and they are pushed down here for the
+    /// same reason: a filtered paginated view must page through *matching*
+    /// rows. Filtering the returned batch in the caller instead would only
+    /// ever surface the matches that happen to fall inside the pages
+    /// already fetched, so a filter would appear to find almost nothing
+    /// until the user scrolled the entire ledger in.
+    fn list_page(
+        &self,
+        offset: i64,
+        limit: i64,
+        category_id: Option<CategoryId>,
+        source_contains: Option<&str>,
+    ) -> Result<Vec<Transaction>, RepositoryError>;
     /// Counts transactions in `[start, end]`, optionally narrowed to a
     /// category and/or a case-insensitive source substring — the same two
     /// filters the transactions view applies. Pushed down to the query
