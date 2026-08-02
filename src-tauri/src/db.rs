@@ -54,3 +54,28 @@ pub fn unlock_db(app: AppHandle, state: State<DbState>, passphrase: String) -> R
     *state.0.lock().unwrap() = Some(conn);
     Ok(())
 }
+
+/// Changes the passphrase protecting the database, re-encrypting it in
+/// place. `current_passphrase` must be correct — checked by independently
+/// unlocking the file with it (mirroring [`unlock_db`]'s canary check)
+/// *before* the live connection is touched — so a wrong guess never risks
+/// the already-open database. The frontend is expected to have already
+/// collected the new passphrase twice and confirmed both entries match.
+#[tauri::command]
+pub fn change_passphrase(
+    app: AppHandle,
+    state: State<DbState>,
+    current_passphrase: String,
+    new_passphrase: String,
+) -> Result<(), String> {
+    drop(
+        scrat_infra_sqlite::unlock_existing(&db_path(&app)?, &current_passphrase)
+            .map_err(describe)?,
+    );
+
+    let guard = state.0.lock().unwrap();
+    let conn = guard
+        .as_ref()
+        .ok_or_else(|| "database is locked".to_string())?;
+    scrat_infra_sqlite::rekey(conn, &new_passphrase).map_err(describe)
+}

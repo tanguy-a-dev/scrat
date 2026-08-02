@@ -160,6 +160,11 @@ export const api = {
   createDb: (passphrase: string) =>
     invoke<void>("create_db_with_passphrase", { passphrase }),
   unlockDb: (passphrase: string) => invoke<void>("unlock_db", { passphrase }),
+  changePassphrase: (currentPassphrase: string, newPassphrase: string) =>
+    invoke<void>("change_passphrase", {
+      currentPassphrase,
+      newPassphrase,
+    }),
 
   listAccounts: () => invoke<AccountDto[]>("list_accounts"),
   createAccount: (name: string, openingBalanceMinorUnits: number) =>

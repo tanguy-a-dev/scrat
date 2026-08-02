@@ -116,6 +116,48 @@
     }
   }
 
+  let showPassphraseForm = $state(false);
+  let currentPassphrase = $state("");
+  let newPassphrase = $state("");
+  let confirmNewPassphrase = $state("");
+  let passphraseError = $state("");
+  let changingPassphrase = $state(false);
+
+  function startPassphraseChange() {
+    showPassphraseForm = true;
+  }
+
+  function cancelPassphraseChange() {
+    showPassphraseForm = false;
+    currentPassphrase = "";
+    newPassphrase = "";
+    confirmNewPassphrase = "";
+    passphraseError = "";
+  }
+
+  async function handleChangePassphrase(event: Event) {
+    event.preventDefault();
+    passphraseError = "";
+    if (newPassphrase.length < 8) {
+      passphraseError = "New passphrase must be at least 8 characters.";
+      return;
+    }
+    if (newPassphrase !== confirmNewPassphrase) {
+      passphraseError = "New passphrases do not match.";
+      return;
+    }
+    changingPassphrase = true;
+    try {
+      await api.changePassphrase(currentPassphrase, newPassphrase);
+      toast.success("Passphrase changed.");
+      cancelPassphraseChange();
+    } catch (e) {
+      passphraseError = String(e);
+    } finally {
+      changingPassphrase = false;
+    }
+  }
+
   let deleteRequested = $state(false);
   let deleteConfirmText = $state("");
   let deleting = $state(false);
@@ -149,11 +191,8 @@
 <h1>Settings</h1>
 
 <section>
-  <h2>Set currency</h2>
-  <p class="hint">
-    Changing this only relabels amounts from now on — past transactions are
-    not converted, since their original numbers don't change.
-  </p>
+  <h2>Currency</h2>
+  <p class="hint">Relabels amounts only — past transactions aren't converted.</p>
   {#if loadingCurrency}
     <p>Loading…</p>
   {:else if loadError}
@@ -173,11 +212,58 @@
 </section>
 
 <section>
+  <h2>Passphrase</h2>
+  {#if !showPassphraseForm}
+    <p class="hint">Change the passphrase used to encrypt your database.</p>
+    <button type="button" onclick={startPassphraseChange}>
+      Change passphrase
+    </button>
+  {:else}
+    <p class="hint">
+      No recovery — if you lose the new passphrase, your data is unreadable.
+    </p>
+    <form class="passphrase-form" onsubmit={handleChangePassphrase}>
+      <input
+        type="password"
+        placeholder="Current passphrase"
+        bind:value={currentPassphrase}
+        autocomplete="current-password"
+        required
+      />
+      <input
+        type="password"
+        placeholder="New passphrase"
+        bind:value={newPassphrase}
+        autocomplete="new-password"
+        required
+      />
+      <input
+        type="password"
+        placeholder="Confirm new passphrase"
+        bind:value={confirmNewPassphrase}
+        autocomplete="new-password"
+        required
+      />
+      {#if passphraseError}<p class="error">{passphraseError}</p>{/if}
+      <div class="button-row">
+        <button type="submit" disabled={changingPassphrase}>
+          {changingPassphrase ? "Changing…" : "Save"}
+        </button>
+        <button
+          type="button"
+          onclick={cancelPassphraseChange}
+          disabled={changingPassphrase}
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
+  {/if}
+</section>
+
+<section>
   <h2>Export database</h2>
-  <p class="hint">
-    Saves a copy of your encrypted database file — the copy stays encrypted,
-    so exporting never weakens your data's protection.
-  </p>
+  <p class="hint">Saves an encrypted copy of your database file.</p>
   <button type="button" onclick={handleExport} disabled={exporting}>
     {exporting ? "Exporting…" : "Export"}
   </button>
@@ -186,9 +272,7 @@
 <section>
   <h2>Export transaction CSV</h2>
   <p class="hint">
-    Saves every transaction as a plain-text CSV file, with ";" as the
-    separator — account and category names are included so the file is
-    readable outside Scrat.
+    Saves every transaction as a CSV file, readable outside Scrat.
   </p>
   <button type="button" onclick={handleExportCsv} disabled={exportingCsv}>
     {exportingCsv ? "Exporting…" : "Export CSV"}
@@ -197,11 +281,7 @@
 
 <section>
   <h2>Import database</h2>
-  <p class="hint">
-    Replaces everything in Scrat with the contents of an encrypted database
-    file. The file stays encrypted throughout — you'll need its passphrase to
-    open it.
-  </p>
+  <p class="hint">Replaces everything in Scrat with another encrypted database file.</p>
   {#if !importPath}
     <button type="button" onclick={handleChooseImportFile}>
       Choose file to import
@@ -210,9 +290,8 @@
     <div class="import-warning-panel">
       <p>
         <strong>This will permanently replace your current database</strong>
-        with <code>{importFileName}</code>. Everything currently in Scrat
-        will be gone — this cannot be undone. Export your current database
-        first if you want to keep a copy.
+        with <code>{importFileName}</code>. This cannot be undone — export
+        your current database first if you want to keep a copy.
       </p>
       <form onsubmit={handleConfirmImport}>
         <input
@@ -222,12 +301,14 @@
           autocomplete="off"
           required
         />
-        <button type="submit" class="danger" disabled={importing}>
-          {importing ? "Importing…" : "Replace database"}
-        </button>
-        <button type="button" onclick={cancelImport} disabled={importing}>
-          Cancel
-        </button>
+        <div class="button-row">
+          <button type="submit" class="danger" disabled={importing}>
+            {importing ? "Importing…" : "Replace database"}
+          </button>
+          <button type="button" onclick={cancelImport} disabled={importing}>
+            Cancel
+          </button>
+        </div>
       </form>
     </div>
   {/if}
@@ -236,21 +317,14 @@
 <section>
   <h2>Suggest categories</h2>
   <p class="hint">
-    Scrat looks at how you've categorized similar transactions before and
-    suggests a category automatically — while you type a description on the
-    Transactions page, and per row when importing a CSV. It's a local
-    frequency lookup only: no machine learning, nothing ever leaves your
-    computer.
+    Suggests categories based on how you've categorized similar transactions
+    before — a local lookup, nothing leaves your computer.
   </p>
 </section>
 
 <section>
   <h2>Delete my data</h2>
-  <p class="hint">
-    Permanently deletes your local encrypted database — every account,
-    category, and transaction. This cannot be undone, and no backup is made.
-    Export your database first if you want to keep a copy.
-  </p>
+  <p class="hint">Permanently deletes your local database. No backup is made.</p>
   {#if !deleteRequested}
     <button type="button" class="danger" onclick={startDelete}>
       Delete my data
@@ -270,16 +344,18 @@
           autocomplete="off"
           required
         />
-        <button
-          type="submit"
-          class="danger"
-          disabled={deleting || deleteConfirmText !== DELETE_CONFIRM_WORD}
-        >
-          {deleting ? "Deleting…" : "Permanently delete"}
-        </button>
-        <button type="button" onclick={cancelDelete} disabled={deleting}>
-          Cancel
-        </button>
+        <div class="button-row">
+          <button
+            type="submit"
+            class="danger"
+            disabled={deleting || deleteConfirmText !== DELETE_CONFIRM_WORD}
+          >
+            {deleting ? "Deleting…" : "Permanently delete"}
+          </button>
+          <button type="button" onclick={cancelDelete} disabled={deleting}>
+            Cancel
+          </button>
+        </div>
       </form>
     </div>
   {/if}
@@ -315,6 +391,17 @@
     align-items: center;
     gap: 0.6rem;
     flex-wrap: wrap;
+  }
+
+  .passphrase-form {
+    flex-direction: column;
+    align-items: stretch;
+    max-width: 20rem;
+  }
+
+  .button-row {
+    display: flex;
+    gap: 0.6rem;
   }
 
   select,

@@ -18,6 +18,7 @@ pub fn run() {
             db::is_db_initialized,
             db::create_db_with_passphrase,
             db::unlock_db,
+            db::change_passphrase,
             accounts::list_accounts,
             accounts::create_account,
             accounts::rename_account,

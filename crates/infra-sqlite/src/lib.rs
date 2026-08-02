@@ -12,7 +12,7 @@ mod transfer_rule_repository;
 
 pub use account_repository::SqliteAccountRepository;
 pub use category_repository::SqliteCategoryRepository;
-pub use connection::{create_new, database_exists, unlock_existing, DbError};
+pub use connection::{create_new, database_exists, rekey, unlock_existing, DbError};
 pub use rusqlite::Connection;
 pub use settings_repository::{
     get_currency_code, get_default_account_id, set_currency_code, set_default_account_id,

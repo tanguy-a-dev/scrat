@@ -77,6 +77,23 @@ fn verify_canary(conn: &Connection) -> Result<(), DbError> {
     .map_err(|_| DbError::InvalidPassphrase)
 }
 
+/// Re-encrypts the database backing `conn` under `new_passphrase`, in place.
+///
+/// `PRAGMA rekey` does not itself check the connection's *current* key — it
+/// just re-encrypts with whatever new key it's given — so the caller is
+/// expected to have already confirmed the user's claimed current passphrase
+/// is correct (e.g. via [`unlock_existing`] against the same file) before
+/// calling this. The connection stays open and usable afterwards; there is
+/// no need to reopen it.
+pub fn rekey(conn: &Connection, new_passphrase: &str) -> Result<(), DbError> {
+    if new_passphrase.trim().is_empty() {
+        return Err(DbError::EmptyPassphrase);
+    }
+    let escaped = new_passphrase.replace('\'', "''");
+    conn.execute_batch(&format!("PRAGMA rekey = '{escaped}';"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,5 +191,52 @@ mod tests {
         let result = unlock_existing(&path, "pw");
 
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn rekey_changes_the_passphrase_needed_to_unlock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = db_path(&dir);
+        let conn = create_new(&path, "old passphrase").unwrap();
+
+        rekey(&conn, "new passphrase").unwrap();
+        drop(conn);
+
+        assert!(matches!(
+            unlock_existing(&path, "old passphrase"),
+            Err(DbError::InvalidPassphrase)
+        ));
+        assert!(unlock_existing(&path, "new passphrase").is_ok());
+    }
+
+    #[test]
+    fn rekey_leaves_the_connection_usable_immediately() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = db_path(&dir);
+        let conn = create_new(&path, "old passphrase").unwrap();
+
+        rekey(&conn, "new passphrase").unwrap();
+
+        // The live connection should keep working under its new key without
+        // needing to be reopened.
+        let table_count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'transactions'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(table_count, 1);
+    }
+
+    #[test]
+    fn rekey_rejects_empty_passphrase() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = db_path(&dir);
+        let conn = create_new(&path, "old passphrase").unwrap();
+
+        let result = rekey(&conn, "");
+
+        assert!(matches!(result, Err(DbError::EmptyPassphrase)));
     }
 }
