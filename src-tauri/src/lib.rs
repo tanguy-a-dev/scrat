@@ -2,6 +2,7 @@ mod accounts;
 mod categories;
 mod db;
 mod import;
+mod onepassword;
 mod settings;
 mod transactions;
 mod transfer_rules;
@@ -18,6 +19,10 @@ pub fn run() {
             db::is_db_initialized,
             db::create_db_with_passphrase,
             db::unlock_db,
+            onepassword::get_1password_reference,
+            onepassword::set_1password_reference,
+            onepassword::test_1password_reference,
+            onepassword::unlock_with_1password,
             accounts::list_accounts,
             accounts::create_account,
             accounts::rename_account,

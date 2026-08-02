@@ -227,10 +227,11 @@ impl<'a> TransactionService<'a> {
         limit: i64,
         category_id: Option<CategoryId>,
         source_contains: Option<&str>,
+        is_income: Option<bool>,
     ) -> Result<Vec<Transaction>, ApplicationError> {
         Ok(self
             .transactions
-            .list_page(offset, limit, category_id, source_contains)?)
+            .list_page(offset, limit, category_id, source_contains, is_income)?)
     }
 
     pub fn count_in_range(
@@ -239,10 +240,11 @@ impl<'a> TransactionService<'a> {
         end: NaiveDate,
         category_id: Option<CategoryId>,
         source_contains: Option<&str>,
+        is_income: Option<bool>,
     ) -> Result<i64, ApplicationError> {
         Ok(self
             .transactions
-            .count_in_range(start, end, category_id, source_contains)?)
+            .count_in_range(start, end, category_id, source_contains, is_income)?)
     }
 
     /// Scans `[start, today]` for recurring commitments — subscriptions, rent,
@@ -888,6 +890,7 @@ mod tests {
             limit: i64,
             category_id: Option<CategoryId>,
             source_contains: Option<&str>,
+            is_income: Option<bool>,
         ) -> Result<Vec<Transaction>, RepositoryError> {
             let source_contains = source_contains.map(|s| s.to_lowercase());
             let mut sorted: Vec<Transaction> = self
@@ -901,6 +904,7 @@ mod tests {
                         .as_ref()
                         .is_none_or(|s| t.source().as_str().to_lowercase().contains(s))
                 })
+                .filter(|t| is_income.is_none_or(|income| (t.amount().minor_units() > 0) == income))
                 .cloned()
                 .collect();
             sorted.sort_by(|a, b| {
@@ -920,6 +924,7 @@ mod tests {
             end: NaiveDate,
             category_id: Option<CategoryId>,
             source_contains: Option<&str>,
+            is_income: Option<bool>,
         ) -> Result<i64, RepositoryError> {
             let source_contains = source_contains.map(|s| s.to_lowercase());
             Ok(self
@@ -934,6 +939,7 @@ mod tests {
                         .as_ref()
                         .is_none_or(|s| t.source().as_str().to_lowercase().contains(s))
                 })
+                .filter(|t| is_income.is_none_or(|income| (t.amount().minor_units() > 0) == income))
                 .count() as i64)
         }
     }
@@ -1210,6 +1216,7 @@ mod tests {
                 NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
                 None,
                 Some("whole foods"),
+                None,
             )
             .unwrap();
 
@@ -1252,8 +1259,10 @@ mod tests {
             )
             .unwrap();
 
-        let unfiltered = service.list_page(0, 3, None, None).unwrap();
-        let filtered = service.list_page(0, 3, Some(salary.id()), None).unwrap();
+        let unfiltered = service.list_page(0, 3, None, None, None).unwrap();
+        let filtered = service
+            .list_page(0, 3, Some(salary.id()), None, None)
+            .unwrap();
 
         assert!(
             !unfiltered.iter().any(|t| t.category_id() == salary.id()),
@@ -1292,10 +1301,57 @@ mod tests {
             )
             .unwrap();
 
-        let page = service.list_page(0, 10, None, Some("whole foods")).unwrap();
+        let page = service
+            .list_page(0, 10, None, Some("whole foods"), None)
+            .unwrap();
 
         assert_eq!(page.len(), 1);
         assert_eq!(page[0].source().as_str(), "Whole Foods Market");
+    }
+
+    /// The Expenses and Income lists page the ledger independently — each
+    /// asks the service for just its own sign, rather than fetching a mixed
+    /// batch and splitting it after the fact.
+    #[test]
+    fn list_page_narrows_to_the_requested_sign() {
+        let f = fixture();
+        let service = f.service();
+        service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                -1_200,
+                "Whole Foods Market",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+        service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 16).unwrap(),
+                250_000,
+                "Employer",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+
+        let income = service.list_page(0, 10, None, None, Some(true)).unwrap();
+        let expenses = service.list_page(0, 10, None, None, Some(false)).unwrap();
+
+        assert_eq!(
+            income
+                .iter()
+                .map(|t| t.source().as_str())
+                .collect::<Vec<_>>(),
+            vec!["Employer"]
+        );
+        assert_eq!(
+            expenses
+                .iter()
+                .map(|t| t.source().as_str())
+                .collect::<Vec<_>>(),
+            vec!["Whole Foods Market"]
+        );
     }
 
     #[test]

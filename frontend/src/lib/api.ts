@@ -117,6 +117,20 @@ export const api = {
     invoke<void>("create_db_with_passphrase", { passphrase }),
   unlockDb: (passphrase: string) => invoke<void>("unlock_db", { passphrase }),
 
+  /** The `op://vault/item/field` pointer to the passphrase, or null when
+   * 1Password unlock isn't set up. Readable while still locked. */
+  get1PasswordReference: () =>
+    invoke<string | null>("get_1password_reference"),
+  /** Pass null to turn the integration off. */
+  set1PasswordReference: (reference: string | null) =>
+    invoke<void>("set_1password_reference", { reference }),
+  /** Checks the referenced value actually opens this database. */
+  test1PasswordReference: (reference: string) =>
+    invoke<void>("test_1password_reference", { reference }),
+  /** Fetches the passphrase from 1Password and unlocks in one Rust-side
+   * step — the passphrase deliberately never crosses into JS. */
+  unlockWith1Password: () => invoke<void>("unlock_with_1password"),
+
   listAccounts: () => invoke<AccountDto[]>("list_accounts"),
   createAccount: (name: string, openingBalanceMinorUnits: number) =>
     invoke<AccountDto>("create_account", {
@@ -148,33 +162,40 @@ export const api = {
 
   listTransactions: (start: string, end: string) =>
     invoke<TransactionDto[]>("list_transactions", { start, end }),
-  /** One newest-first batch of the whole ledger, narrowed by the same two
+  /** One newest-first batch of the whole ledger, narrowed by the same
    * filters `countTransactions` takes — the filters are applied in the query
    * so a batch is a page of *matching* rows, not a page of everything that
-   * then has to be filtered down to almost nothing on this side. */
+   * then has to be filtered down to almost nothing on this side. `isIncome`
+   * (`true` for positive amounts, `false` for negative, `null` for both)
+   * lets the Expenses and Income lists page through the ledger
+   * independently, each with its own category/source filters. */
   listTransactionsPage: (
     offset: number,
     limit: number,
     categoryId: string | null,
     sourceContains: string | null,
+    isIncome: boolean | null,
   ) =>
     invoke<TransactionDto[]>("list_transactions_page", {
       offset,
       limit,
       categoryId,
       sourceContains,
+      isIncome,
     }),
   countTransactions: (
     start: string,
     end: string,
     categoryId: string | null,
     sourceContains: string | null,
+    isIncome: boolean | null,
   ) =>
     invoke<number>("count_transactions", {
       start,
       end,
       categoryId,
       sourceContains,
+      isIncome,
     }),
   createTransaction: (
     date: string,

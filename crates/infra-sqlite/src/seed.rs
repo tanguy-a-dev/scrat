@@ -60,13 +60,7 @@ const EXPENSE_CATEGORIES: CategoryTree = &[
     (
         "Entertainment",
         "film",
-        &[
-            "Movies",
-            "Concerts",
-            "Games",
-            "Hobbies",
-            "Events",
-        ],
+        &["Movies", "Concerts", "Games", "Hobbies", "Events"],
     ),
     ("Sports & Fitness", "dumbbell", &["Gym"]),
     ("Education", "graduation-cap", &["Books", "Courses"]),

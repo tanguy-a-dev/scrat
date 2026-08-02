@@ -240,13 +240,14 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
         limit: i64,
         category_id: Option<CategoryId>,
         source_contains: Option<&str>,
+        is_income: Option<bool>,
     ) -> Result<Vec<Transaction>, RepositoryError> {
         // `id` breaks ties on same-day transactions — `ORDER BY date DESC`
         // alone isn't a stable order across separate LIMIT/OFFSET queries,
         // which would let a row be skipped or repeated as the caller pages
         // through.
         //
-        // The two filters use the same `?N IS NULL OR …` shape as
+        // The three filters use the same `?N IS NULL OR …` shape as
         // `count_in_range`, so a page and the header count it sits under are
         // answering the identical question.
         let mut stmt = self
@@ -255,6 +256,8 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
                 "SELECT {SELECT_COLUMNS} FROM transactions
                      WHERE (?3 IS NULL OR category_id = ?3)
                        AND (?4 IS NULL OR LOWER(source) LIKE '%' || LOWER(?4) || '%')
+                       AND (?5 IS NULL OR (?5 = 1 AND amount_minor_units > 0)
+                                        OR (?5 = 0 AND amount_minor_units < 0))
                      ORDER BY date DESC, id DESC LIMIT ?1 OFFSET ?2"
             ))
             .map_err(sql_err)?;
@@ -265,6 +268,7 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
                     offset,
                     category_id.map(|id| id.as_string()),
                     source_contains,
+                    is_income,
                 ],
                 |row| self.row_to_transaction(row),
             )
@@ -280,6 +284,7 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
         end: NaiveDate,
         category_id: Option<CategoryId>,
         source_contains: Option<&str>,
+        is_income: Option<bool>,
     ) -> Result<i64, RepositoryError> {
         let count = self
             .conn
@@ -287,12 +292,15 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
                 "SELECT COUNT(*) FROM transactions
                      WHERE date >= ?1 AND date <= ?2
                        AND (?3 IS NULL OR category_id = ?3)
-                       AND (?4 IS NULL OR LOWER(source) LIKE '%' || LOWER(?4) || '%')",
+                       AND (?4 IS NULL OR LOWER(source) LIKE '%' || LOWER(?4) || '%')
+                       AND (?5 IS NULL OR (?5 = 1 AND amount_minor_units > 0)
+                                        OR (?5 = 0 AND amount_minor_units < 0))",
                 params![
                     start.format("%Y-%m-%d").to_string(),
                     end.format("%Y-%m-%d").to_string(),
                     category_id.map(|id| id.as_string()),
                     source_contains,
+                    is_income,
                 ],
                 |row| row.get(0),
             )
@@ -474,7 +482,7 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         let mut offset = 0i64;
         loop {
-            let page = repo.list_page(offset, 10, None, None).unwrap();
+            let page = repo.list_page(offset, 10, None, None, None).unwrap();
             if page.is_empty() {
                 break;
             }
@@ -517,7 +525,7 @@ mod tests {
         )
         .unwrap();
 
-        let page = repo.list_page(0, 10, None, None).unwrap();
+        let page = repo.list_page(0, 10, None, None, None).unwrap();
 
         assert_eq!(
             page.iter().map(|t| t.source().as_str()).collect::<Vec<_>>(),
@@ -579,7 +587,9 @@ mod tests {
             .unwrap();
         }
 
-        let first_page = repo.list_page(0, 10, Some(salary.id()), None).unwrap();
+        let first_page = repo
+            .list_page(0, 10, Some(salary.id()), None, None)
+            .unwrap();
 
         assert_eq!(first_page.len(), 3);
         assert!(first_page.iter().all(|t| t.category_id() == salary.id()));
@@ -631,7 +641,9 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         let mut offset = 0i64;
         loop {
-            let page = repo.list_page(offset, 5, Some(salary.id()), None).unwrap();
+            let page = repo
+                .list_page(offset, 5, Some(salary.id()), None, None)
+                .unwrap();
             if page.is_empty() {
                 break;
             }
@@ -665,7 +677,9 @@ mod tests {
             .unwrap();
         }
 
-        let page = repo.list_page(0, 10, None, Some("Whole Foods")).unwrap();
+        let page = repo
+            .list_page(0, 10, None, Some("Whole Foods"), None)
+            .unwrap();
 
         assert_eq!(page.len(), 2);
         assert!(page
@@ -708,7 +722,7 @@ mod tests {
         }
 
         let page = repo
-            .list_page(0, 10, Some(salary.id()), Some("employer"))
+            .list_page(0, 10, Some(salary.id()), Some("employer"), None)
             .unwrap();
 
         assert_eq!(
@@ -752,12 +766,15 @@ mod tests {
             .unwrap();
         }
 
-        let page = repo.list_page(0, 100, Some(salary.id()), None).unwrap();
+        let page = repo
+            .list_page(0, 100, Some(salary.id()), None, None)
+            .unwrap();
         let count = repo
             .count_in_range(
                 NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
                 NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
                 Some(salary.id()),
+                None,
                 None,
             )
             .unwrap();
@@ -799,6 +816,7 @@ mod tests {
             .count_in_range(
                 NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
                 NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
+                None,
                 None,
                 None,
             )
@@ -847,6 +865,7 @@ mod tests {
                 NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
                 Some(groceries_id),
                 None,
+                None,
             )
             .unwrap();
 
@@ -889,10 +908,101 @@ mod tests {
                 NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
                 None,
                 Some("whole foods"),
+                None,
             )
             .unwrap();
 
         assert_eq!(count, 1);
+    }
+
+    /// Expenses and Income page independently through the ledger with their
+    /// own filters — `is_income` is what lets a caller ask for just one
+    /// sign's rows instead of a mixed-sign batch it would then have to split
+    /// (and lose pagination correctness doing so).
+    #[test]
+    fn list_page_filters_by_sign() {
+        let conn = test_conn();
+        let (account_id, category_id) = seed_account_and_category(&conn);
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        for (day, source, amount) in [
+            (13, "Paycheck", 2_000),
+            (14, "Groceries", -500),
+            (15, "Rent", -900),
+        ] {
+            repo.insert(
+                &Transaction::new(
+                    TransactionId::new(),
+                    NaiveDate::from_ymd_opt(2026, 1, day).unwrap(),
+                    Money::from_minor_units(amount, usd()),
+                    SourceText::new(source).unwrap(),
+                    category_id,
+                    account_id,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+
+        let income = repo.list_page(0, 10, None, None, Some(true)).unwrap();
+        let expenses = repo.list_page(0, 10, None, None, Some(false)).unwrap();
+
+        assert_eq!(
+            income
+                .iter()
+                .map(|t| t.source().as_str())
+                .collect::<Vec<_>>(),
+            vec!["Paycheck"]
+        );
+        assert_eq!(
+            expenses
+                .iter()
+                .map(|t| t.source().as_str())
+                .collect::<Vec<_>>(),
+            vec!["Rent", "Groceries"]
+        );
+    }
+
+    #[test]
+    fn count_in_range_filters_by_sign() {
+        let conn = test_conn();
+        let (account_id, category_id) = seed_account_and_category(&conn);
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        for (source, amount) in [("Paycheck", 2_000), ("Groceries", -500), ("Rent", -900)] {
+            repo.insert(
+                &Transaction::new(
+                    TransactionId::new(),
+                    NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                    Money::from_minor_units(amount, usd()),
+                    SourceText::new(source).unwrap(),
+                    category_id,
+                    account_id,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+
+        let income_count = repo
+            .count_in_range(
+                NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
+                None,
+                None,
+                Some(true),
+            )
+            .unwrap();
+        let expense_count = repo
+            .count_in_range(
+                NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
+                None,
+                None,
+                Some(false),
+            )
+            .unwrap();
+
+        assert_eq!(income_count, 1);
+        assert_eq!(expense_count, 2);
     }
 
     #[test]

@@ -91,7 +91,9 @@ pub fn list_transactions(
 /// Takes the view's category/source filters so each batch is a page of the
 /// *matching* rows: filtering client-side, over only the pages fetched so
 /// far, made a filter look like it had found nothing until the user had
-/// scrolled the whole ledger in.
+/// scrolled the whole ledger in. `is_income` additionally narrows to just
+/// one sign — the Expenses and Income lists page independently, each with
+/// its own filters, so this lets each ask for only its own rows.
 #[tauri::command]
 pub fn list_transactions_page(
     state: State<DbState>,
@@ -99,19 +101,26 @@ pub fn list_transactions_page(
     limit: i64,
     category_id: Option<String>,
     source_contains: Option<String>,
+    is_income: Option<bool>,
 ) -> Result<Vec<TransactionDto>, String> {
     let category_id = category_id
         .map(|id| CategoryId::parse(&id))
         .transpose()
         .map_err(|e| e.to_string())?;
     with_service(&state, |s| {
-        s.list_page(offset, limit, category_id, source_contains.as_deref())
+        s.list_page(
+            offset,
+            limit,
+            category_id,
+            source_contains.as_deref(),
+            is_income,
+        )
     })
     .map(|txs| txs.into_iter().map(TransactionDto::from).collect())
 }
 
-/// Counts transactions in `[start, end]` matching the same category/source
-/// filters the transactions view applies, so the header can report an
+/// Counts transactions in `[start, end]` matching the same category/source/
+/// sign filters the transactions view applies, so the header can report an
 /// accurate total for the current view even when only part of it — e.g. one
 /// page of "All Time" — has actually been loaded into the frontend.
 #[tauri::command]
@@ -121,6 +130,7 @@ pub fn count_transactions(
     end: String,
     category_id: Option<String>,
     source_contains: Option<String>,
+    is_income: Option<bool>,
 ) -> Result<i64, String> {
     let start = parse_date(&start)?;
     let end = parse_date(&end)?;
@@ -129,7 +139,13 @@ pub fn count_transactions(
         .transpose()
         .map_err(|e| e.to_string())?;
     with_service(&state, |s| {
-        s.count_in_range(start, end, category_id, source_contains.as_deref())
+        s.count_in_range(
+            start,
+            end,
+            category_id,
+            source_contains.as_deref(),
+            is_income,
+        )
     })
 }
 

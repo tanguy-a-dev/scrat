@@ -107,31 +107,39 @@ pub trait TransactionRepository {
     /// each batch cheap.
     ///
     /// The optional category / case-insensitive source filters are the same
-    /// two `count_in_range` takes, and they are pushed down here for the
+    /// ones `count_in_range` takes, and they are pushed down here for the
     /// same reason: a filtered paginated view must page through *matching*
     /// rows. Filtering the returned batch in the caller instead would only
     /// ever surface the matches that happen to fall inside the pages
     /// already fetched, so a filter would appear to find almost nothing
     /// until the user scrolled the entire ledger in.
+    ///
+    /// `is_income`, when set, additionally narrows to positive (`true`) or
+    /// negative (`false`) amounts — the Expenses and Income lists page
+    /// through the ledger independently, each with its own category/source
+    /// filters, so the sign has to be pushed down alongside them rather than
+    /// split out of a single mixed-sign batch after the fact.
     fn list_page(
         &self,
         offset: i64,
         limit: i64,
         category_id: Option<CategoryId>,
         source_contains: Option<&str>,
+        is_income: Option<bool>,
     ) -> Result<Vec<Transaction>, RepositoryError>;
     /// Counts transactions in `[start, end]`, optionally narrowed to a
-    /// category and/or a case-insensitive source substring — the same two
-    /// filters the transactions view applies. Pushed down to the query
-    /// (rather than counting a `list_in_range` result in the caller) so a
-    /// paginated view can show an accurate total for the current filters
-    /// without first pulling every matching row across the wire.
+    /// category, a case-insensitive source substring, and/or a sign via
+    /// `is_income` — the same filters `list_page` takes. Pushed down to the
+    /// query (rather than counting a `list_in_range` result in the caller)
+    /// so a paginated view can show an accurate total for the current
+    /// filters without first pulling every matching row across the wire.
     fn count_in_range(
         &self,
         start: NaiveDate,
         end: NaiveDate,
         category_id: Option<CategoryId>,
         source_contains: Option<&str>,
+        is_income: Option<bool>,
     ) -> Result<i64, RepositoryError>;
 }
 
