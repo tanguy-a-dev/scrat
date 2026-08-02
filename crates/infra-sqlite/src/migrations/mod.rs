@@ -10,6 +10,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (5, include_str!("0005_transfers.sql")),
     (6, include_str!("0006_rename_source_to_description.sql")),
     (7, include_str!("0007_transaction_operation_kind.sql")),
+    (8, include_str!("0008_account_opening_balance_set.sql")),
 ];
 
 /// The version a freshly created database ends up at. Derived from
@@ -207,6 +208,35 @@ mod tests {
             )
             .unwrap();
         assert_eq!(operation_kind, "card");
+    }
+
+    /// The distinction the new column exists to record. A non-zero opening
+    /// balance is something the user typed; a 0 is the default they may
+    /// simply never have filled in, and must not be mistaken for an answer.
+    #[test]
+    fn migration_8_treats_only_a_non_zero_opening_balance_as_established() {
+        let mut conn = conn_at_version(7);
+        conn.execute_batch(
+            "INSERT INTO accounts (id, name, opening_balance_minor_units, created_at, updated_at)
+                 VALUES ('anchored', 'Savings', 25000, '2026-01-01', '2026-01-01'),
+                        ('unset', 'Checking', 0, '2026-01-01', '2026-01-01');",
+        )
+        .unwrap();
+
+        run(&mut conn).unwrap();
+
+        let mut stmt = conn
+            .prepare("SELECT id, opening_balance_set FROM accounts ORDER BY id")
+            .unwrap();
+        let rows: Vec<(String, i64)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(
+            rows,
+            vec![("anchored".to_string(), 1), ("unset".to_string(), 0)]
+        );
     }
 
     #[test]

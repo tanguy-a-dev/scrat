@@ -3,8 +3,13 @@ import { invoke } from "@tauri-apps/api/core";
 export interface AccountDto {
   id: string;
   name: string;
-  opening_balance_minor_units: number;
   balance_minor_units: number;
+  /** False means nobody has told the app where this account started, so
+   * `balance_minor_units` is the ledger sum alone — right only if the
+   * account happened to begin at zero. Distinct from "started at zero",
+   * which is an answer the user gave. */
+  is_opening_balance_set: boolean;
+  has_transactions: boolean;
   currency: string;
   description_patterns: string[];
   is_default: boolean;
@@ -167,15 +172,15 @@ export const api = {
     }),
 
   listAccounts: () => invoke<AccountDto[]>("list_accounts"),
-  createAccount: (name: string, openingBalanceMinorUnits: number) =>
-    invoke<AccountDto>("create_account", {
-      name,
-      openingBalanceMinorUnits,
-    }),
+  createAccount: (name: string) => invoke<AccountDto>("create_account", { name }),
   renameAccount: (id: string, name: string) =>
     invoke<void>("rename_account", { id, name }),
-  setOpeningBalance: (id: string, minorUnits: number) =>
-    invoke<void>("set_opening_balance", { id, minorUnits }),
+  /** Sets the account's starting point by working backwards from a balance
+   * the user can read off their bank: `opening = observed - ledger sum`.
+   * Writes no transaction — unlike `reconcileAccount`, which posts a dated
+   * adjustment for money that moved after the ledger begins. */
+  establishOpeningBalance: (id: string, observedBalanceMinorUnits: number) =>
+    invoke<void>("establish_opening_balance", { id, observedBalanceMinorUnits }),
   addDescriptionPattern: (id: string, pattern: string) =>
     invoke<void>("add_description_pattern", { id, pattern }),
   removeDescriptionPattern: (id: string, pattern: string) =>

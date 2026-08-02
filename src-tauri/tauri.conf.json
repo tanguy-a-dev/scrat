@@ -15,7 +15,8 @@
         "title": "Scrat",
         "width": 1100,
         "height": 750,
-        "maximized": true
+        "maximized": true,
+        "dragDropEnabled": false
       }
     ],
     "security": {

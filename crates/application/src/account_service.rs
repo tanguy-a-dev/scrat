@@ -15,12 +15,19 @@ pub enum ApplicationError {
     AccountNotFound,
     #[error("account still has {0} transaction(s); reassign or delete them first")]
     HasTransactions(u64),
+    #[error("that balance is too large to work a starting point back from")]
+    BalanceOutOfRange,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountWithBalance {
     pub account: Account,
     pub balance: Money,
+    /// How many transactions the account holds. Carried alongside the
+    /// balance because an unestablished starting point only actually
+    /// misstates a balance once there are transactions to anchor — a fresh
+    /// empty account is at zero either way, and shouldn't be flagged.
+    pub transaction_count: u64,
 }
 
 /// Constructed fresh per request against a live repository borrow — the
@@ -37,15 +44,18 @@ impl<'a> AccountService<'a> {
         Self { repo, currency }
     }
 
-    pub fn create_account(
-        &self,
-        name: &str,
-        opening_balance_minor_units: i64,
-    ) -> Result<Account, ApplicationError> {
+    /// Creates an account with no starting point yet.
+    ///
+    /// Deliberately doesn't accept one: at creation time the ledger is empty,
+    /// so the only honest answer would be today's balance — but the usual
+    /// next step is importing months of history, which moves the starting
+    /// point back to before the first imported row. Whatever the user typed
+    /// here would be wrong the moment they imported. The anchor is
+    /// established afterwards instead, by [`Self::set_opening_balance`],
+    /// back-solved from a balance they can actually read off their bank.
+    pub fn create_account(&self, name: &str) -> Result<Account, ApplicationError> {
         let name = AccountName::new(name)?;
-        let opening_balance =
-            Money::from_minor_units(opening_balance_minor_units, self.currency.clone());
-        let account = Account::new(AccountId::new(), name, opening_balance);
+        let account = Account::without_opening_balance(AccountId::new(), name);
         self.repo.insert(&account)?;
         Ok(account)
     }
@@ -64,6 +74,40 @@ impl<'a> AccountService<'a> {
     ) -> Result<(), ApplicationError> {
         let mut account = self.get(id)?;
         account.set_opening_balance(Money::from_minor_units(minor_units, self.currency.clone()));
+        self.repo.update(&account)?;
+        Ok(())
+    }
+
+    /// Establishes the starting point from a balance the user can actually
+    /// see, by working backwards through the ledger:
+    /// `opening = observed - SUM(transactions)`.
+    ///
+    /// This is the only way the anchor gets set in practice, because it asks
+    /// for the one number a user can produce. Note what it does *not* do:
+    /// unlike [`TransactionService::reconcile_account`], it writes no ledger
+    /// entry. That's the whole distinction between the two. This says "my
+    /// records don't reach back far enough", and shifting the anchor makes
+    /// every past balance correct at once; reconciling says "something
+    /// happened since that I never imported", which is a real event on a real
+    /// date and has to be posted as one. Using either for the other's job
+    /// silently falsifies history — this one by back-dating money the account
+    /// didn't have, that one by leaving every historical balance wrong.
+    ///
+    /// [`TransactionService::reconcile_account`]: crate::transaction_service::TransactionService::reconcile_account
+    pub fn establish_opening_balance(
+        &self,
+        id: AccountId,
+        observed_balance_minor_units: i64,
+    ) -> Result<(), ApplicationError> {
+        let account = self.get(id)?;
+        let ledger_sum = self.repo.sum_transactions_minor_units(id)?;
+        // Typed in by hand against a bank statement, so an extra digit or a
+        // pasted account number must fail loudly rather than wrap around.
+        let opening = observed_balance_minor_units
+            .checked_sub(ledger_sum)
+            .ok_or(ApplicationError::BalanceOutOfRange)?;
+        let mut account = account;
+        account.set_opening_balance(Money::from_minor_units(opening, self.currency.clone()));
         self.repo.update(&account)?;
         Ok(())
     }
@@ -108,10 +152,17 @@ impl<'a> AccountService<'a> {
             .into_iter()
             .map(|account| {
                 let ledger_sum = self.repo.sum_transactions_minor_units(account.id())?;
-                let balance = account
-                    .opening_balance()
-                    .add(&Money::from_minor_units(ledger_sum, self.currency.clone()))?;
-                Ok(AccountWithBalance { account, balance })
+                let transaction_count = self.repo.transaction_count(account.id())?;
+                let balance = Money::from_minor_units(
+                    account.opening_balance_minor_units(),
+                    self.currency.clone(),
+                )
+                .add(&Money::from_minor_units(ledger_sum, self.currency.clone()))?;
+                Ok(AccountWithBalance {
+                    account,
+                    balance,
+                    transaction_count,
+                })
             })
             .collect()
     }
@@ -146,6 +197,7 @@ mod tests {
     struct FakeAccountRepository {
         accounts: Mutex<Vec<Account>>,
         transaction_counts: Mutex<std::collections::HashMap<AccountId, u64>>,
+        ledger_sums: Mutex<std::collections::HashMap<AccountId, i64>>,
     }
 
     impl AccountRepository for FakeAccountRepository {
@@ -192,8 +244,8 @@ mod tests {
                 .unwrap_or(&0))
         }
 
-        fn sum_transactions_minor_units(&self, _id: AccountId) -> Result<i64, RepositoryError> {
-            Ok(0)
+        fn sum_transactions_minor_units(&self, id: AccountId) -> Result<i64, RepositoryError> {
+            Ok(*self.ledger_sums.lock().unwrap().get(&id).unwrap_or(&0))
         }
     }
 
@@ -202,10 +254,22 @@ mod tests {
         let repo = FakeAccountRepository::default();
         let service = AccountService::new(&repo, Currency::new("USD").unwrap());
 
-        let account = service.create_account("Checking", 10_000).unwrap();
+        let account = service.create_account("Checking").unwrap();
 
         assert_eq!(account.name().as_str(), "Checking");
-        assert_eq!(account.opening_balance().minor_units(), 10_000);
+    }
+
+    /// Creation must not invent a starting point. The account is unanchored
+    /// until the user gives a balance to work back from — see
+    /// [`AccountService::create_account`].
+    #[test]
+    fn create_account_leaves_the_starting_point_unestablished() {
+        let repo = FakeAccountRepository::default();
+        let service = AccountService::new(&repo, Currency::new("USD").unwrap());
+
+        let account = service.create_account("Checking").unwrap();
+
+        assert!(!account.is_opening_balance_set());
     }
 
     #[test]
@@ -213,7 +277,7 @@ mod tests {
         let repo = FakeAccountRepository::default();
         let service = AccountService::new(&repo, Currency::new("USD").unwrap());
 
-        let result = service.create_account("   ", 0);
+        let result = service.create_account("   ");
 
         assert!(matches!(
             result,
@@ -221,11 +285,80 @@ mod tests {
         ));
     }
 
+    /// The core arithmetic: the user reports what their bank shows, and the
+    /// anchor is whatever makes the imported ledger add up to it. Here 250.00
+    /// of imported history against an observed 1,000.00 means the account
+    /// must have held 750.00 before that history began.
+    #[test]
+    fn establish_opening_balance_works_backwards_from_the_observed_balance() {
+        let repo = FakeAccountRepository::default();
+        let service = AccountService::new(&repo, Currency::new("USD").unwrap());
+        let account = service.create_account("Checking").unwrap();
+        repo.ledger_sums
+            .lock()
+            .unwrap()
+            .insert(account.id(), 25_000);
+
+        service
+            .establish_opening_balance(account.id(), 100_000)
+            .unwrap();
+
+        let stored = repo.find_by_id(account.id()).unwrap().unwrap();
+        assert_eq!(stored.opening_balance_minor_units(), 75_000);
+        assert!(stored.is_opening_balance_set());
+    }
+
+    /// Answering "it started at zero" is an answer. The stored amount is
+    /// indistinguishable from the unset default, so only the flag keeps the
+    /// app from asking again forever.
+    #[test]
+    fn establish_opening_balance_marks_a_zero_anchor_as_established() {
+        let repo = FakeAccountRepository::default();
+        let service = AccountService::new(&repo, Currency::new("USD").unwrap());
+        let account = service.create_account("Checking").unwrap();
+        repo.ledger_sums
+            .lock()
+            .unwrap()
+            .insert(account.id(), 25_000);
+
+        service
+            .establish_opening_balance(account.id(), 25_000)
+            .unwrap();
+
+        let stored = repo.find_by_id(account.id()).unwrap().unwrap();
+        assert_eq!(stored.opening_balance_minor_units(), 0);
+        assert!(stored.is_opening_balance_set());
+    }
+
+    /// Hand-typed against a bank statement, so a pasted account number must
+    /// fail loudly rather than wrap `i64` into a plausible-looking anchor.
+    #[test]
+    fn establish_opening_balance_rejects_an_observed_balance_that_would_overflow() {
+        let repo = FakeAccountRepository::default();
+        let service = AccountService::new(&repo, Currency::new("USD").unwrap());
+        let account = service.create_account("Checking").unwrap();
+        repo.ledger_sums.lock().unwrap().insert(account.id(), -1);
+
+        let result = service.establish_opening_balance(account.id(), i64::MAX);
+
+        assert!(matches!(result, Err(ApplicationError::BalanceOutOfRange)));
+    }
+
+    #[test]
+    fn establish_opening_balance_rejects_an_unknown_account() {
+        let repo = FakeAccountRepository::default();
+        let service = AccountService::new(&repo, Currency::new("USD").unwrap());
+
+        let result = service.establish_opening_balance(AccountId::new(), 1_000);
+
+        assert!(matches!(result, Err(ApplicationError::AccountNotFound)));
+    }
+
     #[test]
     fn delete_account_returns_error_when_transactions_reference_account() {
         let repo = FakeAccountRepository::default();
         let service = AccountService::new(&repo, Currency::new("USD").unwrap());
-        let account = service.create_account("Checking", 0).unwrap();
+        let account = service.create_account("Checking").unwrap();
         repo.transaction_counts
             .lock()
             .unwrap()
@@ -240,7 +373,7 @@ mod tests {
     fn delete_account_succeeds_when_no_transactions() {
         let repo = FakeAccountRepository::default();
         let service = AccountService::new(&repo, Currency::new("USD").unwrap());
-        let account = service.create_account("Checking", 0).unwrap();
+        let account = service.create_account("Checking").unwrap();
 
         service.delete_account(account.id()).unwrap();
 
@@ -251,7 +384,11 @@ mod tests {
     fn list_accounts_with_balance_combines_opening_balance_and_ledger_sum() {
         let repo = FakeAccountRepository::default();
         let service = AccountService::new(&repo, Currency::new("USD").unwrap());
-        service.create_account("Checking", 5_000).unwrap();
+        let account = service.create_account("Checking").unwrap();
+        repo.ledger_sums.lock().unwrap().insert(account.id(), 2_000);
+        service
+            .establish_opening_balance(account.id(), 5_000)
+            .unwrap();
 
         let accounts = service.list_accounts_with_balance().unwrap();
 
@@ -259,12 +396,39 @@ mod tests {
         assert_eq!(accounts[0].balance.minor_units(), 5_000);
     }
 
+    /// An unanchored account still reports a balance — the ledger sum alone.
+    /// It's the best available answer, and `is_opening_balance_set` is what
+    /// tells the UI to present it as provisional rather than suppress it.
+    #[test]
+    fn list_accounts_with_balance_falls_back_to_the_ledger_sum_when_unanchored() {
+        let repo = FakeAccountRepository::default();
+        let service = AccountService::new(&repo, Currency::new("USD").unwrap());
+        let account = service.create_account("Checking").unwrap();
+        repo.ledger_sums.lock().unwrap().insert(account.id(), 2_000);
+        repo.transaction_counts
+            .lock()
+            .unwrap()
+            .insert(account.id(), 4);
+
+        let accounts = service.list_accounts_with_balance().unwrap();
+
+        assert_eq!(accounts[0].balance.minor_units(), 2_000);
+        assert!(!accounts[0].account.is_opening_balance_set());
+        assert_eq!(accounts[0].transaction_count, 4);
+    }
+
     #[test]
     fn total_available_sums_all_accounts() {
         let repo = FakeAccountRepository::default();
         let service = AccountService::new(&repo, Currency::new("USD").unwrap());
-        service.create_account("Checking", 5_000).unwrap();
-        service.create_account("Savings", 2_000).unwrap();
+        let checking = service.create_account("Checking").unwrap();
+        let savings = service.create_account("Savings").unwrap();
+        service
+            .establish_opening_balance(checking.id(), 5_000)
+            .unwrap();
+        service
+            .establish_opening_balance(savings.id(), 2_000)
+            .unwrap();
 
         let accounts = service.list_accounts_with_balance().unwrap();
         let total = total_available(&accounts).unwrap();

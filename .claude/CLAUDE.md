@@ -60,9 +60,28 @@ Rules that follow from this, non-negotiably:
   breaks everywhere `Money::from_minor_units` is called with an app-wide
   currency; treat that as a major migration, not a small patch.
 - **Account balance is `opening_balance` (a real stored field) + `SUM(transactions)`,
-  not a cached running total.** The opening balance is a genuine anchor value the
-  user sets once (or edits) — not a cache of the ledger, so it can't drift from it.
-  Never add a second stored "current balance" field; it will drift.
+  not a cached running total.** The opening balance is a genuine anchor value —
+  not a cache of the ledger, so it can't drift from it. Never add a second
+  stored "current balance" field; it will drift.
+- **The opening balance is `Option<Money>`, and the UI never asks for it
+  directly.** `None` means "nobody has established a starting point yet" and is
+  *not* the same as zero — a user who says the account began empty has answered
+  the question. Migration 0008's `opening_balance_set` column carries that
+  distinction, because the amount column alone can't (both store 0). The reason
+  it's never asked for: nobody can compute it. After importing a bank export it
+  is `observed balance today - SUM(imported transactions)`, so the app asks for
+  the one number the user can read off their bank and back-solves in
+  `AccountService::establish_opening_balance`. Anything creating an `Account`
+  from user input should use `Account::without_opening_balance`.
+- **Setting the starting point and reconciling take the same input and mean
+  opposite things — don't merge them.** `establish_opening_balance` shifts the
+  undated anchor and writes no ledger row: it says "my records don't reach back
+  far enough", and fixes every historical balance at once.
+  `TransactionService::reconcile_account` posts a dated `Adjustment`: it says
+  "money moved after my records begin that I never imported", and leaves the
+  past alone. Using either for the other's job silently falsifies history —
+  reconciling a bad starting point leaves every past balance wrong, and
+  re-anchoring to absorb real drift back-dates money the account never had.
 - **Value objects validate in their constructor** (`AccountName::new`,
   `CategoryName::new`, `Description::new`, `Currency::new`, `Money`). If a value
   exists, it's already valid — don't re-validate at every call site.

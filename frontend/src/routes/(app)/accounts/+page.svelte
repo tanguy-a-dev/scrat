@@ -18,7 +18,6 @@
   let error = $state("");
 
   let newName = $state("");
-  let newOpeningBalance = $state("0");
   let newPatternDrafts = $state<Record<string, string>>({});
   let newTransferPatternDrafts = $state<Record<string, string>>({});
   /** Which account has its reconcile input open, and what's typed in it.
@@ -29,6 +28,12 @@
   /** Which account's "apply to past transactions" confirm is open. Only one
    * at a time, same reasoning as `reconcilingAccountId`. */
   let applyingRulesAccountId = $state<string | null>(null);
+  /** Which account has its starting-point input open, and what's typed in
+   * it. Same one-at-a-time rule as reconciling — and deliberately separate
+   * state, because the two ask for the same number and mean different
+   * things. */
+  let anchoringAccountId = $state<string | null>(null);
+  let anchorDraft = $state("");
 
   onMount(load);
 
@@ -79,15 +84,13 @@
 
   function handleCreate(event: Event) {
     event.preventDefault();
-    const minorUnits = parseToMinorUnits(newOpeningBalance || "0");
-    if (minorUnits === null) {
-      toast.error("Opening balance must be a number.");
-      return;
-    }
+    // No balance asked for here on purpose: whatever the user typed would be
+    // wrong the moment they imported history, since that moves the starting
+    // point back before the first imported row. It's established afterwards,
+    // from a balance they can actually read off their bank.
     withErrorHandling(async () => {
-      await api.createAccount(newName, minorUnits);
+      await api.createAccount(newName);
       newName = "";
-      newOpeningBalance = "0";
     });
   }
 
@@ -96,11 +99,37 @@
     withErrorHandling(() => api.renameAccount(account.id, name));
   }
 
-  function handleOpeningBalanceChange(account: AccountDto, raw: string) {
-    const minorUnits = parseToMinorUnits(raw);
-    if (minorUnits === null || minorUnits === account.opening_balance_minor_units)
+  function startAnchor(account: AccountDto) {
+    // The two panels ask for the same number and do opposite things with it,
+    // so they must never be on screen together — side by side they'd read as
+    // a choice between two identical forms.
+    cancelReconcile();
+    anchoringAccountId = account.id;
+    // Pre-filled with the provisional balance rather than left blank: if the
+    // account really did start at zero, that number is already correct and
+    // submitting it unchanged is the right answer.
+    anchorDraft = formatMinorUnits(account.balance_minor_units);
+  }
+
+  function cancelAnchor() {
+    anchoringAccountId = null;
+    anchorDraft = "";
+  }
+
+  async function handleAnchor(account: AccountDto) {
+    const minorUnits = parseToMinorUnits(anchorDraft);
+    if (minorUnits === null) {
+      toast.error("Balance must be a number.");
       return;
-    withErrorHandling(() => api.setOpeningBalance(account.id, minorUnits));
+    }
+    try {
+      await api.establishOpeningBalance(account.id, minorUnits);
+      cancelAnchor();
+      await load();
+      toast.success(`Starting point set for "${account.name}".`);
+    } catch (e) {
+      toast.error(String(e));
+    }
   }
 
   function handleAddPattern(account: AccountDto) {
@@ -164,6 +193,7 @@
   }
 
   function startReconcile(account: AccountDto) {
+    cancelAnchor(); // see startAnchor
     reconcilingAccountId = account.id;
     // Pre-filled with what the app currently believes, so the user edits a
     // number rather than typing one from scratch — and so submitting
@@ -209,12 +239,6 @@
 
 <form class="create-form" onsubmit={handleCreate}>
   <input placeholder="Account name" bind:value={newName} required />
-  <input
-    type="number"
-    step="0.01"
-    placeholder="Opening balance"
-    bind:value={newOpeningBalance}
-  />
   <button type="submit">Add account</button>
 </form>
 
@@ -232,15 +256,10 @@
             value={account.name}
             onchange={(e) => handleRename(account, e.currentTarget.value)}
           />
-          <input
-            class="balance"
-            type="number"
-            step="0.01"
-            value={formatMinorUnits(account.opening_balance_minor_units)}
-            onchange={(e) =>
-              handleOpeningBalanceChange(account, e.currentTarget.value)}
-          />
-          <span class="computed"
+          <span
+            class="computed"
+            class:provisional={!account.is_opening_balance_set &&
+              account.has_transactions}
             >balance: {formatCurrency(
               account.balance_minor_units,
               account.currency,
@@ -253,6 +272,11 @@
               Set as default
             </button>
           {/if}
+          {#if !account.is_opening_balance_set}
+            <button type="button" onclick={() => startAnchor(account)}>
+              Set starting point
+            </button>
+          {/if}
           <button type="button" onclick={() => startReconcile(account)}>
             Reconcile
           </button>
@@ -261,10 +285,56 @@
             onConfirm={() => handleDelete(account)}
           />
         </div>
+        <!-- Only a problem once there are transactions to anchor: an empty
+             account is at zero either way, so flagging it would be noise. -->
+        {#if !account.is_opening_balance_set && account.has_transactions && anchoringAccountId !== account.id}
+          <p class="unanchored">
+            Starting point not set — this balance is only the transactions on
+            record, so it's off by whatever the account held before them.
+          </p>
+        {/if}
+        {#if anchoringAccountId === account.id}
+          <div class="reconcile">
+            <p class="panel-title">
+              Set starting point <span>— no entry is added to the ledger</span>
+            </p>
+            <label for="anchor-{account.id}">
+              Balance your bank shows today
+            </label>
+            <input
+              id="anchor-{account.id}"
+              type="number"
+              step="0.01"
+              bind:value={anchorDraft}
+              onkeydown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  handleAnchor(account);
+                } else if (e.key === "Escape") {
+                  cancelAnchor();
+                }
+              }}
+            />
+            <button type="button" onclick={() => handleAnchor(account)}>
+              Apply
+            </button>
+            <button type="button" class="secondary" onclick={cancelAnchor}>
+              Cancel
+            </button>
+            <p class="hint">
+              Use this when the balance is wrong all the way back. Works out
+              what the account held before your earliest recorded transaction,
+              correcting every past balance at once.
+            </p>
+          </div>
+        {/if}
         {#if reconcilingAccountId === account.id}
           <div class="reconcile">
+            <p class="panel-title">
+              Reconcile <span>— adds one adjustment dated today</span>
+            </p>
             <label for="reconcile-{account.id}">
-              Balance shown by your bank today
+              Balance your bank shows today
             </label>
             <input
               id="reconcile-{account.id}"
@@ -287,8 +357,9 @@
               Cancel
             </button>
             <p class="hint">
-              The difference is posted as a single adjustment, so this account
-              matches what you can actually see. It doesn't count as spending.
+              Use this when money moved that you never imported — fees,
+              interest, market movement. Past balances are left as they were,
+              and the adjustment doesn't count as spending.
             </p>
           </div>
         {/if}
@@ -463,13 +534,23 @@
     min-width: 10rem;
   }
 
-  .balance {
-    width: 7rem;
-  }
-
   .computed {
     opacity: 0.8;
     font-size: 0.9rem;
+  }
+
+  /* A balance the app can't vouch for, because the account's starting point
+     is still unknown. Dotted rather than coloured — it's provisional, not
+     an error. */
+  .computed.provisional {
+    text-decoration: underline dotted;
+    text-underline-offset: 0.25em;
+  }
+
+  .unanchored {
+    margin: 0.6rem 0 0;
+    font-size: 0.8rem;
+    opacity: 0.75;
   }
 
   .patterns {
@@ -519,6 +600,21 @@
     align-items: center;
     flex-wrap: wrap;
     gap: 0.5rem;
+  }
+
+  /* Both panels ask the same question ("what does your bank say?") and do
+     opposite things with the answer, so the title — not the field label —
+     is what tells them apart. */
+  .reconcile .panel-title {
+    flex-basis: 100%;
+    margin: 0;
+    font-size: 0.9rem;
+    font-weight: 600;
+  }
+
+  .reconcile .panel-title span {
+    font-weight: 400;
+    opacity: 0.7;
   }
 
   .reconcile label {

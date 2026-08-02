@@ -22,7 +22,7 @@ pub fn run() {
             accounts::list_accounts,
             accounts::create_account,
             accounts::rename_account,
-            accounts::set_opening_balance,
+            accounts::establish_opening_balance,
             accounts::add_description_pattern,
             accounts::remove_description_pattern,
             accounts::delete_account,

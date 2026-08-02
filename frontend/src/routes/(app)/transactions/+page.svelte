@@ -61,6 +61,24 @@
     }
   });
 
+  /** An import is the moment an account's balance silently goes wrong: it
+   * now has history, but nothing says what the account held before that
+   * history starts. Named here rather than left for the user to notice on
+   * the Accounts page, because the number looks perfectly plausible. One
+   * import can land rows on several accounts via transfer rules, so this
+   * checks all of them rather than just the chosen destination. */
+  async function handleImported() {
+    await load();
+    const unanchored = accounts.filter(
+      (a) => !a.is_opening_balance_set && a.has_transactions,
+    );
+    if (unanchored.length === 0) return;
+    const names = unanchored.map((a) => `"${a.name}"`).join(", ");
+    toast.error(
+      `Balances for ${names} are off until you set a starting point — do it in Accounts.`,
+    );
+  }
+
   let accounts = $state<AccountDto[]>([]);
   let categories = $state<CategoryDto[]>([]);
   // Holds the ledger rows for Month/Year/Custom ranges — unfiltered and
@@ -1145,7 +1163,7 @@
   <ImportCsvDialog
     {accounts}
     {categories}
-    onImported={load}
+    onImported={handleImported}
     onClose={() => (showImportDialog = false)}
   />
 {/if}

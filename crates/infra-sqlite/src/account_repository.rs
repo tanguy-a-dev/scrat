@@ -40,12 +40,15 @@ impl<'a> SqliteAccountRepository<'a> {
         })?;
         let name: String = row.get("name")?;
         let opening_balance_minor_units: i64 = row.get("opening_balance_minor_units")?;
+        let opening_balance_set: bool = row.get("opening_balance_set")?;
 
         let name = AccountName::new(&name).map_err(|e| {
             rusqlite::Error::InvalidColumnType(0, e.to_string(), rusqlite::types::Type::Text)
         })?;
-        let opening_balance =
-            Money::from_minor_units(opening_balance_minor_units, self.currency.clone());
+        // The stored amount is meaningless until the flag says someone
+        // established it — see `Account::opening_balance`.
+        let opening_balance = opening_balance_set
+            .then(|| Money::from_minor_units(opening_balance_minor_units, self.currency.clone()));
 
         Ok((
             id,
@@ -63,12 +66,15 @@ impl<'a> AccountRepository for SqliteAccountRepository<'a> {
         let now = Utc::now().to_rfc3339();
         self.conn
             .execute(
-                "INSERT INTO accounts (id, name, opening_balance_minor_units, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?4)",
+                "INSERT INTO accounts
+                     (id, name, opening_balance_minor_units, opening_balance_set,
+                      created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
                 params![
                     account.id().as_string(),
                     account.name().as_str(),
-                    account.opening_balance().minor_units(),
+                    account.opening_balance_minor_units(),
+                    account.is_opening_balance_set(),
                     now,
                 ],
             )
@@ -80,12 +86,15 @@ impl<'a> AccountRepository for SqliteAccountRepository<'a> {
         let now = Utc::now().to_rfc3339();
         self.conn
             .execute(
-                "UPDATE accounts SET name = ?2, opening_balance_minor_units = ?3, updated_at = ?4
-                 WHERE id = ?1",
+                "UPDATE accounts
+                    SET name = ?2, opening_balance_minor_units = ?3,
+                        opening_balance_set = ?4, updated_at = ?5
+                  WHERE id = ?1",
                 params![
                     account.id().as_string(),
                     account.name().as_str(),
-                    account.opening_balance().minor_units(),
+                    account.opening_balance_minor_units(),
+                    account.is_opening_balance_set(),
                     now,
                 ],
             )
@@ -107,7 +116,8 @@ impl<'a> AccountRepository for SqliteAccountRepository<'a> {
         let result = self
             .conn
             .query_row(
-                "SELECT id, name, opening_balance_minor_units FROM accounts WHERE id = ?1",
+                "SELECT id, name, opening_balance_minor_units, opening_balance_set
+                   FROM accounts WHERE id = ?1",
                 params![id.as_string()],
                 |row| self.row_to_account(row),
             )
@@ -128,7 +138,10 @@ impl<'a> AccountRepository for SqliteAccountRepository<'a> {
     fn list_all(&self) -> Result<Vec<Account>, RepositoryError> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, name, opening_balance_minor_units FROM accounts ORDER BY name")
+            .prepare(
+                "SELECT id, name, opening_balance_minor_units, opening_balance_set
+                   FROM accounts ORDER BY name",
+            )
             .map_err(sql_err)?;
         let rows = stmt
             .query_map([], |row| self.row_to_account(row))
@@ -223,9 +236,51 @@ mod tests {
         let reloaded = repo.find_by_id(account.id()).unwrap().unwrap();
 
         assert_eq!(reloaded.name().as_str(), "Checking");
-        assert_eq!(reloaded.opening_balance().minor_units(), 12_345);
+        assert_eq!(reloaded.opening_balance_minor_units(), 12_345);
+        assert!(reloaded.is_opening_balance_set());
         assert_eq!(reloaded.description_patterns().len(), 1);
         assert_eq!(reloaded.description_patterns()[0].as_str(), "acme corp");
+    }
+
+    /// The flag has to survive the round trip on its own, because the amount
+    /// column can't carry it: an unestablished anchor and one deliberately
+    /// set to zero both store 0.
+    #[test]
+    fn an_unestablished_starting_point_survives_a_roundtrip_distinct_from_zero() {
+        let conn = test_conn();
+        let repo = SqliteAccountRepository::new(&conn, usd());
+        let unanchored = Account::without_opening_balance(
+            AccountId::new(),
+            AccountName::new("Checking").unwrap(),
+        );
+        let mut anchored_at_zero = Account::new(
+            AccountId::new(),
+            AccountName::new("Savings").unwrap(),
+            Money::zero(usd()),
+        );
+
+        repo.insert(&unanchored).unwrap();
+        repo.insert(&anchored_at_zero).unwrap();
+
+        let reloaded = repo.find_by_id(unanchored.id()).unwrap().unwrap();
+        assert!(!reloaded.is_opening_balance_set());
+        assert_eq!(reloaded.opening_balance(), None);
+        assert!(repo
+            .find_by_id(anchored_at_zero.id())
+            .unwrap()
+            .unwrap()
+            .is_opening_balance_set());
+
+        // And establishing it later has to stick through `update`, not just
+        // `insert` — that's the path the UI actually takes.
+        anchored_at_zero.set_opening_balance(Money::from_minor_units(500, usd()));
+        let mut now_anchored = unanchored.clone();
+        now_anchored.set_opening_balance(Money::zero(usd()));
+        repo.update(&now_anchored).unwrap();
+
+        let reloaded = repo.find_by_id(unanchored.id()).unwrap().unwrap();
+        assert!(reloaded.is_opening_balance_set());
+        assert_eq!(reloaded.opening_balance_minor_units(), 0);
     }
 
     #[test]

@@ -12,8 +12,15 @@ use crate::db::DbState;
 pub struct AccountDto {
     pub id: String,
     pub name: String,
-    pub opening_balance_minor_units: i64,
     pub balance_minor_units: i64,
+    /// Whether the account's starting point has been established. When
+    /// false, `balance_minor_units` is the ledger sum alone and is only
+    /// correct if the account happened to begin at zero — the UI says so
+    /// rather than presenting a guess as fact.
+    pub is_opening_balance_set: bool,
+    /// Paired with `is_opening_balance_set` to decide whether to prompt: an
+    /// account with no transactions has nothing to anchor yet.
+    pub has_transactions: bool,
     pub currency: String,
     pub description_patterns: Vec<String>,
     /// Whether this is the app-wide default account — used as the CSV
@@ -23,12 +30,17 @@ pub struct AccountDto {
 }
 
 fn to_dto(value: AccountWithBalance, default_account_id: Option<AccountId>) -> AccountDto {
-    let AccountWithBalance { account, balance } = value;
+    let AccountWithBalance {
+        account,
+        balance,
+        transaction_count,
+    } = value;
     AccountDto {
         id: account.id().as_string(),
         name: account.name().as_str().to_string(),
-        opening_balance_minor_units: account.opening_balance().minor_units(),
         balance_minor_units: balance.minor_units(),
+        is_opening_balance_set: account.is_opening_balance_set(),
+        has_transactions: transaction_count > 0,
         currency: balance.currency().code().to_string(),
         description_patterns: account
             .description_patterns()
@@ -117,25 +129,25 @@ pub fn list_accounts(state: State<DbState>) -> Result<Vec<AccountDto>, String> {
 }
 
 #[tauri::command]
-pub fn create_account(
-    state: State<DbState>,
-    name: String,
-    opening_balance_minor_units: i64,
-) -> Result<AccountDto, String> {
+pub fn create_account(state: State<DbState>, name: String) -> Result<AccountDto, String> {
     let guard = state.0.lock().unwrap();
     let conn = guard
         .as_ref()
         .ok_or_else(|| "database is locked".to_string())?;
     let currency = app_currency(conn);
     let repo = SqliteAccountRepository::new(conn, currency.clone());
-    let service = AccountService::new(&repo, currency);
-    let account = service
-        .create_account(&name, opening_balance_minor_units)
-        .map_err(|e| e.to_string())?;
-    let balance = account.opening_balance().clone();
+    let service = AccountService::new(&repo, currency.clone());
+    let account = service.create_account(&name).map_err(|e| e.to_string())?;
+    // A brand-new account has no transactions and no starting point, so its
+    // balance is zero — the one moment where that's a fact and not a guess.
+    let balance = scrat_domain::money::Money::from_minor_units(0, currency);
     let default_account_id = resolve_default_account_id(conn)?;
     Ok(to_dto(
-        AccountWithBalance { account, balance },
+        AccountWithBalance {
+            account,
+            balance,
+            transaction_count: 0,
+        },
         default_account_id,
     ))
 }
@@ -161,14 +173,20 @@ pub fn rename_account(state: State<DbState>, id: String, name: String) -> Result
     with_service(&state, |s| s.rename_account(id, &name))
 }
 
+/// Sets the account's starting point from the balance the user reads off
+/// their bank, back-solving through the ledger. Replaces the old
+/// `set_opening_balance`, which asked for the anchor directly — a number
+/// nobody can compute by hand once any history has been imported.
 #[tauri::command]
-pub fn set_opening_balance(
+pub fn establish_opening_balance(
     state: State<DbState>,
     id: String,
-    minor_units: i64,
+    observed_balance_minor_units: i64,
 ) -> Result<(), String> {
     let id = parse_id(&id)?;
-    with_service(&state, |s| s.set_opening_balance(id, minor_units))
+    with_service(&state, |s| {
+        s.establish_opening_balance(id, observed_balance_minor_units)
+    })
 }
 
 #[tauri::command]

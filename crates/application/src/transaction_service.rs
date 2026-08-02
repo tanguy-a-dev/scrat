@@ -395,8 +395,7 @@ impl<'a> TransactionService<'a> {
         // The observed balance is typed in by hand, so every step here is
         // checked: an extra digit or two shouldn't wrap a balance around.
         let current = account
-            .opening_balance()
-            .minor_units()
+            .opening_balance_minor_units()
             .checked_add(ledger_sum)
             .ok_or(ApplicationError::BalanceOutOfRange)?;
         let delta = observed_balance_minor_units

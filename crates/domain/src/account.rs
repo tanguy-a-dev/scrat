@@ -89,16 +89,43 @@ impl DescriptionPattern {
 pub struct Account {
     id: AccountId,
     name: AccountName,
-    opening_balance: Money,
+    /// Where the account stood before the first transaction on record.
+    ///
+    /// `None` means nobody has said yet — which is not the same as zero, and
+    /// the distinction is load-bearing. Nobody can produce this number by
+    /// hand: after importing a bank export it is `observed balance today -
+    /// SUM(imported transactions)`. So the app never asks for it directly;
+    /// it asks for the balance the user can actually read off their bank and
+    /// back-solves. Until that happens the anchor is genuinely unknown, and
+    /// every balance derived from it is provisional. Collapsing `None` into
+    /// `Money::zero` would erase exactly the fact the UI needs in order to
+    /// say so.
+    opening_balance: Option<Money>,
     description_patterns: Vec<DescriptionPattern>,
 }
 
 impl Account {
+    /// An account whose starting point is known. Use
+    /// [`Self::without_opening_balance`] when it isn't — passing
+    /// `Money::from_minor_units(0, …)` here asserts the account genuinely
+    /// began at zero.
     pub fn new(id: AccountId, name: AccountName, opening_balance: Money) -> Self {
         Self {
             id,
             name,
-            opening_balance,
+            opening_balance: Some(opening_balance),
+            description_patterns: Vec::new(),
+        }
+    }
+
+    /// A newly created account, before any transactions exist to measure a
+    /// starting point against. This is what account creation produces — see
+    /// the note on [`Self::opening_balance`].
+    pub fn without_opening_balance(id: AccountId, name: AccountName) -> Self {
+        Self {
+            id,
+            name,
+            opening_balance: None,
             description_patterns: Vec::new(),
         }
     }
@@ -106,7 +133,7 @@ impl Account {
     pub fn from_parts(
         id: AccountId,
         name: AccountName,
-        opening_balance: Money,
+        opening_balance: Option<Money>,
         description_patterns: Vec<DescriptionPattern>,
     ) -> Self {
         Self {
@@ -125,8 +152,26 @@ impl Account {
         &self.name
     }
 
-    pub fn opening_balance(&self) -> &Money {
-        &self.opening_balance
+    pub fn opening_balance(&self) -> Option<&Money> {
+        self.opening_balance.as_ref()
+    }
+
+    /// The anchor to add to the ledger sum when computing a balance, in
+    /// minor units. An unestablished anchor contributes nothing — the
+    /// resulting balance is the best the app can do, and
+    /// [`Self::is_opening_balance_set`] is how a caller knows to present it
+    /// as provisional rather than final.
+    pub fn opening_balance_minor_units(&self) -> i64 {
+        self.opening_balance
+            .as_ref()
+            .map(|m| m.minor_units())
+            .unwrap_or(0)
+    }
+
+    /// Whether the starting point has been established. False means "not
+    /// known yet", never "known to be zero".
+    pub fn is_opening_balance_set(&self) -> bool {
+        self.opening_balance.is_some()
     }
 
     pub fn description_patterns(&self) -> &[DescriptionPattern] {
@@ -137,8 +182,11 @@ impl Account {
         self.name = name;
     }
 
+    /// Establishes the starting point. Once set it stays set, including when
+    /// set to zero — that's a user assertion the account really did begin at
+    /// zero, and re-asking would be treating their answer as no answer.
     pub fn set_opening_balance(&mut self, opening_balance: Money) {
-        self.opening_balance = opening_balance;
+        self.opening_balance = Some(opening_balance);
     }
 
     pub fn add_description_pattern(&mut self, pattern: DescriptionPattern) {
@@ -195,6 +243,37 @@ mod tests {
 
         assert!(account.matches_description("WHOLE FOODS MARKET #123"));
         assert!(!account.matches_description("Trader Joe's"));
+    }
+
+    /// The whole point of the `Option`: a brand-new account has an unknown
+    /// starting point, and "unknown" must not read as "zero" — the UI keys
+    /// off this to warn that balances are provisional.
+    #[test]
+    fn a_new_account_has_no_opening_balance_but_contributes_zero_to_a_balance() {
+        let account = Account::without_opening_balance(
+            AccountId::new(),
+            AccountName::new("Checking").unwrap(),
+        );
+
+        assert!(!account.is_opening_balance_set());
+        assert_eq!(account.opening_balance(), None);
+        assert_eq!(account.opening_balance_minor_units(), 0);
+    }
+
+    /// The counterpart case, and the reason a plain `i64` wouldn't do:
+    /// someone who genuinely started at zero has answered the question, and
+    /// must not be asked again.
+    #[test]
+    fn an_opening_balance_set_to_zero_still_counts_as_established() {
+        let mut account = Account::without_opening_balance(
+            AccountId::new(),
+            AccountName::new("Checking").unwrap(),
+        );
+
+        account.set_opening_balance(eur(0));
+
+        assert!(account.is_opening_balance_set());
+        assert_eq!(account.opening_balance_minor_units(), 0);
     }
 
     #[test]
