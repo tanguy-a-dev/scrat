@@ -31,3 +31,18 @@ export function pageViewState<T extends object>(key: string, initial: () => T): 
   store.set(key, created);
   return created;
 }
+
+/** Forgets every page's view state, so the next visit starts from defaults.
+ *
+ * Call this whenever the database underneath the UI is replaced or removed
+ * (import, delete) — *not* on ordinary navigation, which is exactly what this
+ * cache exists to survive. The stored state is scoped to one database even
+ * though nothing about its shape says so: a category filter holds a category
+ * id, and a description filter holds text the user typed out of their own
+ * ledger. Carried into a different database, the id matches no category and
+ * silently filters the page down to nothing, while the text is a fragment of
+ * data that was supposed to be gone. The app does not restart on import or
+ * delete, so without this the map simply survives both. */
+export function clearPageCache(): void {
+  store.clear();
+}

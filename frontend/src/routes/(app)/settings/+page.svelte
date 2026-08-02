@@ -3,6 +3,7 @@
   import { goto } from "$app/navigation";
   import { save, open } from "@tauri-apps/plugin-dialog";
   import { api } from "$lib/api";
+  import { clearPageCache } from "$lib/pageCache";
   import { toast } from "$lib/toasts.svelte";
 
   const COMMON_CURRENCIES = ["USD", "EUR", "GBP", "CAD", "AUD", "CHF", "JPY"];
@@ -11,6 +12,19 @@
   let selectedCurrency = $state("");
   let loadError = $state("");
   let loadingCurrency = $state(true);
+
+  /** The offered codes, plus whatever is actually stored if it isn't one of
+   * them. The backend accepts any ISO-shaped code (`Currency::new` takes
+   * three uppercase letters), so a database can legitimately arrive — via
+   * import, or from a build whose list was longer — carrying a code this
+   * list never had. Without it as an option, `bind:value` matches nothing:
+   * the select renders blank as though no currency were set, and the first
+   * touch of it silently overwrites a perfectly valid setting. */
+  let currencyOptions = $derived(
+    currentCurrency && !COMMON_CURRENCIES.includes(currentCurrency)
+      ? [...COMMON_CURRENCIES, currentCurrency]
+      : COMMON_CURRENCIES,
+  );
 
   let exporting = $state(false);
   let exportingCsv = $state(false);
@@ -42,14 +56,19 @@
     }
   }
 
+  // The busy flag goes up only once a destination is chosen. Raising it
+  // around the native save dialog too would leave the button reading
+  // "Exporting…" for however long the user spends browsing the filesystem,
+  // and drop it again just as the copy actually starts — the progress it
+  // reports would be exactly the wrong half of the operation.
   async function handleExport() {
-    exporting = true;
     try {
       const destination = await save({
         defaultPath: "scrat-export.db",
         filters: [{ name: "Scrat Database", extensions: ["db"] }],
       });
       if (!destination) return;
+      exporting = true;
       await api.exportDatabase(destination);
       toast.success(`Exported to ${destination}`);
     } catch (e) {
@@ -67,13 +86,13 @@
   }
 
   async function handleExportCsv() {
-    exportingCsv = true;
     try {
       const destination = await save({
         defaultPath: timestampedFileName("scrat-transactions", "csv"),
         filters: [{ name: "CSV", extensions: ["csv"] }],
       });
       if (!destination) return;
+      exportingCsv = true;
       await api.exportTransactionsCsv(destination);
       toast.success(`Exported to ${destination}`);
     } catch (e) {
@@ -107,6 +126,9 @@
     importing = true;
     try {
       await api.importDatabase(importPath, importPassword);
+      // Every page's remembered filters belong to the database that was just
+      // replaced — see clearPageCache.
+      clearPageCache();
       toast.success("Database imported.");
       await goto("/overview");
     } catch (e) {
@@ -179,6 +201,9 @@
     deleting = true;
     try {
       await api.deleteDatabase();
+      // The deleted database's filters must not outlive it — see
+      // clearPageCache.
+      clearPageCache();
       toast.success("Your data has been deleted.");
       await goto("/");
     } catch (e) {
@@ -200,7 +225,7 @@
   {:else}
     <form onsubmit={handleSaveCurrency}>
       <select bind:value={selectedCurrency}>
-        {#each COMMON_CURRENCIES as code (code)}
+        {#each currencyOptions as code (code)}
           <option value={code}>{code}</option>
         {/each}
       </select>
@@ -312,14 +337,6 @@
       </form>
     </div>
   {/if}
-</section>
-
-<section>
-  <h2>Suggest categories</h2>
-  <p class="hint">
-    Suggests categories based on how you've categorized similar transactions
-    before — a local lookup, nothing leaves your computer.
-  </p>
 </section>
 
 <section>
