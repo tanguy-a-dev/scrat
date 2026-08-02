@@ -49,7 +49,7 @@
       included = result.rows.map((r) => r.include_by_default);
       if (result.rows.length > 0) {
         const suggested = await api
-          .suggestAccountForSource(result.rows.find((r) => r.source)?.source ?? "")
+          .suggestAccountForDescription(result.rows.find((r) => r.description)?.description ?? "")
           .catch(() => null);
         if (suggested) selectedAccountId = suggested;
       }
@@ -123,7 +123,7 @@
       const rows: {
         date: string;
         amount_minor_units: number;
-        source: string;
+        description: string;
         category: string | null;
         subcategory: string | null;
       }[] = [];
@@ -132,7 +132,7 @@
           rows.push({
             date: r.date,
             amount_minor_units: r.amount_minor_units,
-            source: r.source,
+            description: r.description,
             category: r.csv_category,
             subcategory: r.csv_subcategory,
           });
@@ -220,7 +220,7 @@
               <th></th>
               <th>Date</th>
               <th>Amount</th>
-              <th>Source</th>
+              <th>Description</th>
               <th>Category</th>
             </tr>
           </thead>
@@ -242,7 +242,7 @@
                     : "—"}</td
                 >
                 <td>
-                  {row.source || "—"}
+                  {row.description || "—"}
                   {#if row.is_likely_balance_row}
                     <span class="balance-hint">(likely a balance line)</span>
                   {/if}

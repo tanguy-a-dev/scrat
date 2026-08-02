@@ -1,5 +1,5 @@
 use scrat_domain::category::{
-    has_children, Category, CategoryError, CategoryIcon, CategoryId, CategoryName,
+    has_subcategories, Category, CategoryError, CategoryIcon, CategoryId, CategoryName,
     DEFAULT_CATEGORY_NAME, FALLBACK_ICON,
 };
 use scrat_domain::ports::{CategoryRepository, RepositoryError};
@@ -88,7 +88,7 @@ impl<'a> CategoryService<'a> {
                 return Err(ApplicationError::ParentIsSubcategory);
             }
             let all = self.repo.list_all()?;
-            if has_children(id, &all) {
+            if has_subcategories(id, &all) {
                 return Err(ApplicationError::HasSubcategories);
             }
         }
@@ -119,11 +119,11 @@ impl<'a> CategoryService<'a> {
         }
         if let Some(target) = reassign_to {
             let all = self.repo.list_all()?;
-            if has_children(id, &all) && self.get(target)?.parent_id().is_some() {
+            if has_subcategories(id, &all) && self.get(target)?.parent_id().is_some() {
                 return Err(ApplicationError::ParentIsSubcategory);
             }
         }
-        self.repo.reassign_children(id, reassign_to)?;
+        self.repo.reassign_subcategories(id, reassign_to)?;
         self.repo.delete(id)?;
         Ok(())
     }
@@ -213,7 +213,7 @@ mod tests {
             Ok(self.categories.lock().unwrap().clone())
         }
 
-        fn reassign_children(
+        fn reassign_subcategories(
             &self,
             from: CategoryId,
             to: Option<CategoryId>,
@@ -422,7 +422,7 @@ mod tests {
     }
 
     #[test]
-    fn move_category_rejects_when_category_has_children() {
+    fn move_category_rejects_when_category_has_subcategories() {
         let repo = FakeCategoryRepository::default();
         let service = CategoryService::new(&repo);
         let hobby = service.create_category("Hobby", None).unwrap();
@@ -448,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_category_without_children_or_transactions_succeeds() {
+    fn delete_category_without_subcategories_or_transactions_succeeds() {
         let repo = FakeCategoryRepository::default();
         let service = CategoryService::new(&repo);
         let category = service.create_category("Temp", None).unwrap();
@@ -459,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_category_rejects_reassigning_children_to_a_subcategory() {
+    fn delete_category_rejects_reassigning_subcategories_to_a_subcategory() {
         let repo = FakeCategoryRepository::default();
         let service = CategoryService::new(&repo);
         let hobby = service.create_category("Hobby", None).unwrap();
@@ -475,7 +475,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_category_reassigns_children_to_given_target() {
+    fn delete_category_reassigns_subcategories_to_given_target() {
         let repo = FakeCategoryRepository::default();
         let service = CategoryService::new(&repo);
         let hobby = service.create_category("Hobby", None).unwrap();

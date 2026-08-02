@@ -64,15 +64,31 @@ Rules that follow from this, non-negotiably:
   user sets once (or edits) — not a cache of the ledger, so it can't drift from it.
   Never add a second stored "current balance" field; it will drift.
 - **Value objects validate in their constructor** (`AccountName::new`,
-  `CategoryName::new`, `SourceText::new`, `Currency::new`, `Money`). If a value
+  `CategoryName::new`, `Description::new`, `Currency::new`, `Money`). If a value
   exists, it's already valid — don't re-validate at every call site.
+- **"Description" is the raw text a bank export carries for a row; "source
+  account" is where a transfer's money leaves from.** These are different
+  things and the word `source` used to mean both (plus a restore-from file
+  path in `settings.rs`, which still legitimately uses it). Don't reintroduce
+  `source` as a name for transaction text — `Description` / `description_*`
+  is the domain word, and `merchant_key` in `recurring.rs` is the normalized
+  form derived from it.
+- **`Direction` (Income/Expense) is derived from the amount's sign;
+  `TransactionRole` (Normal/Transfer/Adjustment) is stored.** Only `Normal`
+  counts toward income/expense reporting — every role counts toward account
+  balances. Keep the two concepts apart; they are not interchangeable
+  classifications despite both sounding like "what kind of transaction".
+- **`TransactionFingerprint` identifies, it does not deduplicate.** Migration
+  0004 deliberately dropped its UNIQUE constraint — identical transactions are
+  legitimate. Nothing rejects a write because the fingerprint already exists;
+  it's a candidate key for a future "find likely duplicates" review feature.
 - **IDs are UUID newtypes per aggregate** (`AccountId`, `CategoryId`,
   `TransactionId`), not raw `String`/`Uuid`. Don't collapse them into a shared
   `Id` type — that's exactly the kind of "DRY" that silently lets an
   `AccountId` be passed where a `CategoryId` is expected.
 - **Categories are a strict two-level hierarchy**: a category may have one parent,
   but a category that already has children cannot itself become a child, and a
-  subcategory cannot be given children. See `has_children` in
+  subcategory cannot be given children. See `has_subcategories` in
   `crates/domain/src/category.rs` and the `ParentIsSubcategory`/`HasSubcategories`
   errors in `CategoryService`. This replaced an earlier arbitrary-depth design
   with cycle detection — if you're reading old context (commit messages, an

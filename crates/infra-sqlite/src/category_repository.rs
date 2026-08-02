@@ -116,7 +116,7 @@ impl<'a> CategoryRepository for SqliteCategoryRepository<'a> {
         Ok(rows)
     }
 
-    fn reassign_children(
+    fn reassign_subcategories(
         &self,
         from: CategoryId,
         to: Option<CategoryId>,
@@ -247,7 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn reassign_children_moves_them_to_new_parent() {
+    fn reassign_subcategories_moves_them_to_new_parent() {
         let conn = test_conn();
         let repo = SqliteCategoryRepository::new(&conn);
         let hobby =
@@ -264,7 +264,7 @@ mod tests {
             Category::new(CategoryId::new(), CategoryName::new("Other").unwrap(), None).unwrap();
         repo.insert(&other).unwrap();
 
-        repo.reassign_children(hobby.id(), Some(other.id()))
+        repo.reassign_subcategories(hobby.id(), Some(other.id()))
             .unwrap();
 
         let reloaded = repo.find_by_id(paint.id()).unwrap().unwrap();
@@ -290,8 +290,8 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO transactions (id, date, amount_minor_units, source, category_id, account_id, dedup_key, created_at)
-             VALUES ('tx-1', '2026-01-01', -500, 'Store', ?1, 'acc-1', 'dedup-1', datetime('now'))",
+            "INSERT INTO transactions (id, date, amount_minor_units, description, category_id, account_id, fingerprint, created_at)
+             VALUES ('tx-1', '2026-01-01', -500, 'Store', ?1, 'acc-1', 'fp-1', datetime('now'))",
             params![category.id().as_string()],
         )
         .unwrap();
@@ -320,8 +320,8 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO transactions (id, date, amount_minor_units, source, category_id, account_id, dedup_key, created_at)
-             VALUES ('tx-1', '2026-01-01', -500, 'Store', ?1, 'acc-1', 'dedup-1', datetime('now'))",
+            "INSERT INTO transactions (id, date, amount_minor_units, description, category_id, account_id, fingerprint, created_at)
+             VALUES ('tx-1', '2026-01-01', -500, 'Store', ?1, 'acc-1', 'fp-1', datetime('now'))",
             params![groceries.id().as_string()],
         )
         .unwrap();

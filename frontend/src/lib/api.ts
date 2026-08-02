@@ -6,7 +6,7 @@ export interface AccountDto {
   opening_balance_minor_units: number;
   balance_minor_units: number;
   currency: string;
-  source_patterns: string[];
+  description_patterns: string[];
   is_default: boolean;
 }
 
@@ -33,7 +33,7 @@ export interface TransactionDto {
   date: string;
   amount_minor_units: number;
   currency: string;
-  source: string;
+  description: string;
   category_id: string;
   account_id: string;
   role: TransactionRole;
@@ -43,7 +43,7 @@ export interface TransactionDto {
 }
 
 /** Recognizes an imported row as money moving to another of the user's own
- * accounts. Matched as a case-insensitive substring of the row's source
+ * accounts. Matched as a case-insensitive substring of the row's description
  * text. */
 export interface TransferRuleDto {
   id: string;
@@ -69,7 +69,7 @@ export interface BulkDeleteDto {
 export interface ImportPreviewRowDto {
   date: string | null;
   amount_minor_units: number | null;
-  source: string;
+  description: string;
   csv_category: string | null;
   csv_subcategory: string | null;
   is_likely_balance_row: boolean;
@@ -93,7 +93,7 @@ export interface ImportSummaryDto {
 /** A commitment inferred from the ledger — never stored, recomputed on every
  * call. See `crates/domain/src/recurring.rs` for the detection rules. */
 export interface RecurringChargeDto {
-  /** Raw source text of the most recent occurrence, noise included. */
+  /** Raw description text of the most recent occurrence, noise included. */
   label: string;
   cadence: "weekly" | "monthly" | "quarterly" | "yearly";
   /** Positive magnitude — a recurring charge is always a cost. */
@@ -141,10 +141,10 @@ export const api = {
     invoke<void>("rename_account", { id, name }),
   setOpeningBalance: (id: string, minorUnits: number) =>
     invoke<void>("set_opening_balance", { id, minorUnits }),
-  addSourcePattern: (id: string, pattern: string) =>
-    invoke<void>("add_source_pattern", { id, pattern }),
-  removeSourcePattern: (id: string, pattern: string) =>
-    invoke<void>("remove_source_pattern", { id, pattern }),
+  addDescriptionPattern: (id: string, pattern: string) =>
+    invoke<void>("add_description_pattern", { id, pattern }),
+  removeDescriptionPattern: (id: string, pattern: string) =>
+    invoke<void>("remove_description_pattern", { id, pattern }),
   deleteAccount: (id: string) => invoke<void>("delete_account", { id }),
   setDefaultAccount: (id: string) => invoke<void>("set_default_account", { id }),
 
@@ -168,46 +168,46 @@ export const api = {
    * then has to be filtered down to almost nothing on this side. `isIncome`
    * (`true` for positive amounts, `false` for negative, `null` for both)
    * lets the Expenses and Income lists page through the ledger
-   * independently, each with its own category/source filters. */
+   * independently, each with its own category/description filters. */
   listTransactionsPage: (
     offset: number,
     limit: number,
     categoryId: string | null,
-    sourceContains: string | null,
+    descriptionContains: string | null,
     isIncome: boolean | null,
   ) =>
     invoke<TransactionDto[]>("list_transactions_page", {
       offset,
       limit,
       categoryId,
-      sourceContains,
+      descriptionContains,
       isIncome,
     }),
   countTransactions: (
     start: string,
     end: string,
     categoryId: string | null,
-    sourceContains: string | null,
+    descriptionContains: string | null,
     isIncome: boolean | null,
   ) =>
     invoke<number>("count_transactions", {
       start,
       end,
       categoryId,
-      sourceContains,
+      descriptionContains,
       isIncome,
     }),
   createTransaction: (
     date: string,
     amountMinorUnits: number,
-    source: string,
+    description: string,
     categoryId: string,
     accountId: string,
   ) =>
     invoke<TransactionDto>("create_transaction", {
       date,
       amountMinorUnits,
-      source,
+      description,
       categoryId,
       accountId,
     }),
@@ -220,10 +220,10 @@ export const api = {
     invoke<void>("set_transaction_category", { id, categoryId }),
   setTransactionsCategory: (ids: string[], categoryId: string) =>
     invoke<void>("set_transactions_category", { ids, categoryId }),
-  suggestAccountForSource: (source: string) =>
-    invoke<string | null>("suggest_account_for_source", { source }),
-  suggestCategoryForSource: (source: string) =>
-    invoke<string | null>("suggest_category_for_source", { source }),
+  suggestAccountForDescription: (description: string) =>
+    invoke<string | null>("suggest_account_for_description", { description }),
+  suggestCategoryForDescription: (description: string) =>
+    invoke<string | null>("suggest_category_for_description", { description }),
   exportTransactionsCsv: (destination: string) =>
     invoke<void>("export_transactions_csv", { destination }),
   listRecurringCharges: () => invoke<RecurringChargeDto[]>("list_recurring_charges"),
@@ -261,7 +261,7 @@ export const api = {
     rows: {
       date: string;
       amount_minor_units: number;
-      source: string;
+      description: string;
       category: string | null;
       subcategory: string | null;
     }[],

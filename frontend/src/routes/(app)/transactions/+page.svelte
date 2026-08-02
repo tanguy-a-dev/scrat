@@ -82,12 +82,12 @@
     customEnd: todayIsoDate(),
     sortField: "date" as SortField,
     sortDir: "desc" as "asc" | "desc",
-    // Expenses and Income keep independent category/source filters — a
+    // Expenses and Income keep independent category/description filters — a
     // search on one list must never narrow the other.
     expenseCategoryFilter: "",
-    expenseSourceFilter: "",
+    expenseDescriptionFilter: "",
     incomeCategoryFilter: "",
-    incomeSourceFilter: "",
+    incomeDescriptionFilter: "",
     loadedExpenseRows: 0,
     loadedIncomeRows: 0,
     scrollY: 0,
@@ -141,13 +141,13 @@
     return kind === "expense" ? expenseToken : incomeToken;
   }
 
-  type SortField = "date" | "amount" | "source" | "category";
+  type SortField = "date" | "amount" | "description" | "category";
   let sortField = $state<SortField>(view.sortField);
   let sortDir = $state<"asc" | "desc">(view.sortDir);
   let expenseCategoryFilter = $state(view.expenseCategoryFilter);
-  let expenseSourceFilter = $state(view.expenseSourceFilter);
+  let expenseDescriptionFilter = $state(view.expenseDescriptionFilter);
   let incomeCategoryFilter = $state(view.incomeCategoryFilter);
-  let incomeSourceFilter = $state(view.incomeSourceFilter);
+  let incomeDescriptionFilter = $state(view.incomeDescriptionFilter);
 
   // Mirrors the user's choices back into the cache. `loadedExpenseRows` /
   // `loadedIncomeRows` only mean anything in "All Time" — every other range
@@ -159,9 +159,9 @@
     view.sortField = sortField;
     view.sortDir = sortDir;
     view.expenseCategoryFilter = expenseCategoryFilter;
-    view.expenseSourceFilter = expenseSourceFilter;
+    view.expenseDescriptionFilter = expenseDescriptionFilter;
     view.incomeCategoryFilter = incomeCategoryFilter;
-    view.incomeSourceFilter = incomeSourceFilter;
+    view.incomeDescriptionFilter = incomeDescriptionFilter;
     view.loadedExpenseRows = rangeMode === "all" ? expenseOffset : 0;
     view.loadedIncomeRows = rangeMode === "all" ? incomeOffset : 0;
   });
@@ -213,7 +213,7 @@
 
   let formDate = $state(todayIsoDate());
   let formAmount = $state("");
-  let formSource = $state("");
+  let formDescription = $state("");
   let formCategoryId = $state("");
   let formAccountId = $state("");
 
@@ -223,16 +223,16 @@
    * "no filter", not "match the empty string". */
   function activeFilters(kind: SelectionKind): {
     category: string | null;
-    source: string | null;
+    description: string | null;
   } {
     return kind === "expense"
       ? {
           category: expenseCategoryFilter || null,
-          source: expenseSourceFilter.trim() || null,
+          description: expenseDescriptionFilter.trim() || null,
         }
       : {
           category: incomeCategoryFilter || null,
-          source: incomeSourceFilter.trim() || null,
+          description: incomeDescriptionFilter.trim() || null,
         };
   }
 
@@ -240,8 +240,8 @@
    * so the debounced effect below can tell a real filter change from its
    * own first run after `load()` already fetched with these same values. */
   function filterKey(kind: SelectionKind): string {
-    const { category, source } = activeFilters(kind);
-    return `${category ?? ""} ${source ?? ""}`;
+    const { category, description } = activeFilters(kind);
+    return `${category ?? ""} ${description ?? ""}`;
   }
 
   let appliedExpenseFilterKey = "";
@@ -293,14 +293,14 @@
             0,
             expenseLimit,
             expenseFilters.category,
-            expenseFilters.source,
+            expenseFilters.description,
             false,
           ),
           api.listTransactionsPage(
             0,
             incomeLimit,
             incomeFilters.category,
-            incomeFilters.source,
+            incomeFilters.description,
             true,
           ),
         ]);
@@ -338,7 +338,7 @@
    * with it the filter control the user is still interacting with. */
   async function reloadFilteredAllTimeKind(kind: SelectionKind) {
     const token = bumpToken(kind);
-    const { category, source } = activeFilters(kind);
+    const { category, description } = activeFilters(kind);
     if (kind === "expense") loadingMoreExpense = true;
     else loadingMoreIncome = true;
     try {
@@ -346,7 +346,7 @@
         0,
         PAGE_SIZE,
         category,
-        source,
+        description,
         kind === "income",
       );
       if (token !== currentToken(kind) || rangeMode !== "all") return;
@@ -379,13 +379,13 @@
     if (kind === "expense") loadingMoreExpense = true;
     else loadingMoreIncome = true;
     try {
-      const { category, source } = activeFilters(kind);
+      const { category, description } = activeFilters(kind);
       const offset = kind === "expense" ? expenseOffset : incomeOffset;
       const batch = await api.listTransactionsPage(
         offset,
         PAGE_SIZE,
         category,
-        source,
+        description,
         kind === "income",
       );
       // The range mode, this list's filters, or the whole page may have
@@ -484,12 +484,12 @@
 
   async function refreshCount(kind: SelectionKind) {
     try {
-      const { category, source } = activeFilters(kind);
+      const { category, description } = activeFilters(kind);
       const count = await api.countTransactions(
         currentRange.start,
         currentRange.end,
         category,
-        source,
+        description,
         kind === "income",
       );
       if (kind === "expense") expenseCount = count;
@@ -502,8 +502,8 @@
 
   // `load()` handles the range changing (fetching in step with `loading`, so
   // the header never flashes a stale total). This effect covers what
-  // `load()` doesn't — the category/source filters changing without a
-  // reload — debounced so typing in the source box doesn't fire an IPC call
+  // `load()` doesn't — the category/description filters changing without a
+  // reload — debounced so typing in the description box doesn't fire an IPC call
   // per keystroke. In "All Time" the rows themselves have to be re-fetched
   // too, because only part of the ledger is loaded and the matches may be
   // anywhere in the rest of it.
@@ -587,21 +587,21 @@
     else incomeCategoryFilter = id;
   }
 
-  function sourceFilterFor(kind: SelectionKind): string {
-    return kind === "expense" ? expenseSourceFilter : incomeSourceFilter;
+  function descriptionFilterFor(kind: SelectionKind): string {
+    return kind === "expense" ? expenseDescriptionFilter : incomeDescriptionFilter;
   }
 
-  function setSourceFilter(kind: SelectionKind, value: string) {
-    if (kind === "expense") expenseSourceFilter = value;
-    else incomeSourceFilter = value;
+  function setDescriptionFilter(kind: SelectionKind, value: string) {
+    if (kind === "expense") expenseDescriptionFilter = value;
+    else incomeDescriptionFilter = value;
   }
 
-  async function handleSourceBlur() {
-    const source = formSource.trim();
-    if (!source) return;
+  async function handleDescriptionBlur() {
+    const description = formDescription.trim();
+    if (!description) return;
     if (!formAccountId) {
       try {
-        const suggested = await api.suggestAccountForSource(source);
+        const suggested = await api.suggestAccountForDescription(description);
         if (suggested) formAccountId = suggested;
       } catch {
         // best-effort suggestion only
@@ -609,7 +609,7 @@
     }
     if (!formCategoryId) {
       try {
-        const suggested = await api.suggestCategoryForSource(source);
+        const suggested = await api.suggestCategoryForDescription(description);
         if (suggested) formCategoryId = suggested;
       } catch {
         // best-effort suggestion only
@@ -634,12 +634,12 @@
       await api.createTransaction(
         formDate,
         minorUnits,
-        formSource.trim(),
+        formDescription.trim(),
         formCategoryId,
         formAccountId,
       );
       formAmount = "";
-      formSource = "";
+      formDescription = "";
       await load();
     } catch (e) {
       toast.error(String(e));
@@ -695,7 +695,7 @@
       if (sortField === "date") cmp = a.date.localeCompare(b.date);
       else if (sortField === "amount")
         cmp = a.amount_minor_units - b.amount_minor_units;
-      else if (sortField === "source") cmp = a.source.localeCompare(b.source);
+      else if (sortField === "description") cmp = a.description.localeCompare(b.description);
       else
         cmp = categoryName(a.category_id).localeCompare(
           categoryName(b.category_id),
@@ -710,25 +710,25 @@
   // shot, so this list applies its own filter and sign split client-side.
   let expenses = $derived.by(() => {
     if (rangeMode === "all") return sortTransactions(expenseRows);
-    const source = expenseSourceFilter.trim().toLowerCase();
+    const description = expenseDescriptionFilter.trim().toLowerCase();
     return sortTransactions(
       transactions.filter(
         (t) =>
           t.amount_minor_units < 0 &&
           (!expenseCategoryFilter || t.category_id === expenseCategoryFilter) &&
-          (!source || t.source.toLowerCase().includes(source)),
+          (!description || t.description.toLowerCase().includes(description)),
       ),
     );
   });
   let income = $derived.by(() => {
     if (rangeMode === "all") return sortTransactions(incomeRows);
-    const source = incomeSourceFilter.trim().toLowerCase();
+    const description = incomeDescriptionFilter.trim().toLowerCase();
     return sortTransactions(
       transactions.filter(
         (t) =>
           t.amount_minor_units > 0 &&
           (!incomeCategoryFilter || t.category_id === incomeCategoryFilter) &&
-          (!source || t.source.toLowerCase().includes(source)),
+          (!description || t.description.toLowerCase().includes(description)),
       ),
     );
   });
@@ -984,19 +984,19 @@
           >
           <th>
             <div class="column-header">
-              <button type="button" onclick={() => toggleSort("source")}
-                >Source</button
+              <button type="button" onclick={() => toggleSort("description")}
+                >Description</button
               >
               <FilterPopover
-                active={sourceFilterFor(kind).trim() !== ""}
-                ariaLabel="Filter by source"
+                active={descriptionFilterFor(kind).trim() !== ""}
+                ariaLabel="Filter by description"
               >
                 <input
-                  value={sourceFilterFor(kind)}
+                  value={descriptionFilterFor(kind)}
                   oninput={(e) =>
-                    setSourceFilter(kind, (e.currentTarget as HTMLInputElement).value)}
+                    setDescriptionFilter(kind, (e.currentTarget as HTMLInputElement).value)}
                   use:autofocus
-                  placeholder="Search source…"
+                  placeholder="Search description…"
                   spellcheck="false"
                   autocomplete="off"
                   autocorrect="off"
@@ -1034,14 +1034,14 @@
               <td class="select-cell">
                 {@render checkbox({
                   checked: selected.has(t.id),
-                  ariaLabel: `Select transaction ${t.date} ${t.source}`,
+                  ariaLabel: `Select transaction ${t.date} ${t.description}`,
                   onpress: (event: MouseEvent) => beginRowDrag(kind, t.id, event),
                 })}
               </td>
               <td class="date-cell">{t.date}</td>
               <td>{formatCurrency(t.amount_minor_units, t.currency)}</td>
               <td>
-                {t.source}
+                {t.description}
                 {#if t.role === "transfer"}
                   <span class="role-badge" title="Between your own accounts — not counted as spending"
                     >transfer</span
@@ -1158,9 +1158,9 @@
       required
     />
     <input
-      placeholder="Source"
-      bind:value={formSource}
-      onblur={handleSourceBlur}
+      placeholder="Description"
+      bind:value={formDescription}
+      onblur={handleDescriptionBlur}
       required
     />
     <select bind:value={formCategoryId} required>

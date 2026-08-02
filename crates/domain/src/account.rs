@@ -9,7 +9,7 @@ pub enum AccountError {
     EmptyName,
     #[error("account name cannot be longer than {0} characters")]
     NameTooLong(usize),
-    #[error("source pattern cannot be empty")]
+    #[error("description pattern cannot be empty")]
     EmptyPattern,
     #[error("invalid id: {0}")]
     InvalidId(String),
@@ -63,11 +63,11 @@ impl AccountName {
 }
 
 /// A normalized (trimmed, lowercased) substring pattern matched against a
-/// transaction's raw source text to auto-assign it to an account.
+/// transaction's raw description text to auto-assign it to an account.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct SourcePattern(String);
+pub struct DescriptionPattern(String);
 
-impl SourcePattern {
+impl DescriptionPattern {
     pub fn new(raw: &str) -> Result<Self, AccountError> {
         let normalized = raw.trim().to_lowercase();
         if normalized.is_empty() {
@@ -80,8 +80,8 @@ impl SourcePattern {
         &self.0
     }
 
-    pub fn matches(&self, source: &str) -> bool {
-        source.to_lowercase().contains(&self.0)
+    pub fn matches(&self, description: &str) -> bool {
+        description.to_lowercase().contains(&self.0)
     }
 }
 
@@ -90,7 +90,7 @@ pub struct Account {
     id: AccountId,
     name: AccountName,
     opening_balance: Money,
-    source_patterns: Vec<SourcePattern>,
+    description_patterns: Vec<DescriptionPattern>,
 }
 
 impl Account {
@@ -99,7 +99,7 @@ impl Account {
             id,
             name,
             opening_balance,
-            source_patterns: Vec::new(),
+            description_patterns: Vec::new(),
         }
     }
 
@@ -107,13 +107,13 @@ impl Account {
         id: AccountId,
         name: AccountName,
         opening_balance: Money,
-        source_patterns: Vec<SourcePattern>,
+        description_patterns: Vec<DescriptionPattern>,
     ) -> Self {
         Self {
             id,
             name,
             opening_balance,
-            source_patterns,
+            description_patterns,
         }
     }
 
@@ -129,8 +129,8 @@ impl Account {
         &self.opening_balance
     }
 
-    pub fn source_patterns(&self) -> &[SourcePattern] {
-        &self.source_patterns
+    pub fn description_patterns(&self) -> &[DescriptionPattern] {
+        &self.description_patterns
     }
 
     pub fn rename(&mut self, name: AccountName) {
@@ -141,18 +141,20 @@ impl Account {
         self.opening_balance = opening_balance;
     }
 
-    pub fn add_source_pattern(&mut self, pattern: SourcePattern) {
-        if !self.source_patterns.contains(&pattern) {
-            self.source_patterns.push(pattern);
+    pub fn add_description_pattern(&mut self, pattern: DescriptionPattern) {
+        if !self.description_patterns.contains(&pattern) {
+            self.description_patterns.push(pattern);
         }
     }
 
-    pub fn remove_source_pattern(&mut self, pattern: &SourcePattern) {
-        self.source_patterns.retain(|p| p != pattern);
+    pub fn remove_description_pattern(&mut self, pattern: &DescriptionPattern) {
+        self.description_patterns.retain(|p| p != pattern);
     }
 
-    pub fn matches_source(&self, source: &str) -> bool {
-        self.source_patterns.iter().any(|p| p.matches(source))
+    pub fn matches_description(&self, description: &str) -> bool {
+        self.description_patterns
+            .iter()
+            .any(|p| p.matches(description))
     }
 }
 
@@ -177,34 +179,34 @@ mod tests {
     }
 
     #[test]
-    fn source_pattern_normalizes_case_and_whitespace() {
-        let pattern = SourcePattern::new("  Whole Foods  ").unwrap();
+    fn description_pattern_normalizes_case_and_whitespace() {
+        let pattern = DescriptionPattern::new("  Whole Foods  ").unwrap();
         assert_eq!(pattern.as_str(), "whole foods");
     }
 
     #[test]
-    fn account_matches_source_when_pattern_is_substring_case_insensitively() {
+    fn account_matches_description_when_pattern_is_substring_case_insensitively() {
         let mut account = Account::new(
             AccountId::new(),
             AccountName::new("Checking").unwrap(),
             eur(0),
         );
-        account.add_source_pattern(SourcePattern::new("whole foods").unwrap());
+        account.add_description_pattern(DescriptionPattern::new("whole foods").unwrap());
 
-        assert!(account.matches_source("WHOLE FOODS MARKET #123"));
-        assert!(!account.matches_source("Trader Joe's"));
+        assert!(account.matches_description("WHOLE FOODS MARKET #123"));
+        assert!(!account.matches_description("Trader Joe's"));
     }
 
     #[test]
-    fn add_source_pattern_does_not_duplicate() {
+    fn add_description_pattern_does_not_duplicate() {
         let mut account = Account::new(
             AccountId::new(),
             AccountName::new("Checking").unwrap(),
             eur(0),
         );
-        account.add_source_pattern(SourcePattern::new("acme").unwrap());
-        account.add_source_pattern(SourcePattern::new("ACME").unwrap());
+        account.add_description_pattern(DescriptionPattern::new("acme").unwrap());
+        account.add_description_pattern(DescriptionPattern::new("ACME").unwrap());
 
-        assert_eq!(account.source_patterns().len(), 1);
+        assert_eq!(account.description_patterns().len(), 1);
     }
 }

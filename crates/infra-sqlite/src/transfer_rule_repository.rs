@@ -1,5 +1,5 @@
 use rusqlite::{params, Connection};
-use scrat_domain::account::{AccountId, SourcePattern};
+use scrat_domain::account::{AccountId, DescriptionPattern};
 use scrat_domain::ports::{RepositoryError, TransferRuleRepository};
 use scrat_domain::transfer_rule::{TransferRule, TransferRuleId};
 
@@ -25,7 +25,7 @@ fn row_to_rule(row: &rusqlite::Row) -> rusqlite::Result<TransferRule> {
     let id: String = row.get("id")?;
     let id = TransferRuleId::parse(&id).map_err(invalid_column)?;
     let pattern: String = row.get("pattern")?;
-    let pattern = SourcePattern::new(&pattern).map_err(invalid_column)?;
+    let pattern = DescriptionPattern::new(&pattern).map_err(invalid_column)?;
     let counterpart_account_id: String = row.get("counterpart_account_id")?;
     let counterpart_account_id =
         AccountId::parse(&counterpart_account_id).map_err(invalid_column)?;
@@ -112,7 +112,7 @@ mod tests {
         let repo = SqliteTransferRuleRepository::new(&conn);
         let rule = TransferRule::new(
             TransferRuleId::new(),
-            SourcePattern::new("N26").unwrap(),
+            DescriptionPattern::new("N26").unwrap(),
             account_id,
         );
 
@@ -132,7 +132,7 @@ mod tests {
         let repo = SqliteTransferRuleRepository::new(&conn);
         let rule = TransferRule::new(
             TransferRuleId::new(),
-            SourcePattern::new("n26").unwrap(),
+            DescriptionPattern::new("n26").unwrap(),
             account_id,
         );
         repo.insert(&rule).unwrap();
@@ -144,7 +144,7 @@ mod tests {
 
     /// The application layer checks for a duplicate pattern and returns a
     /// readable error, but the constraint is enforced in the schema too —
-    /// two rules sending the same source text to different accounts would
+    /// two rules sending the same description text to different accounts would
     /// make import order decide where the money went.
     #[test]
     fn the_same_pattern_cannot_be_claimed_twice() {
@@ -154,14 +154,14 @@ mod tests {
         let repo = SqliteTransferRuleRepository::new(&conn);
         repo.insert(&TransferRule::new(
             TransferRuleId::new(),
-            SourcePattern::new("n26").unwrap(),
+            DescriptionPattern::new("n26").unwrap(),
             first_account,
         ))
         .unwrap();
 
         let result = repo.insert(&TransferRule::new(
             TransferRuleId::new(),
-            SourcePattern::new("n26").unwrap(),
+            DescriptionPattern::new("n26").unwrap(),
             second_account,
         ));
 

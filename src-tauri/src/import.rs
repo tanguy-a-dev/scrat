@@ -17,7 +17,7 @@ pub struct ImportPreviewRowDto {
     /// disable inclusion for such a row rather than let the user check it.
     pub date: Option<String>,
     pub amount_minor_units: Option<i64>,
-    pub source: String,
+    pub description: String,
     /// The CSV's own "Category"/"Catégorie" column, if it has one — applied
     /// on import (creating the category if needed) instead of the row
     /// falling back to the category chosen for the whole import.
@@ -54,7 +54,7 @@ pub fn preview_csv_import(bytes: Vec<u8>) -> ImportPreviewDto {
                 date: row.date.map(|d| d.format("%Y-%m-%d").to_string()),
                 amount_minor_units: row.amount_minor_units,
                 include_by_default: row.is_valid() && !row.is_likely_balance_row,
-                source: row.source,
+                description: row.description,
                 csv_category: row.csv_category,
                 csv_subcategory: row.csv_subcategory,
                 is_likely_balance_row: row.is_likely_balance_row,
@@ -70,18 +70,18 @@ pub fn preview_csv_import(bytes: Vec<u8>) -> ImportPreviewDto {
 pub struct ImportCommitRowDto {
     pub date: String,
     pub amount_minor_units: i64,
-    pub source: String,
+    pub description: String,
     /// The CSV's own Category column text for this row, if any — when
     /// present, it's matched to an existing category by name (creating a
     /// new top-level one if nothing matches). When absent, the row is
     /// categorized from the most recent past transaction with the same
-    /// source text, if one exists, before falling back to the category
+    /// description text, if one exists, before falling back to the category
     /// chosen for the whole import.
     pub category: Option<String>,
     /// The CSV's own Subcategory column text for this row, if any — nests
     /// under `category` (found or created) instead of being applied on its
     /// own. When `category` is given but this is blank, the most recent past
-    /// transaction with the same source text that was filed under `category`
+    /// transaction with the same description text that was filed under `category`
     /// (or one of its subcategories) supplies the subcategory instead,
     /// before falling back to the bare top-level `category`.
     pub subcategory: Option<String>,
@@ -101,7 +101,7 @@ pub struct ImportSummaryDto {
 struct ParsedCommitRow {
     date: NaiveDate,
     amount_minor_units: i64,
-    source: String,
+    description: String,
     category: Option<String>,
     subcategory: Option<String>,
 }
@@ -125,7 +125,7 @@ pub fn commit_csv_import(
             Ok(ParsedCommitRow {
                 date: parse_date(&row.date)?,
                 amount_minor_units: row.amount_minor_units,
-                source: row.source,
+                description: row.description,
                 category: row.category,
                 subcategory: row.subcategory,
             })
@@ -172,19 +172,21 @@ pub fn commit_csv_import(
                 {
                     Some(name) => match subcategory {
                         Some(sub) => s.get_or_create_category_path(name, Some(sub))?,
-                        None => match s.find_category_for_source_in_category(&row.source, name)? {
+                        None => match s
+                            .find_category_for_description_in_category(&row.description, name)?
+                        {
                             Some(historical_id) => historical_id,
                             None => s.get_or_create_category_path(name, None)?,
                         },
                     },
                     None => s
-                        .find_category_for_source(&row.source)?
+                        .find_category_for_description(&row.description)?
                         .unwrap_or(default_category_id),
                 };
                 Ok(ImportRow {
                     date: row.date,
                     amount_minor_units: row.amount_minor_units,
-                    source: row.source,
+                    description: row.description,
                     category_id,
                 })
             })

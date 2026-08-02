@@ -1,7 +1,7 @@
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::account::{AccountId, SourcePattern};
+use crate::account::{AccountId, DescriptionPattern};
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum TransferRuleError {
@@ -37,8 +37,8 @@ impl Default for TransferRuleId {
 /// Recognizes an imported row as money moving to another of the user's own
 /// accounts, rather than as spending.
 ///
-/// This is deliberately *not* an `Account` source pattern, despite reusing
-/// [`SourcePattern`] for the matching itself. An account's own patterns
+/// This is deliberately *not* an `Account` description pattern, despite reusing
+/// [`DescriptionPattern`] for the matching itself. An account's own patterns
 /// answer "which account does this row belong to"; a transfer rule answers
 /// "this row belongs to the account being imported, and its counterpart is
 /// over there" — a different question about a row whose account is already
@@ -47,14 +47,14 @@ impl Default for TransferRuleId {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransferRule {
     id: TransferRuleId,
-    pattern: SourcePattern,
+    pattern: DescriptionPattern,
     counterpart_account_id: AccountId,
 }
 
 impl TransferRule {
     pub fn new(
         id: TransferRuleId,
-        pattern: SourcePattern,
+        pattern: DescriptionPattern,
         counterpart_account_id: AccountId,
     ) -> Self {
         Self {
@@ -68,7 +68,7 @@ impl TransferRule {
         self.id
     }
 
-    pub fn pattern(&self) -> &SourcePattern {
+    pub fn pattern(&self) -> &DescriptionPattern {
         &self.pattern
     }
 
@@ -76,8 +76,8 @@ impl TransferRule {
         self.counterpart_account_id
     }
 
-    pub fn matches_source(&self, source: &str) -> bool {
-        self.pattern.matches(source)
+    pub fn matches_description(&self, description: &str) -> bool {
+        self.pattern.matches(description)
     }
 }
 
@@ -88,22 +88,22 @@ mod tests {
     fn rule(pattern: &str) -> TransferRule {
         TransferRule::new(
             TransferRuleId::new(),
-            SourcePattern::new(pattern).unwrap(),
+            DescriptionPattern::new(pattern).unwrap(),
             AccountId::new(),
         )
     }
 
     #[test]
-    fn matches_source_is_case_insensitive_substring() {
+    fn matches_description_is_case_insensitive_substring() {
         let rule = rule("n26");
-        assert!(rule.matches_source("VIREMENT SEPA N26 BANK"));
-        assert!(rule.matches_source("virement n26"));
+        assert!(rule.matches_description("VIREMENT SEPA N26 BANK"));
+        assert!(rule.matches_description("virement n26"));
     }
 
     #[test]
-    fn does_not_match_unrelated_source() {
+    fn does_not_match_unrelated_description() {
         let rule = rule("n26");
-        assert!(!rule.matches_source("CARTE 12/03 BOULANGERIE"));
+        assert!(!rule.matches_description("CARTE 12/03 BOULANGERIE"));
     }
 
     /// The pattern normalizes on the way in, so a rule configured with
@@ -113,6 +113,6 @@ mod tests {
     fn pattern_is_normalized_before_matching() {
         let rule = rule("  N26  ");
         assert_eq!(rule.pattern().as_str(), "n26");
-        assert!(rule.matches_source("virement n26"));
+        assert!(rule.matches_description("virement n26"));
     }
 }

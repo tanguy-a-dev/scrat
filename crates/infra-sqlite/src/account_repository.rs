@@ -1,6 +1,6 @@
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
-use scrat_domain::account::{Account, AccountId, AccountName, SourcePattern};
+use scrat_domain::account::{Account, AccountId, AccountName, DescriptionPattern};
 use scrat_domain::money::{Currency, Money};
 use scrat_domain::ports::{AccountRepository, RepositoryError};
 
@@ -14,10 +14,13 @@ impl<'a> SqliteAccountRepository<'a> {
         Self { conn, currency }
     }
 
-    fn load_source_patterns(&self, id: AccountId) -> Result<Vec<SourcePattern>, RepositoryError> {
+    fn load_description_patterns(
+        &self,
+        id: AccountId,
+    ) -> Result<Vec<DescriptionPattern>, RepositoryError> {
         let mut stmt = self
             .conn
-            .prepare("SELECT pattern FROM account_source_patterns WHERE account_id = ?1")
+            .prepare("SELECT pattern FROM account_description_patterns WHERE account_id = ?1")
             .map_err(sql_err)?;
         let patterns = stmt
             .query_map(params![id.as_string()], |row| row.get::<_, String>(0))
@@ -26,7 +29,7 @@ impl<'a> SqliteAccountRepository<'a> {
             .map_err(sql_err)?;
         patterns
             .into_iter()
-            .map(|p| SourcePattern::new(&p).map_err(|e| RepositoryError(e.to_string())))
+            .map(|p| DescriptionPattern::new(&p).map_err(|e| RepositoryError(e.to_string())))
             .collect()
     }
 
@@ -70,7 +73,7 @@ impl<'a> AccountRepository for SqliteAccountRepository<'a> {
                 ],
             )
             .map_err(sql_err)?;
-        self.replace_source_patterns(account)
+        self.replace_description_patterns(account)
     }
 
     fn update(&self, account: &Account) -> Result<(), RepositoryError> {
@@ -87,7 +90,7 @@ impl<'a> AccountRepository for SqliteAccountRepository<'a> {
                 ],
             )
             .map_err(sql_err)?;
-        self.replace_source_patterns(account)
+        self.replace_description_patterns(account)
     }
 
     fn delete(&self, id: AccountId) -> Result<(), RepositoryError> {
@@ -113,8 +116,8 @@ impl<'a> AccountRepository for SqliteAccountRepository<'a> {
 
         match result {
             Some((id, mut account)) => {
-                for pattern in self.load_source_patterns(id)? {
-                    account.add_source_pattern(pattern);
+                for pattern in self.load_description_patterns(id)? {
+                    account.add_description_pattern(pattern);
                 }
                 Ok(Some(account))
             }
@@ -135,8 +138,8 @@ impl<'a> AccountRepository for SqliteAccountRepository<'a> {
 
         rows.into_iter()
             .map(|(id, mut account)| {
-                for pattern in self.load_source_patterns(id)? {
-                    account.add_source_pattern(pattern);
+                for pattern in self.load_description_patterns(id)? {
+                    account.add_description_pattern(pattern);
                 }
                 Ok(account)
             })
@@ -166,17 +169,17 @@ impl<'a> AccountRepository for SqliteAccountRepository<'a> {
 }
 
 impl<'a> SqliteAccountRepository<'a> {
-    fn replace_source_patterns(&self, account: &Account) -> Result<(), RepositoryError> {
+    fn replace_description_patterns(&self, account: &Account) -> Result<(), RepositoryError> {
         self.conn
             .execute(
-                "DELETE FROM account_source_patterns WHERE account_id = ?1",
+                "DELETE FROM account_description_patterns WHERE account_id = ?1",
                 params![account.id().as_string()],
             )
             .map_err(sql_err)?;
-        for pattern in account.source_patterns() {
+        for pattern in account.description_patterns() {
             self.conn
                 .execute(
-                    "INSERT INTO account_source_patterns (id, account_id, pattern) VALUES (?1, ?2, ?3)",
+                    "INSERT INTO account_description_patterns (id, account_id, pattern) VALUES (?1, ?2, ?3)",
                     params![
                         uuid::Uuid::new_v4().to_string(),
                         account.id().as_string(),
@@ -214,19 +217,19 @@ mod tests {
             AccountName::new("Checking").unwrap(),
             Money::from_minor_units(12_345, usd()),
         );
-        account.add_source_pattern(SourcePattern::new("acme corp").unwrap());
+        account.add_description_pattern(DescriptionPattern::new("acme corp").unwrap());
 
         repo.insert(&account).unwrap();
         let reloaded = repo.find_by_id(account.id()).unwrap().unwrap();
 
         assert_eq!(reloaded.name().as_str(), "Checking");
         assert_eq!(reloaded.opening_balance().minor_units(), 12_345);
-        assert_eq!(reloaded.source_patterns().len(), 1);
-        assert_eq!(reloaded.source_patterns()[0].as_str(), "acme corp");
+        assert_eq!(reloaded.description_patterns().len(), 1);
+        assert_eq!(reloaded.description_patterns()[0].as_str(), "acme corp");
     }
 
     #[test]
-    fn update_replaces_source_patterns() {
+    fn update_replaces_description_patterns() {
         let conn = test_conn();
         let repo = SqliteAccountRepository::new(&conn, usd());
         let mut account = Account::new(
@@ -234,16 +237,16 @@ mod tests {
             AccountName::new("Checking").unwrap(),
             Money::zero(usd()),
         );
-        account.add_source_pattern(SourcePattern::new("old pattern").unwrap());
+        account.add_description_pattern(DescriptionPattern::new("old pattern").unwrap());
         repo.insert(&account).unwrap();
 
-        account.remove_source_pattern(&SourcePattern::new("old pattern").unwrap());
-        account.add_source_pattern(SourcePattern::new("new pattern").unwrap());
+        account.remove_description_pattern(&DescriptionPattern::new("old pattern").unwrap());
+        account.add_description_pattern(DescriptionPattern::new("new pattern").unwrap());
         repo.update(&account).unwrap();
 
         let reloaded = repo.find_by_id(account.id()).unwrap().unwrap();
-        assert_eq!(reloaded.source_patterns().len(), 1);
-        assert_eq!(reloaded.source_patterns()[0].as_str(), "new pattern");
+        assert_eq!(reloaded.description_patterns().len(), 1);
+        assert_eq!(reloaded.description_patterns()[0].as_str(), "new pattern");
     }
 
     #[test]
@@ -297,9 +300,9 @@ mod tests {
         .unwrap();
         for (i, amount) in [(-2_000_i64), (-500)].into_iter().enumerate() {
             conn.execute(
-                "INSERT INTO transactions (id, date, amount_minor_units, source, category_id, account_id, dedup_key, created_at)
+                "INSERT INTO transactions (id, date, amount_minor_units, description, category_id, account_id, fingerprint, created_at)
                  VALUES (?1, '2026-01-01', ?2, 'Store', 'cat-1', ?3, ?4, datetime('now'))",
-                params![format!("tx-{i}"), amount, account.id().as_string(), format!("dedup-{i}")],
+                params![format!("tx-{i}"), amount, account.id().as_string(), format!("fp-{i}")],
             )
             .unwrap();
         }

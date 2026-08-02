@@ -1,5 +1,5 @@
 //! Scrat CSV import adapter: delimiter/column-type detection and mapping of
-//! raw bank export rows into date/amount/source triples for the
+//! raw bank export rows into date/amount/description triples for the
 //! application layer to turn into transactions.
 
 mod detection;

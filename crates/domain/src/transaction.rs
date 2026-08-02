@@ -11,10 +11,10 @@ use crate::money::Money;
 pub enum TransactionError {
     #[error("transaction amount cannot be zero")]
     ZeroAmount,
-    #[error("source cannot be empty")]
-    EmptySource,
-    #[error("source cannot be longer than {0} characters")]
-    SourceTooLong(usize),
+    #[error("description cannot be empty")]
+    EmptyDescription,
+    #[error("description cannot be longer than {0} characters")]
+    DescriptionTooLong(usize),
     #[error("invalid id: {0}")]
     InvalidId(String),
     #[error("a transfer must belong to a transfer group")]
@@ -25,7 +25,7 @@ pub enum TransactionError {
     UnknownRole(String),
 }
 
-const MAX_SOURCE_LEN: usize = 200;
+const MAX_DESCRIPTION_LEN: usize = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TransactionId(Uuid);
@@ -52,17 +52,20 @@ impl Default for TransactionId {
     }
 }
 
+/// The raw text a bank export carries for a row — merchant name, reference,
+/// whatever the bank chose to print. Stored verbatim (only trimmed); any
+/// normalization happens where it's needed, not here.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SourceText(String);
+pub struct Description(String);
 
-impl SourceText {
+impl Description {
     pub fn new(raw: &str) -> Result<Self, TransactionError> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
-            return Err(TransactionError::EmptySource);
+            return Err(TransactionError::EmptyDescription);
         }
-        if trimmed.chars().count() > MAX_SOURCE_LEN {
-            return Err(TransactionError::SourceTooLong(MAX_SOURCE_LEN));
+        if trimmed.chars().count() > MAX_DESCRIPTION_LEN {
+            return Err(TransactionError::DescriptionTooLong(MAX_DESCRIPTION_LEN));
         }
         Ok(Self(trimmed.to_string()))
     }
@@ -72,20 +75,22 @@ impl SourceText {
     }
 }
 
-/// A stable fingerprint of (account, date, amount, normalized source). Not
+/// A stable hash of (account, date, amount, normalized description). Not
 /// enforced unique — identical transactions are allowed — kept only as a
-/// candidate key for a future "find likely duplicates" review feature.
+/// candidate key for a future "find likely duplicates" review feature. It
+/// identifies, it does not deduplicate: nothing in the app rejects a write
+/// because this value already exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DedupKey(String);
+pub struct TransactionFingerprint(String);
 
-impl DedupKey {
-    pub fn compute(
+impl TransactionFingerprint {
+    pub fn of(
         account_id: AccountId,
         date: NaiveDate,
         amount_minor_units: i64,
-        source: &str,
+        description: &str,
     ) -> Self {
-        let normalized_source = source
+        let normalized_description = description
             .trim()
             .to_lowercase()
             .split_whitespace()
@@ -99,7 +104,7 @@ impl DedupKey {
         hasher.update("|");
         hasher.update(amount_minor_units.to_string());
         hasher.update("|");
-        hasher.update(normalized_source);
+        hasher.update(normalized_description);
 
         Self(format!("{:x}", hasher.finalize()))
     }
@@ -109,13 +114,17 @@ impl DedupKey {
     }
 }
 
+/// Which way a transaction's amount points. Derived purely from the sign of
+/// the amount — unlike [`TransactionRole`], which is stored and says what the
+/// movement *means*. Keep the two apart: a transfer leg has a direction like
+/// any other row, but it is not income or spending.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransactionKind {
+pub enum Direction {
     Expense,
     Income,
 }
 
-/// Identifies the two legs of a single transfer — the outflow on the source
+/// Identifies the two legs of a single transfer — the outflow on the origin
 /// account and the mirrored inflow on the counterpart. Both legs carry the
 /// same value, which is what lets deleting either one take the other with
 /// it instead of leaving the counterpart account silently overstated.
@@ -149,7 +158,7 @@ impl Default for TransferGroupId {
 /// Only [`TransactionRole::Normal`] rows are real income or spending. The
 /// other two move or correct money that was already yours, so counting them
 /// would inflate both sides of every report: a transfer would show up as an
-/// expense on the source account and income on the destination, and a
+/// expense on the origin account and income on the destination, and a
 /// reconciliation delta would read as earnings the user never received.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransactionRole {
@@ -193,10 +202,10 @@ pub struct Transaction {
     id: TransactionId,
     date: NaiveDate,
     amount: Money,
-    source: SourceText,
+    description: Description,
     category_id: CategoryId,
     account_id: AccountId,
-    dedup_key: DedupKey,
+    fingerprint: TransactionFingerprint,
     role: TransactionRole,
     transfer_group_id: Option<TransferGroupId>,
 }
@@ -206,7 +215,7 @@ impl Transaction {
         id: TransactionId,
         date: NaiveDate,
         amount: Money,
-        source: SourceText,
+        description: Description,
         category_id: CategoryId,
         account_id: AccountId,
     ) -> Result<Self, TransactionError> {
@@ -214,7 +223,7 @@ impl Transaction {
             id,
             date,
             amount,
-            source,
+            description,
             category_id,
             account_id,
             TransactionRole::Normal,
@@ -230,7 +239,7 @@ impl Transaction {
         id: TransactionId,
         date: NaiveDate,
         amount: Money,
-        source: SourceText,
+        description: Description,
         category_id: CategoryId,
         account_id: AccountId,
         role: TransactionRole,
@@ -248,15 +257,20 @@ impl Transaction {
             }
             _ => {}
         }
-        let dedup_key = DedupKey::compute(account_id, date, amount.minor_units(), source.as_str());
+        let fingerprint = TransactionFingerprint::of(
+            account_id,
+            date,
+            amount.minor_units(),
+            description.as_str(),
+        );
         Ok(Self {
             id,
             date,
             amount,
-            source,
+            description,
             category_id,
             account_id,
-            dedup_key,
+            fingerprint,
             role,
             transfer_group_id,
         })
@@ -274,8 +288,8 @@ impl Transaction {
         &self.amount
     }
 
-    pub fn source(&self) -> &SourceText {
-        &self.source
+    pub fn description(&self) -> &Description {
+        &self.description
     }
 
     pub fn category_id(&self) -> CategoryId {
@@ -286,8 +300,8 @@ impl Transaction {
         self.account_id
     }
 
-    pub fn dedup_key(&self) -> &DedupKey {
-        &self.dedup_key
+    pub fn fingerprint(&self) -> &TransactionFingerprint {
+        &self.fingerprint
     }
 
     pub fn role(&self) -> TransactionRole {
@@ -300,7 +314,7 @@ impl Transaction {
 
     /// Builds this transaction's counterpart leg: the same movement seen
     /// from the other account, so the amount flips sign while the date and
-    /// source text stay put. Using the source account's date rather than
+    /// description text stay put. Using the origin account's date rather than
     /// guessing at a settlement lag keeps the pair internally consistent,
     /// at the cost of the counterpart's balance being up to a day early.
     pub fn mirrored_onto(
@@ -312,7 +326,7 @@ impl Transaction {
             TransactionId::new(),
             self.date,
             self.amount.negated(),
-            self.source.clone(),
+            self.description.clone(),
             self.category_id,
             account_id,
             TransactionRole::Transfer,
@@ -320,11 +334,11 @@ impl Transaction {
         )
     }
 
-    pub fn kind(&self) -> TransactionKind {
+    pub fn direction(&self) -> Direction {
         if self.amount.is_negative() {
-            TransactionKind::Expense
+            Direction::Expense
         } else {
-            TransactionKind::Income
+            Direction::Income
         }
     }
 }
@@ -343,22 +357,22 @@ mod tests {
             TransactionId::new(),
             NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
             money(amount_minor_units),
-            SourceText::new("Whole Foods").unwrap(),
+            Description::new("Whole Foods").unwrap(),
             CategoryId::new(),
             AccountId::new(),
         )
     }
 
     #[test]
-    fn transaction_kind_is_expense_when_amount_negative() {
+    fn transaction_direction_is_expense_when_amount_negative() {
         let transaction = make_transaction(-500).unwrap();
-        assert_eq!(transaction.kind(), TransactionKind::Expense);
+        assert_eq!(transaction.direction(), Direction::Expense);
     }
 
     #[test]
-    fn transaction_kind_is_income_when_amount_positive() {
+    fn transaction_direction_is_income_when_amount_positive() {
         let transaction = make_transaction(500).unwrap();
-        assert_eq!(transaction.kind(), TransactionKind::Income);
+        assert_eq!(transaction.direction(), Direction::Income);
     }
 
     #[test]
@@ -408,7 +422,7 @@ mod tests {
             TransactionId::new(),
             NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
             money(-500),
-            SourceText::new("Virement N26").unwrap(),
+            Description::new("Virement N26").unwrap(),
             CategoryId::new(),
             AccountId::new(),
             TransactionRole::Transfer,
@@ -423,7 +437,7 @@ mod tests {
             TransactionId::new(),
             NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
             money(-500),
-            SourceText::new("Whole Foods").unwrap(),
+            Description::new("Whole Foods").unwrap(),
             CategoryId::new(),
             AccountId::new(),
             TransactionRole::Normal,
@@ -433,14 +447,14 @@ mod tests {
     }
 
     #[test]
-    fn mirrored_leg_flips_the_amount_and_keeps_date_source_and_group() {
+    fn mirrored_leg_flips_the_amount_and_keeps_date_description_and_group() {
         let group_id = TransferGroupId::new();
         let counterpart_account = AccountId::new();
         let outflow = Transaction::new_with_role(
             TransactionId::new(),
             NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
             money(-25_000),
-            SourceText::new("Virement N26").unwrap(),
+            Description::new("Virement N26").unwrap(),
             CategoryId::new(),
             AccountId::new(),
             TransactionRole::Transfer,
@@ -454,7 +468,7 @@ mod tests {
 
         assert_eq!(inflow.amount().minor_units(), 25_000);
         assert_eq!(inflow.date(), outflow.date());
-        assert_eq!(inflow.source(), outflow.source());
+        assert_eq!(inflow.description(), outflow.description());
         assert_eq!(inflow.account_id(), counterpart_account);
         assert_eq!(inflow.transfer_group_id(), Some(group_id));
         assert_eq!(inflow.role(), TransactionRole::Transfer);
@@ -470,7 +484,7 @@ mod tests {
             TransactionId::new(),
             NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
             money(-25_000),
-            SourceText::new("Virement N26").unwrap(),
+            Description::new("Virement N26").unwrap(),
             CategoryId::new(),
             AccountId::new(),
             TransactionRole::Transfer,
@@ -486,34 +500,34 @@ mod tests {
     }
 
     #[test]
-    fn dedup_key_is_stable_for_same_inputs() {
+    fn fingerprint_is_stable_for_same_inputs() {
         let account_id = AccountId::new();
         let date = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
 
-        let a = DedupKey::compute(account_id, date, -500, "Whole Foods");
-        let b = DedupKey::compute(account_id, date, -500, "Whole Foods");
+        let a = TransactionFingerprint::of(account_id, date, -500, "Whole Foods");
+        let b = TransactionFingerprint::of(account_id, date, -500, "Whole Foods");
 
         assert_eq!(a, b);
     }
 
     #[test]
-    fn dedup_key_normalizes_source_case_and_whitespace() {
+    fn fingerprint_normalizes_description_case_and_whitespace() {
         let account_id = AccountId::new();
         let date = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
 
-        let a = DedupKey::compute(account_id, date, -500, "Whole   Foods");
-        let b = DedupKey::compute(account_id, date, -500, "  whole foods  ");
+        let a = TransactionFingerprint::of(account_id, date, -500, "Whole   Foods");
+        let b = TransactionFingerprint::of(account_id, date, -500, "  whole foods  ");
 
         assert_eq!(a, b);
     }
 
     #[test]
-    fn dedup_key_differs_for_different_source_text() {
+    fn fingerprint_differs_for_different_description() {
         let account_id = AccountId::new();
         let date = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
 
-        let a = DedupKey::compute(account_id, date, -500, "Whole Foods");
-        let b = DedupKey::compute(account_id, date, -500, "Trader Joe's");
+        let a = TransactionFingerprint::of(account_id, date, -500, "Whole Foods");
+        let b = TransactionFingerprint::of(account_id, date, -500, "Trader Joe's");
 
         assert_ne!(a, b);
     }

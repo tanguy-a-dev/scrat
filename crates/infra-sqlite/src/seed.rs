@@ -239,7 +239,7 @@ mod tests {
                 .iter()
                 .find(|c| c.name().as_str() == *child_name)
                 .unwrap();
-            assert!(!scrat_domain::category::has_children(child.id(), &all));
+            assert!(!scrat_domain::category::has_subcategories(child.id(), &all));
         }
     }
 

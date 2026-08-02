@@ -1,4 +1,4 @@
-use scrat_domain::account::{AccountError, AccountId, SourcePattern};
+use scrat_domain::account::{AccountError, AccountId, DescriptionPattern};
 use scrat_domain::ports::{AccountRepository, RepositoryError, TransferRuleRepository};
 use scrat_domain::transfer_rule::{TransferRule, TransferRuleId};
 use thiserror::Error;
@@ -32,7 +32,7 @@ impl<'a> TransferRuleService<'a> {
     }
 
     /// Rejects a pattern that another rule already claims. Two rules
-    /// disagreeing about where the same source text sends money has no
+    /// disagreeing about where the same description text sends money has no
     /// sensible resolution — whichever happened to be found first during
     /// import would win, which is a coin flip the user can't see or
     /// predict — so the conflict surfaces here instead.
@@ -41,7 +41,7 @@ impl<'a> TransferRuleService<'a> {
         pattern: &str,
         counterpart_account_id: AccountId,
     ) -> Result<TransferRule, ApplicationError> {
-        let pattern = SourcePattern::new(pattern)?;
+        let pattern = DescriptionPattern::new(pattern)?;
         self.accounts
             .find_by_id(counterpart_account_id)?
             .ok_or(ApplicationError::AccountNotFound)?;

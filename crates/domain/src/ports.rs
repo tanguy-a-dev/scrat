@@ -37,7 +37,7 @@ pub trait CategoryRepository {
     fn list_all(&self) -> Result<Vec<Category>, RepositoryError>;
     /// Re-parents every category whose `parent_id` is `from` to `to`
     /// (`None` promotes them to root level). A no-op when there are none.
-    fn reassign_children(
+    fn reassign_subcategories(
         &self,
         from: CategoryId,
         to: Option<CategoryId>,
@@ -57,7 +57,7 @@ pub trait CategoryRepository {
 /// Port for persisting transactions (the ledger).
 pub trait TransactionRepository {
     /// Inserts the transaction. Two transactions with the same (account,
-    /// date, amount, source) are both allowed — that's a legitimate
+    /// date, amount, description) are both allowed — that's a legitimate
     /// coincidence (e.g. two identical coffees the same day), not a
     /// duplicate to reject. Re-importing the same CSV twice is the caller's
     /// responsibility to avoid; this port does no deduplication.
@@ -106,7 +106,7 @@ pub trait TransactionRepository {
     /// hundred thousand depending on the user, so only a row count keeps
     /// each batch cheap.
     ///
-    /// The optional category / case-insensitive source filters are the same
+    /// The optional category / case-insensitive description filters are the same
     /// ones `count_in_range` takes, and they are pushed down here for the
     /// same reason: a filtered paginated view must page through *matching*
     /// rows. Filtering the returned batch in the caller instead would only
@@ -116,7 +116,7 @@ pub trait TransactionRepository {
     ///
     /// `is_income`, when set, additionally narrows to positive (`true`) or
     /// negative (`false`) amounts — the Expenses and Income lists page
-    /// through the ledger independently, each with its own category/source
+    /// through the ledger independently, each with its own category/description
     /// filters, so the sign has to be pushed down alongside them rather than
     /// split out of a single mixed-sign batch after the fact.
     fn list_page(
@@ -124,11 +124,11 @@ pub trait TransactionRepository {
         offset: i64,
         limit: i64,
         category_id: Option<CategoryId>,
-        source_contains: Option<&str>,
+        description_contains: Option<&str>,
         is_income: Option<bool>,
     ) -> Result<Vec<Transaction>, RepositoryError>;
     /// Counts transactions in `[start, end]`, optionally narrowed to a
-    /// category, a case-insensitive source substring, and/or a sign via
+    /// category, a case-insensitive description substring, and/or a sign via
     /// `is_income` — the same filters `list_page` takes. Pushed down to the
     /// query (rather than counting a `list_in_range` result in the caller)
     /// so a paginated view can show an accurate total for the current
@@ -138,7 +138,7 @@ pub trait TransactionRepository {
         start: NaiveDate,
         end: NaiveDate,
         category_id: Option<CategoryId>,
-        source_contains: Option<&str>,
+        description_contains: Option<&str>,
         is_income: Option<bool>,
     ) -> Result<i64, RepositoryError>;
 }

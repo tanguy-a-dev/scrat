@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use chrono::{Local, Months, NaiveDate};
-use scrat_application::transaction_service::{TransactionService, RECONCILIATION_SOURCE};
+use scrat_application::transaction_service::{TransactionService, RECONCILIATION_DESCRIPTION};
 use scrat_domain::account::{Account, AccountId};
 use scrat_domain::category::{Category, CategoryId};
 use scrat_domain::ports::{AccountRepository, CategoryRepository};
@@ -22,7 +22,7 @@ pub struct TransactionDto {
     pub date: String,
     pub amount_minor_units: i64,
     pub currency: String,
-    pub source: String,
+    pub description: String,
     pub category_id: String,
     pub account_id: String,
     /// `"normal"`, `"transfer"` or `"adjustment"`. Anything other than
@@ -41,7 +41,7 @@ impl From<Transaction> for TransactionDto {
             date: transaction.date().format("%Y-%m-%d").to_string(),
             amount_minor_units: transaction.amount().minor_units(),
             currency: transaction.amount().currency().code().to_string(),
-            source: transaction.source().as_str().to_string(),
+            description: transaction.description().as_str().to_string(),
             category_id: transaction.category_id().as_string(),
             account_id: transaction.account_id().as_string(),
             role: transaction.role().as_str().to_string(),
@@ -88,7 +88,7 @@ pub fn list_transactions(
 /// walking the whole ledger in fixed-size batches instead of one query that
 /// scans every row up front.
 ///
-/// Takes the view's category/source filters so each batch is a page of the
+/// Takes the view's category/description filters so each batch is a page of the
 /// *matching* rows: filtering client-side, over only the pages fetched so
 /// far, made a filter look like it had found nothing until the user had
 /// scrolled the whole ledger in. `is_income` additionally narrows to just
@@ -100,7 +100,7 @@ pub fn list_transactions_page(
     offset: i64,
     limit: i64,
     category_id: Option<String>,
-    source_contains: Option<String>,
+    description_contains: Option<String>,
     is_income: Option<bool>,
 ) -> Result<Vec<TransactionDto>, String> {
     let category_id = category_id
@@ -112,14 +112,14 @@ pub fn list_transactions_page(
             offset,
             limit,
             category_id,
-            source_contains.as_deref(),
+            description_contains.as_deref(),
             is_income,
         )
     })
     .map(|txs| txs.into_iter().map(TransactionDto::from).collect())
 }
 
-/// Counts transactions in `[start, end]` matching the same category/source/
+/// Counts transactions in `[start, end]` matching the same category/description/
 /// sign filters the transactions view applies, so the header can report an
 /// accurate total for the current view even when only part of it — e.g. one
 /// page of "All Time" — has actually been loaded into the frontend.
@@ -129,7 +129,7 @@ pub fn count_transactions(
     start: String,
     end: String,
     category_id: Option<String>,
-    source_contains: Option<String>,
+    description_contains: Option<String>,
     is_income: Option<bool>,
 ) -> Result<i64, String> {
     let start = parse_date(&start)?;
@@ -143,7 +143,7 @@ pub fn count_transactions(
             start,
             end,
             category_id,
-            source_contains.as_deref(),
+            description_contains.as_deref(),
             is_income,
         )
     })
@@ -154,7 +154,7 @@ pub fn create_transaction(
     state: State<DbState>,
     date: String,
     amount_minor_units: i64,
-    source: String,
+    description: String,
     category_id: String,
     account_id: String,
 ) -> Result<TransactionDto, String> {
@@ -162,7 +162,13 @@ pub fn create_transaction(
     let category_id = CategoryId::parse(&category_id).map_err(|e| e.to_string())?;
     let account_id = AccountId::parse(&account_id).map_err(|e| e.to_string())?;
     with_service(&state, |s| {
-        s.create_transaction(date, amount_minor_units, &source, category_id, account_id)
+        s.create_transaction(
+            date,
+            amount_minor_units,
+            &description,
+            category_id,
+            account_id,
+        )
     })
     .map(TransactionDto::from)
 }
@@ -251,7 +257,7 @@ pub fn reconcile_account(
         // are distinguishable in the ledger from anything the user filed by
         // hand — and so they don't silently pad whatever the default
         // category happens to be.
-        let category_id = s.get_or_create_category_by_name(RECONCILIATION_SOURCE)?;
+        let category_id = s.get_or_create_category_by_name(RECONCILIATION_DESCRIPTION)?;
         s.reconcile_account(account_id, observed_balance_minor_units, category_id, date)
     })
     .map(|adjustment| adjustment.map(TransactionDto::from))
@@ -269,20 +275,20 @@ pub fn set_transaction_category(
 }
 
 #[tauri::command]
-pub fn suggest_account_for_source(
+pub fn suggest_account_for_description(
     state: State<DbState>,
-    source: String,
+    description: String,
 ) -> Result<Option<String>, String> {
-    with_service(&state, |s| s.find_account_by_source(&source))
+    with_service(&state, |s| s.find_account_by_description(&description))
         .map(|found| found.map(|id| id.as_string()))
 }
 
 #[tauri::command]
-pub fn suggest_category_for_source(
+pub fn suggest_category_for_description(
     state: State<DbState>,
-    source: String,
+    description: String,
 ) -> Result<Option<String>, String> {
-    with_service(&state, |s| s.suggest_category_for_source(&source))
+    with_service(&state, |s| s.suggest_category_for_description(&description))
         .map(|found| found.map(|id| id.as_string()))
 }
 
@@ -416,7 +422,7 @@ fn build_csv(
     let categories_by_id: HashMap<CategoryId, &Category> =
         categories.iter().map(|c| (c.id(), c)).collect();
 
-    let mut csv = String::from("Date;Amount;Currency;Source;Category;Subcategory;Account\n");
+    let mut csv = String::from("Date;Amount;Currency;Description;Category;Subcategory;Account\n");
     for t in transactions {
         let (category, subcategory) = category_columns(t.category_id(), &categories_by_id);
         let account = account_names
@@ -428,7 +434,7 @@ fn build_csv(
             t.date().format("%Y-%m-%d"),
             format_amount_for_csv(t.amount().minor_units()),
             t.amount().currency().code(),
-            csv_field(t.source().as_str()),
+            csv_field(t.description().as_str()),
             csv_field(category),
             csv_field(subcategory),
             csv_field(account),
@@ -466,11 +472,11 @@ mod tests {
     use scrat_domain::account::AccountName;
     use scrat_domain::category::CategoryName;
     use scrat_domain::money::{Currency, Money};
-    use scrat_domain::transaction::SourceText;
+    use scrat_domain::transaction::Description;
 
     use super::*;
 
-    const HEADER: &str = "Date;Amount;Currency;Source;Category;Subcategory;Account\n";
+    const HEADER: &str = "Date;Amount;Currency;Description;Category;Subcategory;Account\n";
 
     fn eur() -> Currency {
         Currency::new("EUR").unwrap()
@@ -495,7 +501,7 @@ mod tests {
 
     fn transaction(
         minor_units: i64,
-        source: &str,
+        description: &str,
         category_id: CategoryId,
         account_id: AccountId,
     ) -> Transaction {
@@ -503,7 +509,7 @@ mod tests {
             TransactionId::new(),
             NaiveDate::from_ymd_opt(2026, 3, 14).unwrap(),
             Money::from_minor_units(minor_units, eur()),
-            SourceText::new(source).unwrap(),
+            Description::new(description).unwrap(),
             category_id,
             account_id,
         )

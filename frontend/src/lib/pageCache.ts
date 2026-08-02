@@ -10,7 +10,7 @@
  * - **View state only, never data.** Pages still re-fetch from the database on
  *   mount. Caching rows here would mean coming back to a ledger that silently
  *   disagrees with a change made from another page.
- * - **In memory only, never on disk.** A source filter is user data, and the
+ * - **In memory only, never on disk.** A description filter is user data, and the
  *   only place this app writes user data is the encrypted database. Losing
  *   these on quit is also the right behavior: a fresh launch should open on a
  *   predictable view, not on whatever was on screen a week ago.

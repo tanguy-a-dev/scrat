@@ -15,7 +15,7 @@ pub struct AccountDto {
     pub opening_balance_minor_units: i64,
     pub balance_minor_units: i64,
     pub currency: String,
-    pub source_patterns: Vec<String>,
+    pub description_patterns: Vec<String>,
     /// Whether this is the app-wide default account — used as the CSV
     /// import destination when none is explicitly chosen. Changeable via
     /// `set_default_account`.
@@ -30,8 +30,8 @@ fn to_dto(value: AccountWithBalance, default_account_id: Option<AccountId>) -> A
         opening_balance_minor_units: account.opening_balance().minor_units(),
         balance_minor_units: balance.minor_units(),
         currency: balance.currency().code().to_string(),
-        source_patterns: account
-            .source_patterns()
+        description_patterns: account
+            .description_patterns()
             .iter()
             .map(|p| p.as_str().to_string())
             .collect(),
@@ -172,23 +172,23 @@ pub fn set_opening_balance(
 }
 
 #[tauri::command]
-pub fn add_source_pattern(
+pub fn add_description_pattern(
     state: State<DbState>,
     id: String,
     pattern: String,
 ) -> Result<(), String> {
     let id = parse_id(&id)?;
-    with_service(&state, |s| s.add_source_pattern(id, &pattern))
+    with_service(&state, |s| s.add_description_pattern(id, &pattern))
 }
 
 #[tauri::command]
-pub fn remove_source_pattern(
+pub fn remove_description_pattern(
     state: State<DbState>,
     id: String,
     pattern: String,
 ) -> Result<(), String> {
     let id = parse_id(&id)?;
-    with_service(&state, |s| s.remove_source_pattern(id, &pattern))
+    with_service(&state, |s| s.remove_description_pattern(id, &pattern))
 }
 
 #[tauri::command]

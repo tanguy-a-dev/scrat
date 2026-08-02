@@ -5,7 +5,7 @@ use scrat_domain::category::CategoryId;
 use scrat_domain::money::{Currency, Money};
 use scrat_domain::ports::{RepositoryError, TransactionRepository};
 use scrat_domain::transaction::{
-    SourceText, Transaction, TransactionId, TransactionRole, TransferGroupId,
+    Description, Transaction, TransactionId, TransactionRole, TransferGroupId,
 };
 
 pub struct SqliteTransactionRepository<'a> {
@@ -26,8 +26,8 @@ impl<'a> SqliteTransactionRepository<'a> {
             rusqlite::Error::InvalidColumnType(0, e.to_string(), rusqlite::types::Type::Text)
         })?;
         let amount_minor_units: i64 = row.get("amount_minor_units")?;
-        let source: String = row.get("source")?;
-        let source = SourceText::new(&source).map_err(invalid_column)?;
+        let description: String = row.get("description")?;
+        let description = Description::new(&description).map_err(invalid_column)?;
         let category_id: String = row.get("category_id")?;
         let category_id = CategoryId::parse(&category_id).map_err(|e| {
             rusqlite::Error::InvalidColumnType(0, e.to_string(), rusqlite::types::Type::Text)
@@ -50,7 +50,7 @@ impl<'a> SqliteTransactionRepository<'a> {
             id,
             date,
             amount,
-            source,
+            description,
             category_id,
             account_id,
             role,
@@ -69,13 +69,13 @@ fn sql_err(e: rusqlite::Error) -> RepositoryError {
 }
 
 const INSERT_SQL: &str = "INSERT INTO transactions
-    (id, date, amount_minor_units, source, category_id, account_id, dedup_key, created_at,
+    (id, date, amount_minor_units, description, category_id, account_id, fingerprint, created_at,
      role, transfer_group_id)
  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)";
 
 /// Every column `row_to_transaction` reads, so the three read paths can't
 /// drift apart and silently drop a role or a transfer group.
-const SELECT_COLUMNS: &str = "id, date, amount_minor_units, source, category_id, account_id,
+const SELECT_COLUMNS: &str = "id, date, amount_minor_units, description, category_id, account_id,
      role, transfer_group_id";
 
 /// Keeps each bulk `IN (...)` clause well under SQLite's variable-count
@@ -94,10 +94,10 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
                     transaction.id().as_string(),
                     date,
                     transaction.amount().minor_units(),
-                    transaction.source().as_str(),
+                    transaction.description().as_str(),
                     transaction.category_id().as_string(),
                     transaction.account_id().as_string(),
-                    transaction.dedup_key().as_str(),
+                    transaction.fingerprint().as_str(),
                     now,
                     transaction.role().as_str(),
                     transaction.transfer_group_id().map(|id| id.as_string()),
@@ -239,7 +239,7 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
         offset: i64,
         limit: i64,
         category_id: Option<CategoryId>,
-        source_contains: Option<&str>,
+        description_contains: Option<&str>,
         is_income: Option<bool>,
     ) -> Result<Vec<Transaction>, RepositoryError> {
         // `id` breaks ties on same-day transactions — `ORDER BY date DESC`
@@ -255,7 +255,7 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
             .prepare(&format!(
                 "SELECT {SELECT_COLUMNS} FROM transactions
                      WHERE (?3 IS NULL OR category_id = ?3)
-                       AND (?4 IS NULL OR LOWER(source) LIKE '%' || LOWER(?4) || '%')
+                       AND (?4 IS NULL OR LOWER(description) LIKE '%' || LOWER(?4) || '%')
                        AND (?5 IS NULL OR (?5 = 1 AND amount_minor_units > 0)
                                         OR (?5 = 0 AND amount_minor_units < 0))
                      ORDER BY date DESC, id DESC LIMIT ?1 OFFSET ?2"
@@ -267,7 +267,7 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
                     limit,
                     offset,
                     category_id.map(|id| id.as_string()),
-                    source_contains,
+                    description_contains,
                     is_income,
                 ],
                 |row| self.row_to_transaction(row),
@@ -283,7 +283,7 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
         start: NaiveDate,
         end: NaiveDate,
         category_id: Option<CategoryId>,
-        source_contains: Option<&str>,
+        description_contains: Option<&str>,
         is_income: Option<bool>,
     ) -> Result<i64, RepositoryError> {
         let count = self
@@ -292,14 +292,14 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
                 "SELECT COUNT(*) FROM transactions
                      WHERE date >= ?1 AND date <= ?2
                        AND (?3 IS NULL OR category_id = ?3)
-                       AND (?4 IS NULL OR LOWER(source) LIKE '%' || LOWER(?4) || '%')
+                       AND (?4 IS NULL OR LOWER(description) LIKE '%' || LOWER(?4) || '%')
                        AND (?5 IS NULL OR (?5 = 1 AND amount_minor_units > 0)
                                         OR (?5 = 0 AND amount_minor_units < 0))",
                 params![
                     start.format("%Y-%m-%d").to_string(),
                     end.format("%Y-%m-%d").to_string(),
                     category_id.map(|id| id.as_string()),
-                    source_contains,
+                    description_contains,
                     is_income,
                 ],
                 |row| row.get(0),
@@ -358,7 +358,7 @@ mod tests {
             TransactionId::new(),
             NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
             Money::from_minor_units(-1_200, usd()),
-            SourceText::new("Whole Foods").unwrap(),
+            Description::new("Whole Foods").unwrap(),
             category_id,
             account_id,
         )
@@ -374,7 +374,7 @@ mod tests {
 
         assert_eq!(reloaded.len(), 1);
         assert_eq!(reloaded[0].amount().minor_units(), -1_200);
-        assert_eq!(reloaded[0].source().as_str(), "Whole Foods");
+        assert_eq!(reloaded[0].description().as_str(), "Whole Foods");
     }
 
     #[test]
@@ -387,7 +387,7 @@ mod tests {
                 TransactionId::new(),
                 NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
                 Money::from_minor_units(-1_200, usd()),
-                SourceText::new("In range").unwrap(),
+                Description::new("In range").unwrap(),
                 category_id,
                 account_id,
             )
@@ -399,7 +399,7 @@ mod tests {
                 TransactionId::new(),
                 NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
                 Money::from_minor_units(-500, usd()),
-                SourceText::new("Out of range").unwrap(),
+                Description::new("Out of range").unwrap(),
                 category_id,
                 account_id,
             )
@@ -415,7 +415,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].source().as_str(), "In range");
+        assert_eq!(results[0].description().as_str(), "In range");
     }
 
     /// Regression test: `list_in_range(NaiveDate::MIN, NaiveDate::MAX)` was
@@ -434,7 +434,7 @@ mod tests {
                 TransactionId::new(),
                 NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
                 Money::from_minor_units(-1_200, usd()),
-                SourceText::new("Whole Foods").unwrap(),
+                Description::new("Whole Foods").unwrap(),
                 category_id,
                 account_id,
             )
@@ -446,7 +446,7 @@ mod tests {
                 TransactionId::new(),
                 NaiveDate::from_ymd_opt(2030, 6, 1).unwrap(),
                 Money::from_minor_units(-500, usd()),
-                SourceText::new("Far future").unwrap(),
+                Description::new("Far future").unwrap(),
                 category_id,
                 account_id,
             )
@@ -470,7 +470,7 @@ mod tests {
                     TransactionId::new(),
                     NaiveDate::from_ymd_opt(2026, 1, day).unwrap(),
                     Money::from_minor_units(-100 * day as i64, usd()),
-                    SourceText::new(&format!("Day {day}")).unwrap(),
+                    Description::new(&format!("Day {day}")).unwrap(),
                     category_id,
                     account_id,
                 )
@@ -505,7 +505,7 @@ mod tests {
                 TransactionId::new(),
                 NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
                 Money::from_minor_units(-100, usd()),
-                SourceText::new("Oldest").unwrap(),
+                Description::new("Oldest").unwrap(),
                 category_id,
                 account_id,
             )
@@ -517,7 +517,7 @@ mod tests {
                 TransactionId::new(),
                 NaiveDate::from_ymd_opt(2026, 6, 1).unwrap(),
                 Money::from_minor_units(-100, usd()),
-                SourceText::new("Newest").unwrap(),
+                Description::new("Newest").unwrap(),
                 category_id,
                 account_id,
             )
@@ -528,7 +528,9 @@ mod tests {
         let page = repo.list_page(0, 10, None, None, None).unwrap();
 
         assert_eq!(
-            page.iter().map(|t| t.source().as_str()).collect::<Vec<_>>(),
+            page.iter()
+                .map(|t| t.description().as_str())
+                .collect::<Vec<_>>(),
             vec!["Newest", "Oldest"]
         );
     }
@@ -562,7 +564,7 @@ mod tests {
                     TransactionId::new(),
                     NaiveDate::from_ymd_opt(2026, 2, day).unwrap(),
                     Money::from_minor_units(-100 * day as i64, usd()),
-                    SourceText::new(&format!("Supermarket {day}")).unwrap(),
+                    Description::new(&format!("Supermarket {day}")).unwrap(),
                     groceries_id,
                     account_id,
                 )
@@ -578,7 +580,7 @@ mod tests {
                     TransactionId::new(),
                     NaiveDate::from_ymd_opt(2025, month, 28).unwrap(),
                     Money::from_minor_units(250_000, usd()),
-                    SourceText::new(&format!("Employer {month}")).unwrap(),
+                    Description::new(&format!("Employer {month}")).unwrap(),
                     salary.id(),
                     account_id,
                 )
@@ -596,7 +598,7 @@ mod tests {
         assert_eq!(
             first_page
                 .iter()
-                .map(|t| t.source().as_str())
+                .map(|t| t.description().as_str())
                 .collect::<Vec<_>>(),
             vec!["Employer 3", "Employer 2", "Employer 1"],
             "a filtered page is still newest-first"
@@ -629,7 +631,7 @@ mod tests {
                     TransactionId::new(),
                     NaiveDate::from_ymd_opt(2026, 1, day).unwrap(),
                     Money::from_minor_units(if income { 1_000 } else { -1_000 }, usd()),
-                    SourceText::new(&format!("Row {day}")).unwrap(),
+                    Description::new(&format!("Row {day}")).unwrap(),
                     if income { salary.id() } else { groceries_id },
                     account_id,
                 )
@@ -658,17 +660,17 @@ mod tests {
     }
 
     #[test]
-    fn list_page_filters_by_source_case_insensitively() {
+    fn list_page_filters_by_description_case_insensitively() {
         let conn = test_conn();
         let (account_id, category_id) = seed_account_and_category(&conn);
         let repo = SqliteTransactionRepository::new(&conn, usd());
-        for source in ["WHOLE FOODS MARKET", "Electric Co", "whole foods #22"] {
+        for description in ["WHOLE FOODS MARKET", "Electric Co", "whole foods #22"] {
             repo.insert(
                 &Transaction::new(
                     TransactionId::new(),
                     NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
                     Money::from_minor_units(-100, usd()),
-                    SourceText::new(source).unwrap(),
+                    Description::new(description).unwrap(),
                     category_id,
                     account_id,
                 )
@@ -682,15 +684,17 @@ mod tests {
             .unwrap();
 
         assert_eq!(page.len(), 2);
-        assert!(page
-            .iter()
-            .all(|t| t.source().as_str().to_lowercase().contains("whole foods")));
+        assert!(page.iter().all(|t| t
+            .description()
+            .as_str()
+            .to_lowercase()
+            .contains("whole foods")));
     }
 
     /// Both filters at once narrow further, rather than one quietly
     /// replacing the other.
     #[test]
-    fn list_page_applies_category_and_source_filters_together() {
+    fn list_page_applies_category_and_description_filters_together() {
         let conn = test_conn();
         let (account_id, groceries_id) = seed_account_and_category(&conn);
         let category_repo = crate::SqliteCategoryRepository::new(&conn);
@@ -702,7 +706,7 @@ mod tests {
         .unwrap();
         category_repo.insert(&salary).unwrap();
         let repo = SqliteTransactionRepository::new(&conn, usd());
-        for (source, category_id) in [
+        for (description, category_id) in [
             ("Employer payroll", salary.id()),
             ("Employer canteen", groceries_id),
             ("Side gig payroll", salary.id()),
@@ -712,7 +716,7 @@ mod tests {
                     TransactionId::new(),
                     NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
                     Money::from_minor_units(1_000, usd()),
-                    SourceText::new(source).unwrap(),
+                    Description::new(description).unwrap(),
                     category_id,
                     account_id,
                 )
@@ -726,7 +730,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            page.iter().map(|t| t.source().as_str()).collect::<Vec<_>>(),
+            page.iter()
+                .map(|t| t.description().as_str())
+                .collect::<Vec<_>>(),
             vec!["Employer payroll"]
         );
     }
@@ -753,7 +759,7 @@ mod tests {
                     TransactionId::new(),
                     NaiveDate::from_ymd_opt(2026, 1, day).unwrap(),
                     Money::from_minor_units(1_000, usd()),
-                    SourceText::new(&format!("Row {day}")).unwrap(),
+                    Description::new(&format!("Row {day}")).unwrap(),
                     if day % 3 == 0 {
                         salary.id()
                     } else {
@@ -792,7 +798,7 @@ mod tests {
                 TransactionId::new(),
                 NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
                 Money::from_minor_units(-100, usd()),
-                SourceText::new("In range").unwrap(),
+                Description::new("In range").unwrap(),
                 category_id,
                 account_id,
             )
@@ -804,7 +810,7 @@ mod tests {
                 TransactionId::new(),
                 NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
                 Money::from_minor_units(-100, usd()),
-                SourceText::new("Out of range").unwrap(),
+                Description::new("Out of range").unwrap(),
                 category_id,
                 account_id,
             )
@@ -839,7 +845,7 @@ mod tests {
                 TransactionId::new(),
                 NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
                 Money::from_minor_units(-100, usd()),
-                SourceText::new("Supermarket").unwrap(),
+                Description::new("Supermarket").unwrap(),
                 groceries_id,
                 account_id,
             )
@@ -851,7 +857,7 @@ mod tests {
                 TransactionId::new(),
                 NaiveDate::from_ymd_opt(2026, 1, 16).unwrap(),
                 Money::from_minor_units(-90_000, usd()),
-                SourceText::new("Landlord").unwrap(),
+                Description::new("Landlord").unwrap(),
                 rent.id(),
                 account_id,
             )
@@ -873,7 +879,7 @@ mod tests {
     }
 
     #[test]
-    fn count_in_range_filters_by_source_case_insensitively() {
+    fn count_in_range_filters_by_description_case_insensitively() {
         let conn = test_conn();
         let (account_id, category_id) = seed_account_and_category(&conn);
         let repo = SqliteTransactionRepository::new(&conn, usd());
@@ -882,7 +888,7 @@ mod tests {
                 TransactionId::new(),
                 NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
                 Money::from_minor_units(-100, usd()),
-                SourceText::new("WHOLE FOODS MARKET").unwrap(),
+                Description::new("WHOLE FOODS MARKET").unwrap(),
                 category_id,
                 account_id,
             )
@@ -894,7 +900,7 @@ mod tests {
                 TransactionId::new(),
                 NaiveDate::from_ymd_opt(2026, 1, 16).unwrap(),
                 Money::from_minor_units(-100, usd()),
-                SourceText::new("Electric Co").unwrap(),
+                Description::new("Electric Co").unwrap(),
                 category_id,
                 account_id,
             )
@@ -924,7 +930,7 @@ mod tests {
         let conn = test_conn();
         let (account_id, category_id) = seed_account_and_category(&conn);
         let repo = SqliteTransactionRepository::new(&conn, usd());
-        for (day, source, amount) in [
+        for (day, description, amount) in [
             (13, "Paycheck", 2_000),
             (14, "Groceries", -500),
             (15, "Rent", -900),
@@ -934,7 +940,7 @@ mod tests {
                     TransactionId::new(),
                     NaiveDate::from_ymd_opt(2026, 1, day).unwrap(),
                     Money::from_minor_units(amount, usd()),
-                    SourceText::new(source).unwrap(),
+                    Description::new(description).unwrap(),
                     category_id,
                     account_id,
                 )
@@ -949,14 +955,14 @@ mod tests {
         assert_eq!(
             income
                 .iter()
-                .map(|t| t.source().as_str())
+                .map(|t| t.description().as_str())
                 .collect::<Vec<_>>(),
             vec!["Paycheck"]
         );
         assert_eq!(
             expenses
                 .iter()
-                .map(|t| t.source().as_str())
+                .map(|t| t.description().as_str())
                 .collect::<Vec<_>>(),
             vec!["Rent", "Groceries"]
         );
@@ -967,13 +973,13 @@ mod tests {
         let conn = test_conn();
         let (account_id, category_id) = seed_account_and_category(&conn);
         let repo = SqliteTransactionRepository::new(&conn, usd());
-        for (source, amount) in [("Paycheck", 2_000), ("Groceries", -500), ("Rent", -900)] {
+        for (description, amount) in [("Paycheck", 2_000), ("Groceries", -500), ("Rent", -900)] {
             repo.insert(
                 &Transaction::new(
                     TransactionId::new(),
                     NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
                     Money::from_minor_units(amount, usd()),
-                    SourceText::new(source).unwrap(),
+                    Description::new(description).unwrap(),
                     category_id,
                     account_id,
                 )
@@ -1014,7 +1020,7 @@ mod tests {
             TransactionId::new(),
             NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
             Money::from_minor_units(-1_200, usd()),
-            SourceText::new("Whole Foods").unwrap(),
+            Description::new("Whole Foods").unwrap(),
             category_id,
             account_id,
         )
@@ -1041,7 +1047,7 @@ mod tests {
             TransactionId::new(),
             NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
             Money::from_minor_units(-1_200, usd()),
-            SourceText::new("Whole Foods").unwrap(),
+            Description::new("Whole Foods").unwrap(),
             category_id,
             account_id,
         )
@@ -1083,7 +1089,7 @@ mod tests {
             TransactionId::new(),
             NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
             Money::from_minor_units(-25_000, usd()),
-            SourceText::new("Virement N26").unwrap(),
+            Description::new("Virement N26").unwrap(),
             category_id,
             account_id,
             TransactionRole::Transfer,
@@ -1107,7 +1113,7 @@ mod tests {
             TransactionId::new(),
             NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
             Money::from_minor_units(-1_200, usd()),
-            SourceText::new("Whole Foods").unwrap(),
+            Description::new("Whole Foods").unwrap(),
             category_id,
             account_id,
         )
@@ -1149,7 +1155,7 @@ mod tests {
             TransactionId::new(),
             NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
             Money::from_minor_units(-25_000, usd()),
-            SourceText::new("Virement N26").unwrap(),
+            Description::new("Virement N26").unwrap(),
             category_id,
             account_id,
             TransactionRole::Transfer,
@@ -1165,7 +1171,7 @@ mod tests {
             TransactionId::new(),
             NaiveDate::from_ymd_opt(2026, 1, 16).unwrap(),
             Money::from_minor_units(-450, usd()),
-            SourceText::new("Boulangerie").unwrap(),
+            Description::new("Boulangerie").unwrap(),
             category_id,
             account_id,
         )
@@ -1188,7 +1194,7 @@ mod tests {
             TransactionId::new(),
             NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
             Money::from_minor_units(-1_200, usd()),
-            SourceText::new("Whole Foods").unwrap(),
+            Description::new("Whole Foods").unwrap(),
             category_id,
             account_id,
         )
@@ -1209,7 +1215,7 @@ mod tests {
             TransactionId::new(),
             NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
             Money::from_minor_units(-1_200, usd()),
-            SourceText::new("Whole Foods").unwrap(),
+            Description::new("Whole Foods").unwrap(),
             category_id,
             account_id,
         )
@@ -1218,7 +1224,7 @@ mod tests {
             TransactionId::new(),
             NaiveDate::from_ymd_opt(2026, 1, 16).unwrap(),
             Money::from_minor_units(-450, usd()),
-            SourceText::new("Boulangerie").unwrap(),
+            Description::new("Boulangerie").unwrap(),
             category_id,
             account_id,
         )
@@ -1251,7 +1257,7 @@ mod tests {
                 TransactionId::new(),
                 date,
                 Money::from_minor_units(-(i + 1), usd()),
-                SourceText::new("Bulk row").unwrap(),
+                Description::new("Bulk row").unwrap(),
                 category_id,
                 account_id,
             )
@@ -1282,7 +1288,7 @@ mod tests {
             TransactionId::new(),
             NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
             Money::from_minor_units(-1_200, usd()),
-            SourceText::new("Whole Foods").unwrap(),
+            Description::new("Whole Foods").unwrap(),
             category_id,
             account_id,
         )
@@ -1291,7 +1297,7 @@ mod tests {
             TransactionId::new(),
             NaiveDate::from_ymd_opt(2026, 1, 16).unwrap(),
             Money::from_minor_units(-450, usd()),
-            SourceText::new("Boulangerie").unwrap(),
+            Description::new("Boulangerie").unwrap(),
             category_id,
             account_id,
         )
@@ -1300,7 +1306,7 @@ mod tests {
             TransactionId::new(),
             NaiveDate::from_ymd_opt(2026, 1, 17).unwrap(),
             Money::from_minor_units(-300, usd()),
-            SourceText::new("Cafe").unwrap(),
+            Description::new("Cafe").unwrap(),
             category_id,
             account_id,
         )
@@ -1331,7 +1337,7 @@ mod tests {
     }
 
     #[test]
-    fn identical_account_date_amount_and_source_are_both_kept() {
+    fn identical_account_date_amount_and_description_are_both_kept() {
         let conn = test_conn();
         let (account_id, category_id) = seed_account_and_category(&conn);
         let repo = SqliteTransactionRepository::new(&conn, usd());
@@ -1341,7 +1347,7 @@ mod tests {
                 TransactionId::new(),
                 date,
                 Money::from_minor_units(-1_200, usd()),
-                SourceText::new("Whole Foods").unwrap(),
+                Description::new("Whole Foods").unwrap(),
                 category_id,
                 account_id,
             )

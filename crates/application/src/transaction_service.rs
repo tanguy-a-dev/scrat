@@ -7,7 +7,7 @@ use scrat_domain::ports::{
 };
 use scrat_domain::recurring::{self, RecurringCharge};
 use scrat_domain::transaction::{
-    SourceText, Transaction, TransactionError, TransactionId, TransactionRole, TransferGroupId,
+    Description, Transaction, TransactionError, TransactionId, TransactionRole, TransferGroupId,
 };
 use scrat_domain::transfer_rule::TransferRule;
 use thiserror::Error;
@@ -28,7 +28,7 @@ pub enum ApplicationError {
     BalanceOutOfRange,
 }
 
-/// A single row a CSV importer has already parsed into a date/amount/source
+/// A single row a CSV importer has already parsed into a date/amount/description
 /// triple, with the category it should be filed under already resolved.
 /// Deliberately independent of any particular CSV crate's types —
 /// `scrat-infra-csv` produces its own parsed rows and the Tauri command
@@ -37,7 +37,7 @@ pub enum ApplicationError {
 pub struct ImportRow {
     pub date: NaiveDate,
     pub amount_minor_units: i64,
-    pub source: String,
+    pub description: String,
     pub category_id: CategoryId,
 }
 
@@ -67,10 +67,10 @@ pub struct BulkDeleteOutcome {
     pub transfer_groups: usize,
 }
 
-/// The source text recorded on a reconciliation adjustment. Fixed rather
+/// The description text recorded on a reconciliation adjustment. Fixed rather
 /// than user-supplied so these entries are recognizable at a glance in the
 /// ledger, next to the imported rows they sit among.
-pub const RECONCILIATION_SOURCE: &str = "Balance adjustment";
+pub const RECONCILIATION_DESCRIPTION: &str = "Balance adjustment";
 
 /// Constructed fresh per request against live repository borrows — see
 /// `AccountService` for why these borrow rather than own their repository.
@@ -101,7 +101,7 @@ impl<'a> TransactionService<'a> {
         &self,
         date: NaiveDate,
         amount_minor_units: i64,
-        source: &str,
+        description: &str,
         category_id: CategoryId,
         account_id: AccountId,
     ) -> Result<Transaction, ApplicationError> {
@@ -112,13 +112,13 @@ impl<'a> TransactionService<'a> {
             .find_by_id(account_id)?
             .ok_or(ApplicationError::AccountNotFound)?;
 
-        let source = SourceText::new(source)?;
+        let description = Description::new(description)?;
         let amount = Money::from_minor_units(amount_minor_units, self.currency.clone());
         let transaction = Transaction::new(
             TransactionId::new(),
             date,
             amount,
-            source,
+            description,
             category_id,
             account_id,
         )?;
@@ -226,12 +226,16 @@ impl<'a> TransactionService<'a> {
         offset: i64,
         limit: i64,
         category_id: Option<CategoryId>,
-        source_contains: Option<&str>,
+        description_contains: Option<&str>,
         is_income: Option<bool>,
     ) -> Result<Vec<Transaction>, ApplicationError> {
-        Ok(self
-            .transactions
-            .list_page(offset, limit, category_id, source_contains, is_income)?)
+        Ok(self.transactions.list_page(
+            offset,
+            limit,
+            category_id,
+            description_contains,
+            is_income,
+        )?)
     }
 
     pub fn count_in_range(
@@ -239,12 +243,16 @@ impl<'a> TransactionService<'a> {
         start: NaiveDate,
         end: NaiveDate,
         category_id: Option<CategoryId>,
-        source_contains: Option<&str>,
+        description_contains: Option<&str>,
         is_income: Option<bool>,
     ) -> Result<i64, ApplicationError> {
-        Ok(self
-            .transactions
-            .count_in_range(start, end, category_id, source_contains, is_income)?)
+        Ok(self.transactions.count_in_range(
+            start,
+            end,
+            category_id,
+            description_contains,
+            is_income,
+        )?)
     }
 
     /// Scans `[start, today]` for recurring commitments — subscriptions, rent,
@@ -270,17 +278,17 @@ impl<'a> TransactionService<'a> {
     ///
     /// This is *not* idempotent: re-importing a file, or an overlapping date
     /// range, writes the rows again. Identical (account, date, amount,
-    /// source) transactions are legitimate — two identical coffees the same
+    /// description) transactions are legitimate — two identical coffees the same
     /// day — so there's no safe automatic rule for telling a real repeat
     /// from a re-import, and the caller is left to avoid it.
     ///
-    /// A row whose source text matches a `transfer_rules` entry is money
+    /// A row whose description text matches a `transfer_rules` entry is money
     /// moving to another of the user's own accounts, not spending. Those
     /// rows are written as a pair: the outflow here, and a mirrored inflow
     /// on the counterpart. This is the only way an account whose statements
     /// can't be exported gets its incoming side of the ledger at all — and
     /// because the pair is created and deleted together, a duplicated import
-    /// duplicates both legs symmetrically, so cleaning up the source account
+    /// duplicates both legs symmetrically, so cleaning up the origin account
     /// cleans up the counterpart too.
     pub fn import_transactions(
         &self,
@@ -297,7 +305,7 @@ impl<'a> TransactionService<'a> {
             self.categories
                 .find_by_id(row.category_id)?
                 .ok_or(ApplicationError::CategoryNotFound)?;
-            let source = SourceText::new(&row.source)?;
+            let description = Description::new(&row.description)?;
             let amount = Money::from_minor_units(row.amount_minor_units, self.currency.clone());
 
             // A rule pointing back at the account being imported would
@@ -305,7 +313,7 @@ impl<'a> TransactionService<'a> {
             // account's balance change to zero. Treat it as an ordinary row.
             let counterpart_id = transfer_rules
                 .iter()
-                .find(|rule| rule.matches_source(&row.source))
+                .find(|rule| rule.matches_description(&row.description))
                 .map(|rule| rule.counterpart_account_id())
                 .filter(|id| *id != account_id);
 
@@ -319,7 +327,7 @@ impl<'a> TransactionService<'a> {
                         TransactionId::new(),
                         row.date,
                         amount,
-                        source,
+                        description,
                         row.category_id,
                         account_id,
                         TransactionRole::Transfer,
@@ -335,7 +343,7 @@ impl<'a> TransactionService<'a> {
                         TransactionId::new(),
                         row.date,
                         amount,
-                        source,
+                        description,
                         row.category_id,
                         account_id,
                     )?;
@@ -393,7 +401,7 @@ impl<'a> TransactionService<'a> {
             TransactionId::new(),
             date,
             Money::from_minor_units(delta, self.currency.clone()),
-            SourceText::new(RECONCILIATION_SOURCE)?,
+            Description::new(RECONCILIATION_DESCRIPTION)?,
             category_id,
             account_id,
             TransactionRole::Adjustment,
@@ -425,7 +433,7 @@ impl<'a> TransactionService<'a> {
             }
             let Some(rule) = transfer_rules
                 .iter()
-                .find(|rule| rule.matches_source(transaction.source().as_str()))
+                .find(|rule| rule.matches_description(transaction.description().as_str()))
             else {
                 continue;
             };
@@ -446,7 +454,7 @@ impl<'a> TransactionService<'a> {
                 transaction.id(),
                 transaction.date(),
                 transaction.amount().clone(),
-                transaction.source().clone(),
+                transaction.description().clone(),
                 transaction.category_id(),
                 transaction.account_id(),
                 TransactionRole::Transfer,
@@ -462,18 +470,18 @@ impl<'a> TransactionService<'a> {
         Ok(outcome)
     }
 
-    /// Finds the account whose source-pattern list matches the given raw
-    /// bank source text, if any — used to suggest (not force) an account
-    /// while the user is filling in a transaction's source field.
-    pub fn find_account_by_source(
+    /// Finds the account whose description-pattern list matches the given raw
+    /// bank description text, if any — used to suggest (not force) an account
+    /// while the user is filling in a transaction's description field.
+    pub fn find_account_by_description(
         &self,
-        source: &str,
+        description: &str,
     ) -> Result<Option<AccountId>, ApplicationError> {
         Ok(self
             .accounts
             .list_all()?
             .into_iter()
-            .find(|a| a.matches_source(source))
+            .find(|a| a.matches_description(description))
             .map(|a| a.id()))
     }
 
@@ -546,41 +554,41 @@ impl<'a> TransactionService<'a> {
         Ok(subcategory.id())
     }
 
-    /// Finds past transactions whose source text matches `source` exactly
+    /// Finds past transactions whose description text matches `description` exactly
     /// (case-insensitive, whitespace-normalized) and returns the category of
     /// the most recent one by transaction date — used by CSV import to
     /// categorize rows the file itself doesn't specify a category for. Last
-    /// transaction speaks the truth: if past transactions with this source
+    /// transaction speaks the truth: if past transactions with this description
     /// disagree on category, the most recent one wins.
-    pub fn find_category_for_source(
+    pub fn find_category_for_description(
         &self,
-        source: &str,
+        description: &str,
     ) -> Result<Option<CategoryId>, ApplicationError> {
-        let normalized = normalize_source(source);
+        let normalized = normalize_description(description);
         if normalized.is_empty() {
             return Ok(None);
         }
 
         Ok(self
-            .matching_source_transactions(&normalized)?
+            .matching_description_transactions(&normalized)?
             .into_iter()
             .max_by_key(|t| t.date())
             .map(|t| t.category_id()))
     }
 
-    /// Like [`Self::find_category_for_source`], but scoped to past
+    /// Like [`Self::find_category_for_description`], but scoped to past
     /// transactions filed under `category_name` (or one of its
     /// subcategories) — used when a CSV row specifies a category but leaves
     /// the subcategory blank, so history can still fill in the specific
-    /// subcategory this source is usually filed under without overriding
+    /// subcategory this description is usually filed under without overriding
     /// the category the row itself already pins down. Last transaction
-    /// speaks the truth, same as [`Self::find_category_for_source`].
-    pub fn find_category_for_source_in_category(
+    /// speaks the truth, same as [`Self::find_category_for_description`].
+    pub fn find_category_for_description_in_category(
         &self,
-        source: &str,
+        description: &str,
         category_name: &str,
     ) -> Result<Option<CategoryId>, ApplicationError> {
-        let normalized = normalize_source(source);
+        let normalized = normalize_description(description);
         if normalized.is_empty() {
             return Ok(None);
         }
@@ -599,33 +607,33 @@ impl<'a> TransactionService<'a> {
         };
 
         Ok(self
-            .matching_source_transactions(&normalized)?
+            .matching_description_transactions(&normalized)?
             .into_iter()
             .filter(|t| is_in_category(t.category_id()))
             .max_by_key(|t| t.date())
             .map(|t| t.category_id()))
     }
 
-    fn matching_source_transactions(
+    fn matching_description_transactions(
         &self,
-        normalized_source: &str,
+        normalized_description: &str,
     ) -> Result<Vec<Transaction>, ApplicationError> {
         Ok(self
             .transactions
             .list_all()?
             .into_iter()
-            .filter(|t| normalize_source(t.source().as_str()) == normalized_source)
+            .filter(|t| normalize_description(t.description().as_str()) == normalized_description)
             .collect())
     }
 
     /// Local frequency lookup, no ML/network: finds past transactions that
-    /// share a significant word with `source`, and suggests whichever
+    /// share a significant word with `description`, and suggests whichever
     /// category is most common among them.
-    pub fn suggest_category_for_source(
+    pub fn suggest_category_for_description(
         &self,
-        source: &str,
+        description: &str,
     ) -> Result<Option<CategoryId>, ApplicationError> {
-        let query_tokens = tokenize(source);
+        let query_tokens = tokenize(description);
         if query_tokens.is_empty() {
             return Ok(None);
         }
@@ -635,7 +643,7 @@ impl<'a> TransactionService<'a> {
         let mut counts: std::collections::HashMap<CategoryId, usize> =
             std::collections::HashMap::new();
         for t in &all {
-            let candidate_tokens = tokenize(t.source().as_str());
+            let candidate_tokens = tokenize(t.description().as_str());
             if query_tokens.iter().any(|qt| candidate_tokens.contains(qt)) {
                 *counts.entry(t.category_id()).or_insert(0) += 1;
             }
@@ -648,11 +656,11 @@ impl<'a> TransactionService<'a> {
     }
 }
 
-/// Case-insensitive, whitespace-collapsed form of a source string, matching
-/// the normalization `DedupKey::compute` applies before hashing — the
-/// convention this repo already uses to decide whether two source texts
+/// Case-insensitive, whitespace-collapsed form of a description string, matching
+/// the normalization `TransactionFingerprint::compute` applies before hashing — the
+/// convention this repo already uses to decide whether two description texts
 /// "are the same" for comparison purposes.
-fn normalize_source(s: &str) -> String {
+fn normalize_description(s: &str) -> String {
     s.trim()
         .to_lowercase()
         .split_whitespace()
@@ -662,7 +670,7 @@ fn normalize_source(s: &str) -> String {
 
 /// Lowercases and splits on non-alphanumeric boundaries, dropping short
 /// tokens (numbers, single letters) that are more noise than signal for a
-/// source-text match.
+/// description-text match.
 fn tokenize(s: &str) -> std::collections::HashSet<String> {
     s.to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
@@ -674,7 +682,7 @@ fn tokenize(s: &str) -> std::collections::HashSet<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use scrat_domain::account::{Account, AccountName, SourcePattern};
+    use scrat_domain::account::{Account, AccountName, DescriptionPattern};
     use scrat_domain::category::{Category, CategoryName};
     use scrat_domain::transfer_rule::TransferRuleId;
     use std::sync::Mutex;
@@ -762,7 +770,7 @@ mod tests {
         fn list_all(&self) -> Result<Vec<Category>, RepositoryError> {
             Ok(self.categories.lock().unwrap().clone())
         }
-        fn reassign_children(
+        fn reassign_subcategories(
             &self,
             _from: CategoryId,
             _to: Option<CategoryId>,
@@ -833,7 +841,7 @@ mod tests {
                     existing.id(),
                     existing.date(),
                     existing.amount().clone(),
-                    existing.source().clone(),
+                    existing.description().clone(),
                     category_id,
                     existing.account_id(),
                     existing.role(),
@@ -856,7 +864,7 @@ mod tests {
                     existing.id(),
                     existing.date(),
                     existing.amount().clone(),
-                    existing.source().clone(),
+                    existing.description().clone(),
                     category_id,
                     existing.account_id(),
                     existing.role(),
@@ -889,10 +897,10 @@ mod tests {
             offset: i64,
             limit: i64,
             category_id: Option<CategoryId>,
-            source_contains: Option<&str>,
+            description_contains: Option<&str>,
             is_income: Option<bool>,
         ) -> Result<Vec<Transaction>, RepositoryError> {
-            let source_contains = source_contains.map(|s| s.to_lowercase());
+            let description_contains = description_contains.map(|s| s.to_lowercase());
             let mut sorted: Vec<Transaction> = self
                 .transactions
                 .lock()
@@ -900,9 +908,9 @@ mod tests {
                 .iter()
                 .filter(|t| category_id.is_none_or(|id| t.category_id() == id))
                 .filter(|t| {
-                    source_contains
+                    description_contains
                         .as_ref()
-                        .is_none_or(|s| t.source().as_str().to_lowercase().contains(s))
+                        .is_none_or(|s| t.description().as_str().to_lowercase().contains(s))
                 })
                 .filter(|t| is_income.is_none_or(|income| (t.amount().minor_units() > 0) == income))
                 .cloned()
@@ -923,10 +931,10 @@ mod tests {
             start: NaiveDate,
             end: NaiveDate,
             category_id: Option<CategoryId>,
-            source_contains: Option<&str>,
+            description_contains: Option<&str>,
             is_income: Option<bool>,
         ) -> Result<i64, RepositoryError> {
-            let source_contains = source_contains.map(|s| s.to_lowercase());
+            let description_contains = description_contains.map(|s| s.to_lowercase());
             Ok(self
                 .transactions
                 .lock()
@@ -935,9 +943,9 @@ mod tests {
                 .filter(|t| t.date() >= start && t.date() <= end)
                 .filter(|t| category_id.is_none_or(|id| t.category_id() == id))
                 .filter(|t| {
-                    source_contains
+                    description_contains
                         .as_ref()
-                        .is_none_or(|s| t.source().as_str().to_lowercase().contains(s))
+                        .is_none_or(|s| t.description().as_str().to_lowercase().contains(s))
                 })
                 .filter(|t| is_income.is_none_or(|income| (t.amount().minor_units() > 0) == income))
                 .count() as i64)
@@ -1003,11 +1011,11 @@ mod tests {
             )
         }
 
-        fn import_row(&self, source: &str, amount_minor_units: i64) -> ImportRow {
+        fn import_row(&self, description: &str, amount_minor_units: i64) -> ImportRow {
             ImportRow {
                 date: NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
                 amount_minor_units,
-                source: source.to_string(),
+                description: description.to_string(),
                 category_id: self.category_id,
             }
         }
@@ -1015,7 +1023,7 @@ mod tests {
         fn transfer_rule(&self, pattern: &str, counterpart: AccountId) -> TransferRule {
             TransferRule::new(
                 TransferRuleId::new(),
-                SourcePattern::new(pattern).unwrap(),
+                DescriptionPattern::new(pattern).unwrap(),
                 counterpart,
             )
         }
@@ -1179,11 +1187,11 @@ mod tests {
             .unwrap();
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].source().as_str(), "In range");
+        assert_eq!(results[0].description().as_str(), "In range");
     }
 
     #[test]
-    fn count_in_range_reflects_the_source_filter() {
+    fn count_in_range_reflects_the_description_filter() {
         let f = fixture();
         let service = TransactionService::new(
             &f.transactions,
@@ -1272,14 +1280,14 @@ mod tests {
         assert_eq!(
             filtered
                 .iter()
-                .map(|t| t.source().as_str())
+                .map(|t| t.description().as_str())
                 .collect::<Vec<_>>(),
             vec!["Employer"]
         );
     }
 
     #[test]
-    fn list_page_narrows_to_the_requested_source() {
+    fn list_page_narrows_to_the_requested_description() {
         let f = fixture();
         let service = f.service();
         service
@@ -1306,7 +1314,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(page.len(), 1);
-        assert_eq!(page[0].source().as_str(), "Whole Foods Market");
+        assert_eq!(page[0].description().as_str(), "Whole Foods Market");
     }
 
     /// The Expenses and Income lists page the ledger independently — each
@@ -1341,25 +1349,26 @@ mod tests {
         assert_eq!(
             income
                 .iter()
-                .map(|t| t.source().as_str())
+                .map(|t| t.description().as_str())
                 .collect::<Vec<_>>(),
             vec!["Employer"]
         );
         assert_eq!(
             expenses
                 .iter()
-                .map(|t| t.source().as_str())
+                .map(|t| t.description().as_str())
                 .collect::<Vec<_>>(),
             vec!["Whole Foods Market"]
         );
     }
 
     #[test]
-    fn find_account_by_source_matches_saved_pattern() {
+    fn find_account_by_description_matches_saved_pattern() {
         let f = fixture();
         let mut account = f.accounts.accounts.lock().unwrap()[0].clone();
-        account
-            .add_source_pattern(scrat_domain::account::SourcePattern::new("whole foods").unwrap());
+        account.add_description_pattern(
+            scrat_domain::account::DescriptionPattern::new("whole foods").unwrap(),
+        );
         f.accounts.accounts.lock().unwrap()[0] = account;
         let service = TransactionService::new(
             &f.transactions,
@@ -1368,7 +1377,9 @@ mod tests {
             Currency::new("USD").unwrap(),
         );
 
-        let found = service.find_account_by_source("WHOLE FOODS #42").unwrap();
+        let found = service
+            .find_account_by_description("WHOLE FOODS #42")
+            .unwrap();
 
         assert_eq!(found, Some(f.account_id));
     }
@@ -1385,7 +1396,7 @@ mod tests {
         let row = ImportRow {
             date: NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
             amount_minor_units: -1_200,
-            source: "Whole Foods".to_string(),
+            description: "Whole Foods".to_string(),
             category_id: f.category_id,
         };
 
@@ -1441,7 +1452,7 @@ mod tests {
         let outflow = all
             .iter()
             .find(|t| t.account_id() == f.account_id)
-            .expect("source account leg");
+            .expect("origin account leg");
         let inflow = all
             .iter()
             .find(|t| t.account_id() == f.counterpart_account_id)
@@ -1475,7 +1486,7 @@ mod tests {
         let inflow = all
             .iter()
             .find(|t| t.account_id() == f.account_id)
-            .expect("source account leg");
+            .expect("origin account leg");
         let outflow = all
             .iter()
             .find(|t| t.account_id() == f.counterpart_account_id)
@@ -1676,7 +1687,7 @@ mod tests {
             .unwrap()
             .iter()
             .find(|t| t.account_id() == f.account_id)
-            .expect("source leg")
+            .expect("origin leg")
             .id();
 
         // Only the outflow leg is in the selection — the inflow leg was
@@ -1864,7 +1875,7 @@ mod tests {
         let outflow = all
             .iter()
             .find(|t| t.account_id() == f.account_id)
-            .expect("source account leg");
+            .expect("origin account leg");
         let inflow = all
             .iter()
             .find(|t| t.account_id() == f.counterpart_account_id)
@@ -1971,7 +1982,10 @@ mod tests {
         assert_eq!(adjustment.amount().minor_units(), -4_000);
         assert_eq!(adjustment.role(), TransactionRole::Adjustment);
         assert_eq!(adjustment.account_id(), f.counterpart_account_id);
-        assert_eq!(adjustment.source().as_str(), RECONCILIATION_SOURCE);
+        assert_eq!(
+            adjustment.description().as_str(),
+            RECONCILIATION_DESCRIPTION
+        );
         assert_eq!(f.transactions.list_all().unwrap().len(), 1);
     }
 
@@ -2069,7 +2083,7 @@ mod tests {
         let row = ImportRow {
             date: NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
             amount_minor_units: -1_200,
-            source: "Whole Foods".to_string(),
+            description: "Whole Foods".to_string(),
             category_id: f.category_id,
         };
 
@@ -2090,7 +2104,7 @@ mod tests {
         let row = ImportRow {
             date: NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
             amount_minor_units: -1_200,
-            source: "Whole Foods".to_string(),
+            description: "Whole Foods".to_string(),
             category_id: CategoryId::new(),
         };
 
@@ -2198,7 +2212,7 @@ mod tests {
     }
 
     #[test]
-    fn suggest_category_for_source_returns_most_common_category_among_matches() {
+    fn suggest_category_for_description_returns_most_common_category_among_matches() {
         let f = fixture();
         let entertainment = Category::new(
             CategoryId::new(),
@@ -2244,13 +2258,15 @@ mod tests {
             )
             .unwrap();
 
-        let suggestion = service.suggest_category_for_source("NETFLIX.COM").unwrap();
+        let suggestion = service
+            .suggest_category_for_description("NETFLIX.COM")
+            .unwrap();
 
         assert_eq!(suggestion, Some(entertainment.id()));
     }
 
     #[test]
-    fn find_category_for_source_uses_most_recent_transactions_category() {
+    fn find_category_for_description_uses_most_recent_transactions_category() {
         let f = fixture();
         let dining = Category::new(
             CategoryId::new(),
@@ -2266,7 +2282,7 @@ mod tests {
             Currency::new("USD").unwrap(),
         );
 
-        // Same source, filed under Groceries first, then recategorized (in a
+        // Same description, filed under Groceries first, then recategorized (in a
         // later transaction) as Dining — the later one should win even
         // though it's not the last one inserted below.
         service
@@ -2288,13 +2304,15 @@ mod tests {
             )
             .unwrap();
 
-        let found = service.find_category_for_source("corner bistro").unwrap();
+        let found = service
+            .find_category_for_description("corner bistro")
+            .unwrap();
 
         assert_eq!(found, Some(dining.id()));
     }
 
     #[test]
-    fn find_category_for_source_requires_exact_normalized_match() {
+    fn find_category_for_description_requires_exact_normalized_match() {
         let f = fixture();
         let service = TransactionService::new(
             &f.transactions,
@@ -2312,13 +2330,15 @@ mod tests {
             )
             .unwrap();
 
-        let found = service.find_category_for_source("Corner Bistro").unwrap();
+        let found = service
+            .find_category_for_description("Corner Bistro")
+            .unwrap();
 
         assert_eq!(found, None);
     }
 
     #[test]
-    fn find_category_for_source_returns_none_when_no_past_matches() {
+    fn find_category_for_description_returns_none_when_no_past_matches() {
         let f = fixture();
         let service = TransactionService::new(
             &f.transactions,
@@ -2327,13 +2347,15 @@ mod tests {
             Currency::new("USD").unwrap(),
         );
 
-        let found = service.find_category_for_source("Corner Bistro").unwrap();
+        let found = service
+            .find_category_for_description("Corner Bistro")
+            .unwrap();
 
         assert_eq!(found, None);
     }
 
     #[test]
-    fn find_category_for_source_in_category_returns_most_recent_subcategory() {
+    fn find_category_for_description_in_category_returns_most_recent_subcategory() {
         let f = fixture();
         let home =
             Category::new(CategoryId::new(), CategoryName::new("Home").unwrap(), None).unwrap();
@@ -2359,7 +2381,7 @@ mod tests {
             Currency::new("USD").unwrap(),
         );
 
-        // Same source, first filed under Utilities, later recategorized to
+        // Same description, first filed under Utilities, later recategorized to
         // Rent — the later one should win.
         service
             .create_transaction(
@@ -2381,14 +2403,14 @@ mod tests {
             .unwrap();
 
         let found = service
-            .find_category_for_source_in_category("ACME Landlord", "Home")
+            .find_category_for_description_in_category("ACME Landlord", "Home")
             .unwrap();
 
         assert_eq!(found, Some(rent.id()));
     }
 
     #[test]
-    fn find_category_for_source_in_category_ignores_matches_under_a_different_category() {
+    fn find_category_for_description_in_category_ignores_matches_under_a_different_category() {
         let f = fixture();
         let home =
             Category::new(CategoryId::new(), CategoryName::new("Home").unwrap(), None).unwrap();
@@ -2418,14 +2440,14 @@ mod tests {
 
         // fixture's pre-seeded "Groceries" category is unrelated to Home/Rent
         let found = service
-            .find_category_for_source_in_category("ACME Landlord", "Groceries")
+            .find_category_for_description_in_category("ACME Landlord", "Groceries")
             .unwrap();
 
         assert_eq!(found, None);
     }
 
     #[test]
-    fn find_category_for_source_in_category_matches_the_bare_top_level_category_itself() {
+    fn find_category_for_description_in_category_matches_the_bare_top_level_category_itself() {
         let f = fixture();
         let service = TransactionService::new(
             &f.transactions,
@@ -2444,14 +2466,14 @@ mod tests {
             .unwrap();
 
         let found = service
-            .find_category_for_source_in_category("Whole Foods", "Groceries")
+            .find_category_for_description_in_category("Whole Foods", "Groceries")
             .unwrap();
 
         assert_eq!(found, Some(f.category_id));
     }
 
     #[test]
-    fn suggest_category_for_source_returns_none_when_no_past_matches() {
+    fn suggest_category_for_description_returns_none_when_no_past_matches() {
         let f = fixture();
         let service = TransactionService::new(
             &f.transactions,
@@ -2461,7 +2483,7 @@ mod tests {
         );
 
         let suggestion = service
-            .suggest_category_for_source("Totally Unseen Merchant")
+            .suggest_category_for_description("Totally Unseen Merchant")
             .unwrap();
 
         assert_eq!(suggestion, None);

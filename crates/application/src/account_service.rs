@@ -1,4 +1,4 @@
-use scrat_domain::account::{Account, AccountError, AccountId, AccountName, SourcePattern};
+use scrat_domain::account::{Account, AccountError, AccountId, AccountName, DescriptionPattern};
 use scrat_domain::money::{Currency, Money, MoneyError};
 use scrat_domain::ports::{AccountRepository, RepositoryError};
 use thiserror::Error;
@@ -68,20 +68,24 @@ impl<'a> AccountService<'a> {
         Ok(())
     }
 
-    pub fn add_source_pattern(&self, id: AccountId, pattern: &str) -> Result<(), ApplicationError> {
-        let mut account = self.get(id)?;
-        account.add_source_pattern(SourcePattern::new(pattern)?);
-        self.repo.update(&account)?;
-        Ok(())
-    }
-
-    pub fn remove_source_pattern(
+    pub fn add_description_pattern(
         &self,
         id: AccountId,
         pattern: &str,
     ) -> Result<(), ApplicationError> {
         let mut account = self.get(id)?;
-        account.remove_source_pattern(&SourcePattern::new(pattern)?);
+        account.add_description_pattern(DescriptionPattern::new(pattern)?);
+        self.repo.update(&account)?;
+        Ok(())
+    }
+
+    pub fn remove_description_pattern(
+        &self,
+        id: AccountId,
+        pattern: &str,
+    ) -> Result<(), ApplicationError> {
+        let mut account = self.get(id)?;
+        account.remove_description_pattern(&DescriptionPattern::new(pattern)?);
         self.repo.update(&account)?;
         Ok(())
     }

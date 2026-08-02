@@ -310,7 +310,7 @@
   <h2>Suggest categories</h2>
   <p class="hint">
     Scrat looks at how you've categorized similar transactions before and
-    suggests a category automatically — while you type a source on the
+    suggests a category automatically — while you type a description on the
     Transactions page, and per row when importing a CSV. It's a local
     frequency lookup only: no machine learning, nothing ever leaves your
     computer.

@@ -8,6 +8,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (3, include_str!("0003_category_icon.sql")),
     (4, include_str!("0004_drop_transactions_dedup_unique.sql")),
     (5, include_str!("0005_transfers.sql")),
+    (6, include_str!("0006_rename_source_to_description.sql")),
 ];
 
 /// The version a freshly created database ends up at. Derived from
@@ -119,6 +120,9 @@ mod tests {
         assert_eq!(group_id, None);
     }
 
+    /// Note the column is read as `description`: migration 6 renamed it from
+    /// `source`, which is why `seed_one_transaction` still writes the old
+    /// name (that is genuinely what the column is called at version 4).
     #[test]
     fn migration_5_preserves_existing_transaction_data() {
         let mut conn = conn_at_version(4);
@@ -126,15 +130,58 @@ mod tests {
 
         run(&mut conn).unwrap();
 
-        let (amount, source): (i64, String) = conn
+        let (amount, description): (i64, String) = conn
             .query_row(
-                "SELECT amount_minor_units, source FROM transactions WHERE id = 't'",
+                "SELECT amount_minor_units, description FROM transactions WHERE id = 't'",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
         assert_eq!(amount, -1_200);
-        assert_eq!(source, "Whole Foods");
+        assert_eq!(description, "Whole Foods");
+    }
+
+    /// The rename must carry existing values across untouched — a user's
+    /// ledger is the one thing a cosmetic migration must not cost them.
+    #[test]
+    fn migration_6_renames_columns_without_losing_data() {
+        let mut conn = conn_at_version(5);
+        seed_one_transaction(&conn);
+
+        run(&mut conn).unwrap();
+
+        let (description, fingerprint): (String, String) = conn
+            .query_row(
+                "SELECT description, fingerprint FROM transactions WHERE id = 't'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(description, "Whole Foods");
+        assert_eq!(fingerprint, "key");
+    }
+
+    /// The account-pattern table was renamed too; its rows must survive.
+    #[test]
+    fn migration_6_renames_account_pattern_table_without_losing_rows() {
+        let mut conn = conn_at_version(5);
+        seed_one_transaction(&conn);
+        conn.execute_batch(
+            "INSERT INTO account_source_patterns (id, account_id, pattern)
+                 VALUES ('p', 'a', 'whole foods');",
+        )
+        .unwrap();
+
+        run(&mut conn).unwrap();
+
+        let pattern: String = conn
+            .query_row(
+                "SELECT pattern FROM account_description_patterns WHERE id = 'p'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pattern, "whole foods");
     }
 
     #[test]

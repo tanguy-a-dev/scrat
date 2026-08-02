@@ -107,13 +107,13 @@
     const pattern = (newPatternDrafts[account.id] ?? "").trim();
     if (!pattern) return;
     withErrorHandling(async () => {
-      await api.addSourcePattern(account.id, pattern);
+      await api.addDescriptionPattern(account.id, pattern);
       newPatternDrafts[account.id] = "";
     });
   }
 
   function handleRemovePattern(account: AccountDto, pattern: string) {
-    withErrorHandling(() => api.removeSourcePattern(account.id, pattern));
+    withErrorHandling(() => api.removeDescriptionPattern(account.id, pattern));
   }
 
   function handleDelete(account: AccountDto) {
@@ -293,8 +293,8 @@
           </div>
         {/if}
         <div class="patterns">
-          <span class="patterns-label" title="Matched against an imported row's source text to decide which account it belongs to">Belongs to this account</span>
-          {#each account.source_patterns as pattern (pattern)}
+          <span class="patterns-label" title="Matched against an imported row's description text to decide which account it belongs to">Belongs to this account</span>
+          {#each account.description_patterns as pattern (pattern)}
             <span class="chip">
               {pattern}
               <button
@@ -306,7 +306,7 @@
           {/each}
           <input
             class="pattern-input"
-            placeholder="Add source pattern…"
+            placeholder="Add description pattern…"
             value={newPatternDrafts[account.id] ?? ""}
             oninput={(e) =>
               (newPatternDrafts[account.id] = e.currentTarget.value)}

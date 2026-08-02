@@ -196,10 +196,10 @@ impl Category {
 }
 
 /// Domain rule: a subcategory cannot itself have subcategories, so a
-/// category that already has children of its own cannot become a
+/// category that already has subcategories of its own cannot become a
 /// subcategory. Needs the whole category list, so this can't live on the
 /// `Category` entity itself.
-pub fn has_children(id: CategoryId, all: &[Category]) -> bool {
+pub fn has_subcategories(id: CategoryId, all: &[Category]) -> bool {
     all.iter().any(|c| c.parent_id() == Some(id))
 }
 
@@ -229,21 +229,21 @@ mod tests {
     }
 
     #[test]
-    fn has_children_detects_existing_child() {
+    fn has_subcategories_detects_existing_subcategory() {
         let root = CategoryId::new();
         let child = CategoryId::new();
         let all = vec![category(root, None), category(child, Some(root))];
 
-        assert!(has_children(root, &all));
+        assert!(has_subcategories(root, &all));
     }
 
     #[test]
-    fn has_children_false_for_leaf_category() {
+    fn has_subcategories_false_for_leaf_category() {
         let root = CategoryId::new();
         let child = CategoryId::new();
         let all = vec![category(root, None), category(child, Some(root))];
 
-        assert!(!has_children(child, &all));
+        assert!(!has_subcategories(child, &all));
     }
 
     #[test]

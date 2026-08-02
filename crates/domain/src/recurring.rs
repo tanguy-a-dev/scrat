@@ -20,7 +20,7 @@ use std::ops::RangeInclusive;
 use chrono::{Days, Months, NaiveDate};
 
 use crate::category::CategoryId;
-use crate::transaction::{Transaction, TransactionKind};
+use crate::transaction::{Direction, Transaction};
 
 /// Minimum number of distinct-day occurrences before a merchant is called
 /// recurring. Two points produce a single interval, and a single interval
@@ -143,7 +143,7 @@ pub struct RecurringCharge {
     /// The normalized key occurrences were grouped by. Kept for debugging and
     /// for stable identity across scans — not meant for display.
     pub merchant_key: String,
-    /// The raw source text of the most recent occurrence: the form the user
+    /// The raw description text of the most recent occurrence: the form the user
     /// has actually seen on their statement, noise and all.
     pub label: String,
     pub cadence: Cadence,
@@ -183,8 +183,8 @@ pub struct RecurringCharge {
 ///
 /// So the failure mode this chooses is a missed subscription (the same charge
 /// worded two different ways stays split) rather than an invented one.
-pub fn merchant_key(source: &str) -> String {
-    source
+pub fn merchant_key(description: &str) -> String {
+    description
         .to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
         .filter(|token| !token.is_empty() && !is_noise_token(token))
@@ -233,11 +233,11 @@ pub fn detect_recurring_charges(
     // between runs looks broken even when it isn't.
     let mut by_merchant: BTreeMap<String, Vec<&Transaction>> = BTreeMap::new();
     for transaction in transactions {
-        if transaction.kind() != TransactionKind::Expense || transaction.date() > today {
+        if transaction.direction() != Direction::Expense || transaction.date() > today {
             continue;
         }
-        let key = merchant_key(transaction.source().as_str());
-        // A source that normalizes away entirely (all digits, all punctuation)
+        let key = merchant_key(transaction.description().as_str());
+        // A description that normalizes away entirely (all digits, all punctuation)
         // can't be identified, and grouping every such line together would
         // invent a merchant out of unrelated noise.
         if key.is_empty() {
@@ -339,7 +339,7 @@ fn analyze_merchant(
 
     Some(RecurringCharge {
         merchant_key,
-        label: newest.source().as_str().to_string(),
+        label: newest.description().as_str().to_string(),
         cadence,
         typical_amount_minor_units: typical,
         monthly_equivalent_minor_units: monthly_equivalent,
@@ -378,18 +378,18 @@ mod tests {
     use super::*;
     use crate::account::AccountId;
     use crate::money::{Currency, Money};
-    use crate::transaction::{SourceText, TransactionId};
+    use crate::transaction::{Description, TransactionId};
 
     fn date(y: i32, m: u32, d: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, d).unwrap()
     }
 
-    fn expense(day: NaiveDate, minor_units: i64, source: &str) -> Transaction {
+    fn expense(day: NaiveDate, minor_units: i64, description: &str) -> Transaction {
         Transaction::new(
             TransactionId::new(),
             day,
             Money::from_minor_units(minor_units, Currency::new("EUR").unwrap()),
-            SourceText::new(source).unwrap(),
+            Description::new(description).unwrap(),
             CategoryId::new(),
             AccountId::new(),
         )
@@ -502,14 +502,14 @@ mod tests {
     }
 
     #[test]
-    fn merchant_key_is_empty_when_source_is_all_noise() {
+    fn merchant_key_is_empty_when_description_is_all_noise() {
         assert_eq!(merchant_key("00219 4913 / 2026-06-12"), "");
     }
 
-    /// A source that normalizes to nothing must be skipped, not pooled with
+    /// A description that normalizes to nothing must be skipped, not pooled with
     /// every other such line into a phantom merchant.
     #[test]
-    fn ignores_sources_that_normalize_to_nothing() {
+    fn ignores_descriptions_that_normalize_to_nothing() {
         let transactions = vec![
             expense(date(2026, 4, 3), -1000, "00219 / 03-04"),
             expense(date(2026, 5, 3), -1000, "00220 / 03-05"),

@@ -312,7 +312,7 @@ pub fn detect_columns(rows: &[Vec<String>]) -> Option<ColumnDetection> {
 pub struct ParsedRow {
     pub date: Option<NaiveDate>,
     pub amount_minor_units: Option<i64>,
-    pub source: String,
+    pub description: String,
     /// The raw text of a header column named "Category"/"Catégorie", if the
     /// file has a header row and one exists — used to file the row under a
     /// matching category (creating it if needed) instead of the fallback
@@ -419,7 +419,7 @@ fn find_category_column(header: &[String], subcategory_column: Option<usize>) ->
 /// Finds a header cell naming the currency column, e.g. "Currency" or the
 /// French "Devise" — the app has a single global currency setting (see
 /// `settings.currency_code`), so a per-row currency cell is never applied to
-/// the transaction, only excluded from `source` so it doesn't pollute it.
+/// the transaction, only excluded from `description` so it doesn't pollute it.
 fn find_currency_column(header: &[String]) -> Option<usize> {
     find_labeled_column(header, &["currency", "devise"], None)
 }
@@ -427,7 +427,7 @@ fn find_currency_column(header: &[String]) -> Option<usize> {
 /// Finds a header cell naming the (bank) account column, e.g. "Account" or
 /// the French "Compte" — the destination account is chosen once for the
 /// whole import (or defaulted), so a per-row account cell is only excluded
-/// from `source`, never used to pick the account.
+/// from `description`, never used to pick the account.
 fn find_account_column(header: &[String]) -> Option<usize> {
     find_labeled_column(header, &["account", "compte"], None)
 }
@@ -435,15 +435,15 @@ fn find_account_column(header: &[String]) -> Option<usize> {
 /// The full detection pipeline: decode → sniff delimiter → parse → detect
 /// (and drop) a header → detect Date/Amount columns → build one
 /// [`ParsedRow`] per line, concatenating every other non-empty column as
-/// `source` (real exports often shift the description between columns
-/// depending on transaction type, so picking a single "source column"
+/// `description` (real exports often shift the description between columns
+/// depending on transaction type, so picking a single "description column"
 /// isn't reliable — concatenating whatever's left is). Columns identified by
 /// header name as Category, Subcategory, Currency, or Account are excluded
 /// from that concatenation: Category/Subcategory are surfaced separately
 /// (`csv_category`/`csv_subcategory`), and Currency/Account never belong in
-/// `source` (the app has one global currency, and the destination account is
+/// `description` (the app has one global currency, and the destination account is
 /// chosen once for the whole import) — otherwise they'd leak into it, e.g.
-/// "EUR" and a bank name getting prepended/appended to every source. Each
+/// "EUR" and a bank name getting prepended/appended to every description. Each
 /// row is also checked against [`is_boundary_balance_row`] and flagged via
 /// `is_likely_balance_row` when it looks like an opening/closing balance
 /// line rather than a real transaction.
@@ -497,7 +497,7 @@ pub fn build_preview(bytes: &[u8]) -> ImportPreview {
             };
             let csv_category = cell_text(category_column);
             let csv_subcategory = cell_text(subcategory_column);
-            let source = raw
+            let description = raw
                 .iter()
                 .enumerate()
                 .filter(|(i, _)| {
@@ -517,7 +517,7 @@ pub fn build_preview(bytes: &[u8]) -> ImportPreview {
             ParsedRow {
                 date: parse_date_cell(date_cell),
                 amount_minor_units: parse_amount_cell(amount_cell),
-                source,
+                description,
                 csv_category,
                 csv_subcategory,
                 is_likely_balance_row: is_boundary_balance_row(&rows, i, modal_len),
@@ -681,7 +681,7 @@ mod tests {
     }
 
     #[test]
-    fn build_preview_on_headerless_ragged_data_concatenates_remaining_columns_as_source() {
+    fn build_preview_on_headerless_ragged_data_concatenates_remaining_columns_as_description() {
         // Structurally mirrors a real French bank export: no header,
         // semicolon-delimited, decimal comma, two 4-field balance rows
         // bookending several 8-field transaction rows whose description
@@ -703,11 +703,11 @@ mod tests {
         let card_row = &preview.rows[1];
         assert_eq!(card_row.date, NaiveDate::from_ymd_opt(2026, 7, 1));
         assert_eq!(card_row.amount_minor_units, Some(-3_500));
-        assert!(card_row.source.contains("CB SOME STORE"));
+        assert!(card_row.description.contains("CB SOME STORE"));
 
         let wire_row = &preview.rows[2];
         assert_eq!(wire_row.amount_minor_units, Some(12_050));
-        assert!(wire_row.source.contains("INCOMING WAGES"));
+        assert!(wire_row.description.contains("INCOMING WAGES"));
 
         // The two summary/balance rows still parse as date+amount, and stay
         // `is_valid` — this is exactly why the import UI keeps a per-row
@@ -755,7 +755,7 @@ mod tests {
     }
 
     #[test]
-    fn build_preview_extracts_csv_category_column_and_excludes_it_from_source() {
+    fn build_preview_extracts_csv_category_column_and_excludes_it_from_description() {
         let text = "\
 Date;Amount;Description;Category
 04/04/2023;-60,80;SC-SUSHI SASHI;Food & Drinks
@@ -768,9 +768,9 @@ Date;Amount;Description;Category
             preview.rows[0].csv_category,
             Some("Food & Drinks".to_string())
         );
-        assert_eq!(preview.rows[0].source, "SC-SUSHI SASHI");
+        assert_eq!(preview.rows[0].description, "SC-SUSHI SASHI");
         assert_eq!(preview.rows[1].csv_category, Some("Books".to_string()));
-        assert_eq!(preview.rows[1].source, "LES SUPER HEROS");
+        assert_eq!(preview.rows[1].description, "LES SUPER HEROS");
     }
 
     #[test]
@@ -782,13 +782,13 @@ Date;Amount;Description;Category
     }
 
     #[test]
-    fn build_preview_extracts_subcategory_and_excludes_currency_and_account_from_source() {
-        // Mirrors the app's own export format (Date;Amount;Currency;Source;
+    fn build_preview_extracts_subcategory_and_excludes_currency_and_account_from_description() {
+        // Mirrors the app's own export format (Date;Amount;Currency;Description;
         // Category;Subcategory;Account) — Currency and Account must not leak
-        // into `source`, and Subcategory must be captured separately from
-        // Category rather than folded into the source concatenation.
+        // into `description`, and Subcategory must be captured separately from
+        // Category rather than folded into the description concatenation.
         let text = "\
-Date;Amount;Currency;Source;Category;Subcategory;Account
+Date;Amount;Currency;Description;Category;Subcategory;Account
 2026-08-04;-12,25;EUR;HEMA GARERER CHA;Home;;LCL
 2026-08-04;-20,97;EUR;LES SUPER HEROS;Education;Books;LCL
 2026-08-04;-60,80;EUR;SC-SUSHI SASHI;Food & Drinks;;LCL
@@ -797,15 +797,15 @@ Date;Amount;Currency;Source;Category;Subcategory;Account
 
         assert_eq!(preview.rows.len(), 3);
 
-        assert_eq!(preview.rows[0].source, "HEMA GARERER CHA");
+        assert_eq!(preview.rows[0].description, "HEMA GARERER CHA");
         assert_eq!(preview.rows[0].csv_category, Some("Home".to_string()));
         assert_eq!(preview.rows[0].csv_subcategory, None);
 
-        assert_eq!(preview.rows[1].source, "LES SUPER HEROS");
+        assert_eq!(preview.rows[1].description, "LES SUPER HEROS");
         assert_eq!(preview.rows[1].csv_category, Some("Education".to_string()));
         assert_eq!(preview.rows[1].csv_subcategory, Some("Books".to_string()));
 
-        assert_eq!(preview.rows[2].source, "SC-SUSHI SASHI");
+        assert_eq!(preview.rows[2].description, "SC-SUSHI SASHI");
         assert_eq!(
             preview.rows[2].csv_category,
             Some("Food & Drinks".to_string())
