@@ -8,6 +8,16 @@
 
   const COMMON_CURRENCIES = ["USD", "EUR", "GBP", "CAD", "AUD", "CHF", "JPY"];
 
+  /** Moves focus to the field a panel was opened for. Each of the three
+   * confirm-then-act flows below replaces its trigger button with a form, so
+   * without this the focused element is destroyed on open and focus falls
+   * back to the document — a keyboard user would have to tab in from the top
+   * of the page to reach a panel they just asked for. Same one-liner as the
+   * transactions page's. */
+  function autofocus(node: HTMLElement) {
+    node.focus();
+  }
+
   let currentCurrency = $state("");
   let selectedCurrency = $state("");
   let loadError = $state("");
@@ -221,10 +231,11 @@
   {#if loadingCurrency}
     <p>Loading…</p>
   {:else if loadError}
-    <p class="error">{loadError}</p>
+    <p class="error" role="alert">{loadError}</p>
   {:else}
     <form onsubmit={handleSaveCurrency}>
-      <select bind:value={selectedCurrency}>
+      <label class="visually-hidden" for="currency">Currency</label>
+      <select id="currency" bind:value={selectedCurrency}>
         {#each currencyOptions as code (code)}
           <option value={code}>{code}</option>
         {/each}
@@ -248,28 +259,45 @@
       No recovery — if you lose the new passphrase, your data is unreadable.
     </p>
     <form class="passphrase-form" onsubmit={handleChangePassphrase}>
-      <input
-        type="password"
-        placeholder="Current passphrase"
-        bind:value={currentPassphrase}
-        autocomplete="current-password"
-        required
-      />
-      <input
-        type="password"
-        placeholder="New passphrase"
-        bind:value={newPassphrase}
-        autocomplete="new-password"
-        required
-      />
-      <input
-        type="password"
-        placeholder="Confirm new passphrase"
-        bind:value={confirmNewPassphrase}
-        autocomplete="new-password"
-        required
-      />
-      {#if passphraseError}<p class="error">{passphraseError}</p>{/if}
+      <div class="field">
+        <label for="current-passphrase">Current passphrase</label>
+        <input
+          id="current-passphrase"
+          type="password"
+          bind:value={currentPassphrase}
+          autocomplete="current-password"
+          required
+          use:autofocus
+        />
+      </div>
+      <div class="field">
+        <label for="new-passphrase">New passphrase</label>
+        <input
+          id="new-passphrase"
+          type="password"
+          bind:value={newPassphrase}
+          autocomplete="new-password"
+          minlength="8"
+          aria-describedby="new-passphrase-hint"
+          required
+        />
+        <p id="new-passphrase-hint" class="hint field-hint">
+          At least 8 characters.
+        </p>
+      </div>
+      <div class="field">
+        <label for="confirm-passphrase">Confirm new passphrase</label>
+        <input
+          id="confirm-passphrase"
+          type="password"
+          bind:value={confirmNewPassphrase}
+          autocomplete="new-password"
+          required
+        />
+      </div>
+      {#if passphraseError}<p class="error" role="alert">
+          {passphraseError}
+        </p>{/if}
       <div class="button-row">
         <button type="submit" disabled={changingPassphrase}>
           {changingPassphrase ? "Changing…" : "Save"}
@@ -312,20 +340,26 @@
       Choose file to import
     </button>
   {:else}
-    <div class="import-warning-panel">
-      <p>
+    <div class="confirm-panel">
+      <p id="import-warning">
         <strong>This will permanently replace your current database</strong>
         with <code>{importFileName}</code>. This cannot be undone — export
         your current database first if you want to keep a copy.
       </p>
       <form onsubmit={handleConfirmImport}>
-        <input
-          type="password"
-          placeholder="Passphrase for the imported file"
-          bind:value={importPassword}
-          autocomplete="off"
-          required
-        />
+        <div class="field">
+          <label for="import-passphrase">Passphrase for the imported file</label
+          >
+          <input
+            id="import-passphrase"
+            type="password"
+            bind:value={importPassword}
+            autocomplete="off"
+            aria-describedby="import-warning"
+            required
+            use:autofocus
+          />
+        </div>
         <div class="button-row">
           <button type="submit" class="danger" disabled={importing}>
             {importing ? "Importing…" : "Replace database"}
@@ -347,20 +381,28 @@
       Delete my data
     </button>
   {:else}
-    <div class="import-warning-panel">
-      <p>
+    <div class="confirm-panel">
+      <p id="delete-warning">
         <strong>This will permanently delete all of your data.</strong>
         There is no undo and no backup. Type
         <code>{DELETE_CONFIRM_WORD}</code> below to confirm.
       </p>
       <form onsubmit={handleConfirmDelete}>
-        <input
-          type="text"
-          placeholder={DELETE_CONFIRM_WORD}
-          bind:value={deleteConfirmText}
-          autocomplete="off"
-          required
-        />
+        <div class="field">
+          <label class="visually-hidden" for="delete-confirm">
+            Type {DELETE_CONFIRM_WORD} to confirm
+          </label>
+          <input
+            id="delete-confirm"
+            type="text"
+            placeholder={DELETE_CONFIRM_WORD}
+            bind:value={deleteConfirmText}
+            autocomplete="off"
+            aria-describedby="delete-warning"
+            required
+            use:autofocus
+          />
+        </div>
         <div class="button-row">
           <button
             type="submit"
@@ -416,6 +458,38 @@
     max-width: 20rem;
   }
 
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .field label {
+    font-size: 0.85rem;
+    opacity: 0.9;
+  }
+
+  .field-hint {
+    margin: 0;
+    font-size: 0.8rem;
+  }
+
+  /* Available to screen readers, removed from the visual layout — for
+     controls a neighbouring heading or placeholder already names on screen,
+     which still leaves them unnamed in the accessibility tree. */
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
   .button-row {
     display: flex;
     gap: 0.6rem;
@@ -453,7 +527,7 @@
     cursor: default;
   }
 
-  .import-warning-panel {
+  .confirm-panel {
     padding: 1rem;
     border-radius: 10px;
     background-color: color-mix(in srgb, var(--color-danger) 15%, transparent);
@@ -462,7 +536,7 @@
     gap: 0.6rem;
   }
 
-  .import-warning-panel p {
+  .confirm-panel p {
     margin: 0;
   }
 </style>
