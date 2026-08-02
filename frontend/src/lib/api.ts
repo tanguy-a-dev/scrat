@@ -126,8 +126,62 @@ export interface ImportPreviewRowDto {
   raw: string[];
 }
 
+/** One column of the file, as offered in the mapping editor. `header` is null
+ * for a headerless export — `samples` is what makes such a column
+ * recognizable. */
+export interface ColumnSummaryDto {
+  index: number;
+  header: string | null;
+  samples: string[];
+}
+
+/** Where amounts come from. A bank that splits money out and money in across
+ * two columns needs `debit_credit`; reading only one half silently drops
+ * every row on the other side. */
+export type AmountSourceDto =
+  | { kind: "single"; column: number }
+  | { kind: "debit_credit"; debit: number; credit: number };
+
+/** Where description text comes from. `remaining` means "every column no
+ * other field claimed", re-derived each time the mapping is applied — so
+ * re-pointing the amount column hands the old one back to the description. */
+export type DescriptionSourceDto =
+  | { kind: "remaining" }
+  | { kind: "columns"; columns: number[] };
+
+/** What each column of the file means. Detected on first preview, then
+ * editable — send it back to `previewCsvImport` to re-read the file through
+ * a corrected version. */
+export interface ColumnMappingDto {
+  has_header: boolean;
+  column_count: number;
+  date_column: number | null;
+  /** A chrono pattern from `date_formats`; anything else is rejected by the
+   * backend rather than handed to the date parser. */
+  date_format: string;
+  amount: AmountSourceDto | null;
+  description: DescriptionSourceDto;
+  category_column: number | null;
+  subcategory_column: number | null;
+  currency_column: number | null;
+  account_column: number | null;
+  operation_kind_column: number | null;
+}
+
+export interface DateFormatOptionDto {
+  pattern: string;
+  label: string;
+}
+
 export interface ImportPreviewDto {
   rows: ImportPreviewRowDto[];
+  /** How the rows above were read — the detector's guess on first preview,
+   * or whatever mapping was last sent back. */
+  mapping: ColumnMappingDto;
+  columns: ColumnSummaryDto[];
+  date_formats: DateFormatOptionDto[];
+  /** Fraction of rows that yielded a usable date / non-zero amount. Measured
+   * from the parsed result, so a mapping that produces nothing reports 0. */
   date_confidence: number;
   amount_confidence: number;
 }
@@ -295,8 +349,10 @@ export const api = {
   deleteTransferRule: (id: string) =>
     invoke<void>("delete_transfer_rule", { id }),
 
-  previewCsvImport: (bytes: number[]) =>
-    invoke<ImportPreviewDto>("preview_csv_import", { bytes }),
+  /** Omit `mapping` to let the backend detect the columns; pass one to
+   * re-read the same file through a user-corrected mapping. */
+  previewCsvImport: (bytes: number[], mapping?: ColumnMappingDto) =>
+    invoke<ImportPreviewDto>("preview_csv_import", { bytes, mapping: mapping ?? null }),
   commitCsvImport: (
     rows: {
       date: string;

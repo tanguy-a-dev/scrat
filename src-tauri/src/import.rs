@@ -4,7 +4,10 @@ use scrat_domain::account::AccountId;
 use scrat_domain::category::CategoryId;
 use scrat_domain::ports::TransferRuleRepository;
 use scrat_domain::transaction::OperationKind;
-use scrat_infra_csv::build_preview;
+use scrat_infra_csv::{
+    apply_mapping, detect_mapping, parse_file, AmountSource, ColumnMapping, DescriptionSource,
+    DATE_FORMATS,
+};
 use scrat_infra_sqlite::SqliteTransferRuleRepository;
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -41,16 +44,153 @@ pub struct ImportPreviewRowDto {
     pub raw: Vec<String>,
 }
 
+/// One column of the file as the import dialog offers it for re-pointing:
+/// what the file calls it, plus real values so a headerless column is still
+/// recognizable.
+#[derive(Debug, Serialize)]
+pub struct ColumnSummaryDto {
+    pub index: usize,
+    pub header: Option<String>,
+    pub samples: Vec<String>,
+}
+
+/// Where amounts come from. Serialized as a tagged union so the frontend can
+/// switch the editor between one signed column and a debit/credit pair
+/// without a second nullable field to keep consistent.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AmountSourceDto {
+    Single { column: usize },
+    DebitCredit { debit: usize, credit: usize },
+}
+
+/// Where description text comes from. `remaining` carries no column list on
+/// purpose — it means "whatever no other field claimed", re-derived every
+/// time the mapping is applied, so re-pointing the amount column hands the
+/// old one back to the description instead of stranding it.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DescriptionSourceDto {
+    Remaining,
+    Columns { columns: Vec<usize> },
+}
+
+/// The detector's guess, in the exact shape the user edits and sends back.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ColumnMappingDto {
+    pub has_header: bool,
+    pub column_count: usize,
+    pub date_column: Option<usize>,
+    pub date_format: String,
+    pub amount: Option<AmountSourceDto>,
+    pub description: DescriptionSourceDto,
+    pub category_column: Option<usize>,
+    pub subcategory_column: Option<usize>,
+    pub currency_column: Option<usize>,
+    pub account_column: Option<usize>,
+    pub operation_kind_column: Option<usize>,
+}
+
+impl ColumnMappingDto {
+    fn from_domain(mapping: &ColumnMapping) -> Self {
+        Self {
+            has_header: mapping.has_header,
+            column_count: mapping.column_count,
+            date_column: mapping.date_column,
+            date_format: mapping.date_format.clone(),
+            amount: mapping.amount.map(|a| match a {
+                AmountSource::Single(column) => AmountSourceDto::Single { column },
+                AmountSource::DebitCredit { debit, credit } => {
+                    AmountSourceDto::DebitCredit { debit, credit }
+                }
+            }),
+            description: match &mapping.description {
+                DescriptionSource::Remaining => DescriptionSourceDto::Remaining,
+                DescriptionSource::Columns(columns) => DescriptionSourceDto::Columns {
+                    columns: columns.clone(),
+                },
+            },
+            category_column: mapping.category_column,
+            subcategory_column: mapping.subcategory_column,
+            currency_column: mapping.currency_column,
+            account_column: mapping.account_column,
+            operation_kind_column: mapping.operation_kind_column,
+        }
+    }
+
+    /// `delimiter` isn't part of the DTO: it's sniffed from the file every
+    /// time and there is nothing for the user to correct about it, so it's
+    /// carried over from the freshly parsed file rather than round-tripped.
+    fn into_domain(self, delimiter: char) -> ColumnMapping {
+        ColumnMapping {
+            delimiter,
+            has_header: self.has_header,
+            column_count: self.column_count,
+            date_column: self.date_column,
+            // A format the frontend didn't get from `DATE_FORMATS` would be
+            // handed straight to chrono as a parse pattern. Reject anything
+            // off the list rather than let an arbitrary string through.
+            date_format: DATE_FORMATS
+                .iter()
+                .find(|(fmt, _)| *fmt == self.date_format)
+                .map_or_else(|| DATE_FORMATS[1].0.to_string(), |(fmt, _)| fmt.to_string()),
+            amount: self.amount.map(|a| match a {
+                AmountSourceDto::Single { column } => AmountSource::Single(column),
+                AmountSourceDto::DebitCredit { debit, credit } => {
+                    AmountSource::DebitCredit { debit, credit }
+                }
+            }),
+            description: match self.description {
+                DescriptionSourceDto::Remaining => DescriptionSource::Remaining,
+                DescriptionSourceDto::Columns { columns } => DescriptionSource::Columns(columns),
+            },
+            category_column: self.category_column,
+            subcategory_column: self.subcategory_column,
+            currency_column: self.currency_column,
+            account_column: self.account_column,
+            operation_kind_column: self.operation_kind_column,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct DateFormatOptionDto {
+    pub pattern: String,
+    pub label: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ImportPreviewDto {
     pub rows: Vec<ImportPreviewRowDto>,
+    /// How the rows above were read. Sent back on every preview so the
+    /// dialog always shows the mapping actually in force, whether it was
+    /// detected or supplied by the user.
+    pub mapping: ColumnMappingDto,
+    pub columns: Vec<ColumnSummaryDto>,
+    pub date_formats: Vec<DateFormatOptionDto>,
+    /// Fraction of rows that yielded a usable date / non-zero amount —
+    /// measured from the parsed result, so a mapping that produces nothing
+    /// reports 0, not 100.
     pub date_confidence: f64,
     pub amount_confidence: f64,
 }
 
+/// Previews `bytes`. With no `mapping`, the columns are detected; with one,
+/// it is applied verbatim — the path the dialog takes after the user
+/// corrects a column.
 #[tauri::command]
-pub fn preview_csv_import(bytes: Vec<u8>) -> ImportPreviewDto {
-    let preview = build_preview(&bytes);
+pub fn preview_csv_import(bytes: Vec<u8>, mapping: Option<ColumnMappingDto>) -> ImportPreviewDto {
+    let mut file = parse_file(&bytes);
+    let mapping = match mapping {
+        Some(dto) => {
+            let mapping = dto.into_domain(file.delimiter);
+            file.set_has_header(mapping.has_header);
+            mapping
+        }
+        None => detect_mapping(&file),
+    };
+    let preview = apply_mapping(&file, &mapping);
+
     ImportPreviewDto {
         rows: preview
             .rows
@@ -65,6 +205,23 @@ pub fn preview_csv_import(bytes: Vec<u8>) -> ImportPreviewDto {
                 csv_subcategory: row.csv_subcategory,
                 is_likely_balance_row: row.is_likely_balance_row,
                 raw: row.raw,
+            })
+            .collect(),
+        mapping: ColumnMappingDto::from_domain(&preview.mapping),
+        columns: preview
+            .columns
+            .into_iter()
+            .map(|c| ColumnSummaryDto {
+                index: c.index,
+                header: c.header,
+                samples: c.samples,
+            })
+            .collect(),
+        date_formats: DATE_FORMATS
+            .iter()
+            .map(|(pattern, label)| DateFormatOptionDto {
+                pattern: pattern.to_string(),
+                label: label.to_string(),
             })
             .collect(),
         date_confidence: preview.date_confidence,

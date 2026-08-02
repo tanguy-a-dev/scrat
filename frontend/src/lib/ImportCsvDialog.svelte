@@ -9,6 +9,8 @@
     operationKindLabel,
     type AccountDto,
     type CategoryDto,
+    type ColumnMappingDto,
+    type ColumnSummaryDto,
     type ImportPreviewDto,
     type OperationKind,
   } from "./api";
@@ -26,11 +28,16 @@
   } = $props();
 
   let preview = $state<ImportPreviewDto | null>(null);
+  /** Kept so a corrected mapping can be applied to the same file without
+   * asking the user to pick it again. */
+  let fileBytes = $state<number[] | null>(null);
   let included = $state<boolean[]>([]);
   let selectedCategoryId = $state("");
   let selectedAccountId = $state("");
   let importing = $state(false);
   let dragOver = $state(false);
+  let mappingOpen = $state(false);
+  let remapping = $state(false);
 
   let categoryOptions = $derived(buildCategoryOptions(categories));
 
@@ -38,17 +45,40 @@
     preview?.rows.filter((r, i) => included[i] && r.date && r.amount_minor_units).length ?? 0,
   );
 
+  /** A mapping that can't read most of the file is the case the editor
+   * exists for, so say so rather than leaving the user to infer it from a
+   * table of dashes. */
+  let mappingLooksWrong = $derived(
+    preview !== null &&
+      preview.rows.length > 0 &&
+      (preview.date_confidence < 0.8 || preview.amount_confidence < 0.8),
+  );
+
   function formatSignedAmount(minorUnits: number): string {
     const sign = minorUnits < 0 ? "-" : "";
     return `${sign}${formatMoney(Math.abs(minorUnits))}`;
   }
 
+  /** "2 · Libelle operation — PRLV PayPal Europe, VIR SEPA ACME". The samples
+   * are what make a column recognizable in a headerless export, where there
+   * is no name to go on at all. */
+  function columnLabel(column: ColumnSummaryDto): string {
+    const name = column.header || `Column ${column.index + 1}`;
+    const samples = column.samples.slice(0, 2).join(", ");
+    return samples ? `${column.index + 1} · ${name} — ${samples}` : `${column.index + 1} · ${name}`;
+  }
+
   async function loadBytes(bytes: number[]) {
     preview = null;
+    fileBytes = bytes;
     try {
       const result = await api.previewCsvImport(bytes);
       preview = result;
       included = result.rows.map((r) => r.include_by_default);
+      // Open the editor unprompted when detection clearly failed — the user
+      // shouldn't have to discover that the fix exists.
+      mappingOpen =
+        result.rows.length > 0 && (result.date_confidence < 0.8 || result.amount_confidence < 0.8);
       if (result.rows.length > 0) {
         const suggested = await api
           .suggestAccountForDescription(result.rows.find((r) => r.description)?.description ?? "")
@@ -58,6 +88,59 @@
     } catch (e) {
       await message(String(e), { title: "Import CSV", kind: "error" });
     }
+  }
+
+  /** Re-reads the same file through a corrected mapping. Row selections are
+   * rebuilt from the new parse: once the columns mean something different,
+   * the old per-row choices no longer refer to the same values. */
+  async function remap(mapping: ColumnMappingDto) {
+    if (!fileBytes) return;
+    remapping = true;
+    try {
+      const result = await api.previewCsvImport(fileBytes, mapping);
+      preview = result;
+      included = result.rows.map((r) => r.include_by_default);
+    } catch (e) {
+      await message(String(e), { title: "Import CSV", kind: "error" });
+    } finally {
+      remapping = false;
+    }
+  }
+
+  function updateMapping(patch: Partial<ColumnMappingDto>) {
+    if (!preview) return;
+    remap({ ...preview.mapping, ...patch });
+  }
+
+  /** Select values are strings; "" is the null column. */
+  function toColumn(value: string): number | null {
+    return value === "" ? null : Number(value);
+  }
+
+  function setAmountLayout(layout: "single" | "debit_credit") {
+    if (!preview) return;
+    const current = preview.mapping.amount;
+    if (layout === "single") {
+      const column = current === null ? 0 : current.kind === "single" ? current.column : current.debit;
+      updateMapping({ amount: { kind: "single", column } });
+    } else {
+      const debit = current === null ? 0 : current.kind === "single" ? current.column : current.debit;
+      const credit =
+        current !== null && current.kind === "debit_credit"
+          ? current.credit
+          : Math.min(debit + 1, preview.mapping.column_count - 1);
+      updateMapping({ amount: { kind: "debit_credit", debit, credit } });
+    }
+  }
+
+  function toggleDescriptionColumn(index: number, checked: boolean) {
+    if (!preview) return;
+    const current =
+      preview.mapping.description.kind === "columns" ? preview.mapping.description.columns : [];
+    const next = checked
+      ? [...current, index].sort((a, b) => a - b)
+      : current.filter((c) => c !== index);
+    updateMapping({ description: { kind: "columns", columns: next } });
   }
 
   async function loadFile(file: File) {
@@ -190,20 +273,220 @@
       <button type="button" onclick={onClose}>Cancel</button>
     {:else}
       <p class="hint">
-        Detected: date column ({Math.round(preview.date_confidence * 100)}%
-        confidence), amount column ({Math.round(preview.amount_confidence * 100)}%
-        confidence). Rows that look like an opening/closing balance line are
-        pre-unchecked — review and uncheck any other row that isn't a real
-        transaction. "Type" is how the money moved, taken from the file's own
-        operation-type column if it has one and otherwise read from the
-        description — anything that names no instrument is recorded as a card
-        payment. "Category" is the Category (and
-        Subcategory, if present) column from the file itself, if it has one —
-        each row with one is filed under a matching category/subcategory
-        (creating it if it doesn't exist yet). Rows without one use the
-        fallback chosen below, or "Uncategorized" if you leave that unset.
-        Leave the account unset to use your default account.
+        Read {Math.round(preview.date_confidence * 100)}% of dates and {Math.round(
+          preview.amount_confidence * 100,
+        )}% of amounts. Check the rows to import — anything that looks like an
+        opening/closing balance line starts unchecked. "Type" and "Category"
+        come from the file itself where it has those columns; a category it
+        names is created if you don't have it yet, and rows without one fall
+        back to the category chosen below ("Uncategorized" if you leave it
+        unset). Leave the account unset to use your default.
       </p>
+
+      {#if mappingLooksWrong}
+        <p class="warning">
+          Most rows didn't come out with a usable date or amount. The columns
+          were probably guessed wrong — check the mapping below.
+        </p>
+      {/if}
+
+      <details class="mapping" bind:open={mappingOpen}>
+        <summary>Columns {remapping ? "— re-reading…" : ""}</summary>
+
+        <p class="mapping-hint">
+          Each row of the file was read using these columns. Change any of them
+          and the preview below re-reads the file.
+        </p>
+
+        <div class="mapping-grid">
+          <label>
+            Date
+            <select
+              value={preview.mapping.date_column ?? ""}
+              onchange={(e) =>
+                updateMapping({ date_column: toColumn(e.currentTarget.value) })}
+            >
+              <option value="">Not set</option>
+              {#each preview.columns as c (c.index)}
+                <option value={c.index}>{columnLabel(c)}</option>
+              {/each}
+            </select>
+          </label>
+
+          <label>
+            Date format
+            <select
+              value={preview.mapping.date_format}
+              onchange={(e) => updateMapping({ date_format: e.currentTarget.value })}
+            >
+              {#each preview.date_formats as f (f.pattern)}
+                <option value={f.pattern}>{f.label}</option>
+              {/each}
+            </select>
+          </label>
+
+          <label>
+            Amount layout
+            <select
+              value={preview.mapping.amount?.kind ?? "single"}
+              onchange={(e) =>
+                setAmountLayout(e.currentTarget.value as "single" | "debit_credit")}
+            >
+              <option value="single">One signed column</option>
+              <option value="debit_credit">Separate debit and credit columns</option>
+            </select>
+          </label>
+
+          {#if preview.mapping.amount?.kind === "debit_credit"}
+            {@const amount = preview.mapping.amount}
+            <label>
+              Debit (money out)
+              <select
+                value={amount.debit}
+                onchange={(e) =>
+                  updateMapping({
+                    amount: {
+                      kind: "debit_credit",
+                      debit: Number(e.currentTarget.value),
+                      credit: amount.credit,
+                    },
+                  })}
+              >
+                {#each preview.columns as c (c.index)}
+                  <option value={c.index}>{columnLabel(c)}</option>
+                {/each}
+              </select>
+            </label>
+            <label>
+              Credit (money in)
+              <select
+                value={amount.credit}
+                onchange={(e) =>
+                  updateMapping({
+                    amount: {
+                      kind: "debit_credit",
+                      debit: amount.debit,
+                      credit: Number(e.currentTarget.value),
+                    },
+                  })}
+              >
+                {#each preview.columns as c (c.index)}
+                  <option value={c.index}>{columnLabel(c)}</option>
+                {/each}
+              </select>
+            </label>
+          {:else}
+            <label>
+              Amount
+              <select
+                value={preview.mapping.amount?.kind === "single"
+                  ? preview.mapping.amount.column
+                  : ""}
+                onchange={(e) => {
+                  const column = toColumn(e.currentTarget.value);
+                  updateMapping({
+                    amount: column === null ? null : { kind: "single", column },
+                  });
+                }}
+              >
+                <option value="">Not set</option>
+                {#each preview.columns as c (c.index)}
+                  <option value={c.index}>{columnLabel(c)}</option>
+                {/each}
+              </select>
+            </label>
+          {/if}
+
+          <label>
+            Type
+            <select
+              value={preview.mapping.operation_kind_column ?? ""}
+              onchange={(e) =>
+                updateMapping({ operation_kind_column: toColumn(e.currentTarget.value) })}
+            >
+              <option value="">Read from the description</option>
+              {#each preview.columns as c (c.index)}
+                <option value={c.index}>{columnLabel(c)}</option>
+              {/each}
+            </select>
+          </label>
+
+          <label>
+            Category
+            <select
+              value={preview.mapping.category_column ?? ""}
+              onchange={(e) =>
+                updateMapping({ category_column: toColumn(e.currentTarget.value) })}
+            >
+              <option value="">None</option>
+              {#each preview.columns as c (c.index)}
+                <option value={c.index}>{columnLabel(c)}</option>
+              {/each}
+            </select>
+          </label>
+
+          <label>
+            Subcategory
+            <select
+              value={preview.mapping.subcategory_column ?? ""}
+              onchange={(e) =>
+                updateMapping({ subcategory_column: toColumn(e.currentTarget.value) })}
+            >
+              <option value="">None</option>
+              {#each preview.columns as c (c.index)}
+                <option value={c.index}>{columnLabel(c)}</option>
+              {/each}
+            </select>
+          </label>
+        </div>
+
+        <fieldset class="description-source">
+          <legend>Description</legend>
+          <label class="inline">
+            <input
+              type="radio"
+              name="description-mode"
+              checked={preview.mapping.description.kind === "remaining"}
+              onchange={() => updateMapping({ description: { kind: "remaining" } })}
+            />
+            Every column not used above
+          </label>
+          <label class="inline">
+            <input
+              type="radio"
+              name="description-mode"
+              checked={preview.mapping.description.kind === "columns"}
+              onchange={() => updateMapping({ description: { kind: "columns", columns: [] } })}
+            />
+            Only these columns
+          </label>
+          {#if preview.mapping.description.kind === "columns"}
+            {@const chosen = preview.mapping.description.columns}
+            <div class="description-columns">
+              {#each preview.columns as c (c.index)}
+                <label class="inline">
+                  <input
+                    type="checkbox"
+                    checked={chosen.includes(c.index)}
+                    onchange={(e) =>
+                      toggleDescriptionColumn(c.index, e.currentTarget.checked)}
+                  />
+                  {columnLabel(c)}
+                </label>
+              {/each}
+            </div>
+          {/if}
+        </fieldset>
+
+        <label class="inline">
+          <input
+            type="checkbox"
+            checked={preview.mapping.has_header}
+            onchange={(e) => updateMapping({ has_header: e.currentTarget.checked })}
+          />
+          The first row is a header, not a transaction
+        </label>
+      </details>
 
       <div class="targets">
         <select bind:value={selectedCategoryId}>
@@ -319,6 +602,87 @@
     gap: 0.5rem;
   }
 
+  .warning {
+    margin: 0;
+    padding: 0.5rem 0.7rem;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    background-color: color-mix(in srgb, var(--color-accent) 18%, transparent);
+    border: 1px solid color-mix(in srgb, var(--color-accent) 45%, transparent);
+  }
+
+  .mapping {
+    border: 1px solid var(--color-shade-3);
+    border-radius: 8px;
+    padding: 0.5rem 0.7rem;
+  }
+
+  .mapping summary {
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 600;
+  }
+
+  .mapping-hint {
+    margin: 0.6rem 0 0;
+    font-size: 0.8rem;
+    opacity: 0.75;
+  }
+
+  .mapping-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+    gap: 0.5rem;
+    margin-top: 0.6rem;
+  }
+
+  .mapping-grid label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    font-size: 0.8rem;
+    opacity: 0.9;
+    min-width: 0;
+  }
+
+  .mapping-grid select {
+    max-width: 100%;
+    font-size: 0.8rem;
+  }
+
+  .description-source {
+    margin: 0.6rem 0 0;
+    border: 1px solid var(--color-shade-3);
+    border-radius: 8px;
+    padding: 0.4rem 0.7rem 0.6rem;
+  }
+
+  .description-source legend {
+    font-size: 0.8rem;
+    opacity: 0.9;
+    padding: 0 0.3rem;
+  }
+
+  .description-columns {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+    gap: 0.15rem 0.6rem;
+    margin-top: 0.3rem;
+  }
+
+  label.inline {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.8rem;
+    margin-top: 0.35rem;
+    min-width: 0;
+  }
+
+  label.inline input {
+    flex: none;
+  }
+
   select,
   input[type="file"] {
     border-radius: 6px;
@@ -356,6 +720,10 @@
     overflow-y: auto;
     border: 1px solid var(--color-shade-3);
     border-radius: 8px;
+    /* The dialog is a flex column, and a scrollable child is free to shrink
+       below its content — expanding the mapping editor above squashed this
+       to a couple of pixels. The dialog itself scrolls; this must not. */
+    flex: none;
   }
 
   table {

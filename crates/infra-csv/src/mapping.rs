@@ -199,6 +199,26 @@ pub struct ParsedFile {
     pub column_count: usize,
 }
 
+impl ParsedFile {
+    /// Moves the first row in or out of the header position.
+    ///
+    /// A mapping that came from the user (or from a remembered one) is
+    /// authoritative about whether the file has a header — whether
+    /// `detect_header` got it right is one of the things the user is there
+    /// to correct, so its opinion must not survive the correction.
+    pub fn set_has_header(&mut self, has_header: bool) {
+        match (has_header, self.header.is_some()) {
+            (true, false) if !self.rows.is_empty() => self.header = Some(self.rows.remove(0)),
+            (false, true) => {
+                if let Some(header) = self.header.take() {
+                    self.rows.insert(0, header);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Decodes, sniffs the delimiter, splits into rows, and lifts off a header
 /// row if the file has one.
 pub fn parse_file(bytes: &[u8]) -> ParsedFile {
@@ -784,16 +804,7 @@ pub fn build_preview(bytes: &[u8]) -> ImportPreview {
 /// mapping is replayed through.
 pub fn preview_with_mapping(bytes: &[u8], mapping: &ColumnMapping) -> ImportPreview {
     let mut file = parse_file(bytes);
-    // The stored/edited mapping is authoritative about whether the file has
-    // a header: a remembered mapping may well come from a file whose first
-    // row `detect_header` reads differently once the data below it changes.
-    if mapping.has_header && file.header.is_none() && !file.rows.is_empty() {
-        file.header = Some(file.rows.remove(0));
-    } else if !mapping.has_header {
-        if let Some(header) = file.header.take() {
-            file.rows.insert(0, header);
-        }
-    }
+    file.set_has_header(mapping.has_header);
     apply_mapping(&file, mapping)
 }
 
