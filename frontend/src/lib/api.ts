@@ -28,6 +28,46 @@ export interface CategoryDto {
  * comparing this by hand. */
 export type TransactionRole = "normal" | "transfer" | "adjustment";
 
+/** How the money moved — the instrument the bank named. A third axis,
+ * independent of both the amount's sign and `TransactionRole`: it is purely
+ * descriptive and never changes whether a row counts toward a total.
+ *
+ * In particular "bank_transfer" is NOT the "transfer" role. Rent paid by wire
+ * is ordinary spending that happens to have been paid by wire; only money
+ * moving between two of the user's own accounts is `role: "transfer"`. */
+export type OperationKind =
+  | "card"
+  | "bank_transfer"
+  | "direct_debit"
+  | "check"
+  | "cash"
+  | "fees"
+  | "other";
+
+/** Display text for an operation kind. Falls back to the raw value rather
+ * than to a guess, so a kind added on the Rust side before this map is
+ * updated shows up as itself instead of silently reading as a card payment. */
+export function operationKindLabel(kind: OperationKind | string): string {
+  switch (kind) {
+    case "card":
+      return "Card";
+    case "bank_transfer":
+      return "Transfer";
+    case "direct_debit":
+      return "Direct debit";
+    case "check":
+      return "Cheque";
+    case "cash":
+      return "Cash";
+    case "fees":
+      return "Fees";
+    case "other":
+      return "Other";
+    default:
+      return kind;
+  }
+}
+
 export interface TransactionDto {
   id: string;
   date: string;
@@ -40,6 +80,7 @@ export interface TransactionDto {
   /** Shared by both legs of a transfer; null otherwise. Deleting either leg
    * deletes the other, so the two accounts can't drift apart. */
   transfer_group_id: string | null;
+  operation_kind: OperationKind;
 }
 
 /** Recognizes an imported row as money moving to another of the user's own
@@ -72,6 +113,9 @@ export interface ImportPreviewRowDto {
   description: string;
   csv_category: string | null;
   csv_subcategory: string | null;
+  /** Read from the file's own operation-type column, or from the description
+   * text when it has none. Always set — "card" when nothing said otherwise. */
+  operation_kind: OperationKind;
   is_likely_balance_row: boolean;
   include_by_default: boolean;
   raw: string[];
@@ -250,6 +294,7 @@ export const api = {
       description: string;
       category: string | null;
       subcategory: string | null;
+      operation_kind: OperationKind;
     }[],
     categoryId: string | null,
     accountId: string | null,

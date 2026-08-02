@@ -23,6 +23,8 @@ pub enum TransactionError {
     GroupWithoutTransferRole,
     #[error("unknown transaction role: {0}")]
     UnknownRole(String),
+    #[error("unknown operation kind: {0}")]
+    UnknownOperationKind(String),
 }
 
 const MAX_DESCRIPTION_LEN: usize = 200;
@@ -197,6 +199,73 @@ impl TransactionRole {
     }
 }
 
+/// *How* the money moved — the instrument the bank put on the statement
+/// ("Carte bancaire", "Virement", "Frais bancaires"…), normalized to a fixed
+/// set.
+///
+/// This is a third, independent axis, and the naming has to stay honest about
+/// that: [`Direction`] is which way the amount points, [`TransactionRole`] is
+/// what the movement *means* to the ledger, and this is the payment
+/// instrument. In particular [`OperationKind::BankTransfer`] is **not**
+/// [`TransactionRole::Transfer`] — rent paid by wire is an ordinary expense
+/// that happens to have been paid by wire, and only a transfer *rule* naming
+/// another of the user's own accounts makes a row `Role::Transfer`. Reporting
+/// keys off the role; this axis is descriptive only.
+///
+/// Deliberately a closed set rather than free text: a bank writes the same
+/// instrument a dozen ways across languages and exports, and the point of
+/// storing it is to be able to group by it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OperationKind {
+    /// Card payment — "Carte bancaire", "Carte", "CB". The default, because
+    /// it's both the most common instrument and the one an export that
+    /// doesn't say is most likely to mean.
+    #[default]
+    Card,
+    /// A wire/credit transfer in either direction — "Virement", "Virement
+    /// reçu", "Transfer".
+    BankTransfer,
+    /// A pull initiated by the payee — "Prélèvement", "PRLV", "Direct debit".
+    DirectDebit,
+    /// "Chèque", "CHQ", "Cheque"/"Check".
+    Check,
+    /// Cash in or out — ATM withdrawals, counter deposits.
+    Cash,
+    /// What the bank charged for running the account — "Frais bancaires",
+    /// "Commission", "Agios".
+    Fees,
+    /// Recognized as *something*, just not one of the above. Keeps an
+    /// unfamiliar instrument from being silently mislabeled `Card`.
+    Other,
+}
+
+impl OperationKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Card => "card",
+            Self::BankTransfer => "bank_transfer",
+            Self::DirectDebit => "direct_debit",
+            Self::Check => "check",
+            Self::Cash => "cash",
+            Self::Fees => "fees",
+            Self::Other => "other",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Result<Self, TransactionError> {
+        match raw {
+            "card" => Ok(Self::Card),
+            "bank_transfer" => Ok(Self::BankTransfer),
+            "direct_debit" => Ok(Self::DirectDebit),
+            "check" => Ok(Self::Check),
+            "cash" => Ok(Self::Cash),
+            "fees" => Ok(Self::Fees),
+            "other" => Ok(Self::Other),
+            other => Err(TransactionError::UnknownOperationKind(other.to_string())),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transaction {
     id: TransactionId,
@@ -208,6 +277,7 @@ pub struct Transaction {
     fingerprint: TransactionFingerprint,
     role: TransactionRole,
     transfer_group_id: Option<TransferGroupId>,
+    operation_kind: OperationKind,
 }
 
 impl Transaction {
@@ -273,7 +343,18 @@ impl Transaction {
             fingerprint,
             role,
             transfer_group_id,
+            operation_kind: OperationKind::default(),
         })
+    }
+
+    /// Sets the payment instrument. A builder method rather than another
+    /// constructor parameter because — unlike `role`/`transfer_group_id`,
+    /// which constrain each other — the operation kind takes part in no
+    /// invariant: every value is valid on every transaction, so there is
+    /// nothing for the validating constructor to check.
+    pub fn with_operation_kind(mut self, operation_kind: OperationKind) -> Self {
+        self.operation_kind = operation_kind;
+        self
     }
 
     pub fn id(&self) -> TransactionId {
@@ -312,17 +393,25 @@ impl Transaction {
         self.transfer_group_id
     }
 
+    pub fn operation_kind(&self) -> OperationKind {
+        self.operation_kind
+    }
+
     /// Builds this transaction's counterpart leg: the same movement seen
     /// from the other account, so the amount flips sign while the date and
     /// description text stay put. Using the origin account's date rather than
     /// guessing at a settlement lag keeps the pair internally consistent,
     /// at the cost of the counterpart's balance being up to a day early.
+    ///
+    /// The operation kind carries across too: both legs are the same real
+    /// movement seen from two accounts, so the instrument that moved it is
+    /// the same on both sides.
     pub fn mirrored_onto(
         &self,
         account_id: AccountId,
         group_id: TransferGroupId,
     ) -> Result<Self, TransactionError> {
-        Self::new_with_role(
+        Ok(Self::new_with_role(
             TransactionId::new(),
             self.date,
             self.amount.negated(),
@@ -331,7 +420,8 @@ impl Transaction {
             account_id,
             TransactionRole::Transfer,
             Some(group_id),
-        )
+        )?
+        .with_operation_kind(self.operation_kind))
     }
 
     pub fn direction(&self) -> Direction {
@@ -407,6 +497,62 @@ mod tests {
     }
 
     #[test]
+    fn operation_kind_round_trips_through_its_stored_string() {
+        for kind in [
+            OperationKind::Card,
+            OperationKind::BankTransfer,
+            OperationKind::DirectDebit,
+            OperationKind::Check,
+            OperationKind::Cash,
+            OperationKind::Fees,
+            OperationKind::Other,
+        ] {
+            assert_eq!(OperationKind::parse(kind.as_str()), Ok(kind));
+        }
+    }
+
+    #[test]
+    fn operation_kind_parse_rejects_unknown_text() {
+        assert_eq!(
+            OperationKind::parse("carrier pigeon"),
+            Err(TransactionError::UnknownOperationKind(
+                "carrier pigeon".to_string()
+            ))
+        );
+    }
+
+    /// The app-wide rule for an export that doesn't say how the money moved:
+    /// card is both the commonest instrument and the likeliest meaning of a
+    /// missing "Type opération" cell.
+    #[test]
+    fn a_transaction_defaults_to_a_card_operation() {
+        let transaction = make_transaction(-500).unwrap();
+        assert_eq!(transaction.operation_kind(), OperationKind::Card);
+    }
+
+    #[test]
+    fn with_operation_kind_replaces_the_default() {
+        let transaction = make_transaction(-500)
+            .unwrap()
+            .with_operation_kind(OperationKind::Fees);
+        assert_eq!(transaction.operation_kind(), OperationKind::Fees);
+    }
+
+    /// A bank transfer is an *instrument*, not a ledger role — labeling a row
+    /// `BankTransfer` must not quietly make it a `Role::Transfer` and drop it
+    /// out of spending totals. Only a transfer rule naming another of the
+    /// user's own accounts does that.
+    #[test]
+    fn a_bank_transfer_operation_is_still_a_normal_role() {
+        let transaction = make_transaction(-90_000)
+            .unwrap()
+            .with_operation_kind(OperationKind::BankTransfer);
+
+        assert_eq!(transaction.role(), TransactionRole::Normal);
+        assert!(transaction.role().counts_toward_income_and_expenses());
+    }
+
+    #[test]
     fn role_parse_rejects_unknown_text() {
         assert_eq!(
             TransactionRole::parse("teleport"),
@@ -460,13 +606,15 @@ mod tests {
             TransactionRole::Transfer,
             Some(group_id),
         )
-        .unwrap();
+        .unwrap()
+        .with_operation_kind(OperationKind::BankTransfer);
 
         let inflow = outflow
             .mirrored_onto(counterpart_account, group_id)
             .unwrap();
 
         assert_eq!(inflow.amount().minor_units(), 25_000);
+        assert_eq!(inflow.operation_kind(), OperationKind::BankTransfer);
         assert_eq!(inflow.date(), outflow.date());
         assert_eq!(inflow.description(), outflow.description());
         assert_eq!(inflow.account_id(), counterpart_account);

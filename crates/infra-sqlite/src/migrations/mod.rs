@@ -9,6 +9,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (4, include_str!("0004_drop_transactions_dedup_unique.sql")),
     (5, include_str!("0005_transfers.sql")),
     (6, include_str!("0006_rename_source_to_description.sql")),
+    (7, include_str!("0007_transaction_operation_kind.sql")),
 ];
 
 /// The version a freshly created database ends up at. Derived from
@@ -182,6 +183,30 @@ mod tests {
             )
             .unwrap();
         assert_eq!(pattern, "whole foods");
+    }
+
+    /// `operation_kind` is NOT NULL, so — exactly as with `role` in
+    /// migration 5 — its default is the only thing between an existing
+    /// ledger and a failed migration on the user's real file.
+    ///
+    /// Seeded at version 4 rather than 6 because that's the version
+    /// `seed_one_transaction`'s column names belong to (6 renames them) —
+    /// the row is just as pre-existing either way.
+    #[test]
+    fn migration_7_backfills_existing_transactions_as_card() {
+        let mut conn = conn_at_version(4);
+        seed_one_transaction(&conn);
+
+        run(&mut conn).unwrap();
+
+        let operation_kind: String = conn
+            .query_row(
+                "SELECT operation_kind FROM transactions WHERE id = 't'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(operation_kind, "card");
     }
 
     #[test]

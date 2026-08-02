@@ -11,6 +11,7 @@
     computeRange,
     todayIsoDate,
     oneMonthAgoIsoDate,
+    operationKindLabel,
     type AccountDto,
     type CategoryDto,
     type TransactionDto,
@@ -1005,6 +1006,7 @@
               </FilterPopover>
             </div>
           </th>
+          <th class="kind-cell">Type</th>
           <th>
             <div class="column-header">
               <button type="button" onclick={() => toggleSort("category")}
@@ -1027,7 +1029,7 @@
       </thead>
       <tbody>
         {#if items.length === 0}
-          <tr><td class="empty" colspan="7">No transactions.</td></tr>
+          <tr><td class="empty" colspan="8">No transactions.</td></tr>
         {:else}
           {#each items as t (t.id)}
             <tr onmouseenter={() => continueRowDrag(kind, t.id)}>
@@ -1052,6 +1054,7 @@
                   >
                 {/if}
               </td>
+              <td class="kind-cell">{operationKindLabel(t.operation_kind)}</td>
               <td>
                 <CategorySelect
                   options={categoryOptions}
@@ -1556,6 +1559,16 @@
      once when this column added the leading checkbox). */
   .date-cell {
     white-space: nowrap;
+  }
+
+  /* How the money moved. Reads exactly like Account — same colour, size and
+     weight — since the two are the same kind of thing: flat context about
+     the row, not something ranked above it. Only the width rule is its own:
+     `1%` collapses the column to its content so the space goes to
+     Description and Category instead. */
+  .kind-cell {
+    white-space: nowrap;
+    width: 1%;
   }
 
   @media (max-width: 900px) {

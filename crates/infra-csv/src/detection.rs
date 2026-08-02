@@ -1,4 +1,7 @@
 use chrono::NaiveDate;
+use scrat_domain::transaction::OperationKind;
+
+use crate::operation_kind;
 
 const CANDIDATE_DELIMITERS: [char; 4] = [',', ';', '\t', '|'];
 
@@ -323,6 +326,12 @@ pub struct ParsedRow {
     /// `csv_category` when both are applied (see `commit_csv_import`),
     /// mirroring the app's own CSV export format.
     pub csv_subcategory: Option<String>,
+    /// How the money moved. Taken from a "Type opération"-style column when
+    /// the file has one, and otherwise read out of the description text —
+    /// falling back to [`OperationKind::Card`], which is both the commonest
+    /// instrument and the likeliest meaning of a file that never says. See
+    /// `crate::operation_kind`.
+    pub operation_kind: OperationKind,
     /// True when this row looks like a bank's opening/closing balance line
     /// rather than a real transaction — see `is_boundary_balance_row`.
     /// Doesn't affect `is_valid` (the row still parses as a perfectly good
@@ -432,18 +441,54 @@ fn find_account_column(header: &[String]) -> Option<usize> {
     find_labeled_column(header, &["account", "compte"], None)
 }
 
+/// Finds a header cell naming the operation-type column, e.g. the French
+/// "Type opération" / "Nature de l'opération" or an English "Transaction
+/// type".
+///
+/// Matched on the *pair* of words rather than a bare "type", which on its
+/// own is far too eager — "Type de compte" (account type) and "Type de
+/// carte" both contain it and mean something else entirely. A bare `type`
+/// header is accepted only as an exact cell match, where there's nothing
+/// else it could be qualifying.
+fn find_operation_kind_column(header: &[String]) -> Option<usize> {
+    find_labeled_column(
+        header,
+        &[
+            "type operation",
+            "type opération",
+            "type d'operation",
+            "type d'opération",
+            "typeoperation",
+            "operation type",
+            "transaction type",
+            "type de transaction",
+            "nature",
+            "libelle operation",
+            "payment method",
+            "mode de paiement",
+        ],
+        None,
+    )
+    .or_else(|| {
+        header
+            .iter()
+            .position(|cell| matches!(cell.trim().to_lowercase().as_str(), "type" | "operation"))
+    })
+}
+
 /// The full detection pipeline: decode → sniff delimiter → parse → detect
 /// (and drop) a header → detect Date/Amount columns → build one
 /// [`ParsedRow`] per line, concatenating every other non-empty column as
 /// `description` (real exports often shift the description between columns
 /// depending on transaction type, so picking a single "description column"
 /// isn't reliable — concatenating whatever's left is). Columns identified by
-/// header name as Category, Subcategory, Currency, or Account are excluded
-/// from that concatenation: Category/Subcategory are surfaced separately
-/// (`csv_category`/`csv_subcategory`), and Currency/Account never belong in
-/// `description` (the app has one global currency, and the destination account is
-/// chosen once for the whole import) — otherwise they'd leak into it, e.g.
-/// "EUR" and a bank name getting prepended/appended to every description. Each
+/// header name as Category, Subcategory, Currency, Account, or operation type
+/// are excluded from that concatenation: Category/Subcategory and the
+/// operation type are surfaced separately (`csv_category`/`csv_subcategory`/
+/// `operation_kind`), and Currency/Account never belong in `description` (the
+/// app has one global currency, and the destination account is chosen once for
+/// the whole import) — otherwise they'd leak into it, e.g. "EUR" and a bank
+/// name getting prepended/appended to every description. Each
 /// row is also checked against [`is_boundary_balance_row`] and flagged via
 /// `is_likely_balance_row` when it looks like an opening/closing balance
 /// line rather than a real transaction.
@@ -452,22 +497,29 @@ pub fn build_preview(bytes: &[u8]) -> ImportPreview {
     let delimiter = sniff_delimiter(&text);
     let mut rows = parse_rows(&text, delimiter);
 
-    let (category_column, subcategory_column, currency_column, account_column) =
-        if detect_header(&rows) && !rows.is_empty() {
-            let header = rows.remove(0);
-            let subcategory_column = find_subcategory_column(&header);
-            let category_column = find_category_column(&header, subcategory_column);
-            let currency_column = find_currency_column(&header);
-            let account_column = find_account_column(&header);
-            (
-                category_column,
-                subcategory_column,
-                currency_column,
-                account_column,
-            )
-        } else {
-            (None, None, None, None)
-        };
+    let (
+        category_column,
+        subcategory_column,
+        currency_column,
+        account_column,
+        operation_kind_column,
+    ) = if detect_header(&rows) && !rows.is_empty() {
+        let header = rows.remove(0);
+        let subcategory_column = find_subcategory_column(&header);
+        let category_column = find_category_column(&header, subcategory_column);
+        let currency_column = find_currency_column(&header);
+        let account_column = find_account_column(&header);
+        let operation_kind_column = find_operation_kind_column(&header);
+        (
+            category_column,
+            subcategory_column,
+            currency_column,
+            account_column,
+            operation_kind_column,
+        )
+    } else {
+        (None, None, None, None, None)
+    };
 
     let Some(detection) = detect_columns(&rows) else {
         return ImportPreview {
@@ -508,15 +560,26 @@ pub fn build_preview(bytes: &[u8]) -> ImportPreview {
                         && i != subcategory_column
                         && i != currency_column
                         && i != account_column
+                        && i != operation_kind_column
                 })
                 .map(|(_, v)| v.trim())
                 .filter(|v| !v.is_empty())
                 .collect::<Vec<_>>()
                 .join(" ");
 
+            // A labeled column is the bank's own answer, so it wins. Without
+            // one — no header at all, or a blank cell — the instrument is
+            // read out of the description, which in a headerless export is
+            // exactly where it ended up: the unlabeled "Carte"/"Virement"
+            // column got concatenated into it a few lines above.
+            let operation_kind = cell_text(operation_kind_column)
+                .and_then(|label| operation_kind::from_label(&label))
+                .unwrap_or_else(|| operation_kind::from_description(&description));
+
             ParsedRow {
                 date: parse_date_cell(date_cell),
                 amount_minor_units: parse_amount_cell(amount_cell),
+                operation_kind,
                 description,
                 csv_category,
                 csv_subcategory,
@@ -810,6 +873,118 @@ Date;Amount;Currency;Description;Category;Subcategory;Account
             preview.rows[2].csv_category,
             Some("Food & Drinks".to_string())
         );
+    }
+
+    #[test]
+    fn build_preview_reads_a_labeled_operation_type_column_and_keeps_it_out_of_the_description() {
+        let text = "\
+Date;Amount;Type opération;Description
+01/07/2026;-35,00;Carte bancaire;SOME STORE
+02/07/2026;120,50;Virement reçu;EMPLOYER
+03/07/2026;-2,00;Frais bancaires;TENUE DE COMPTE
+04/07/2026;-19,99;Prélèvement;UTILITY CO
+";
+        let preview = build_preview(text.as_bytes());
+
+        assert_eq!(preview.rows.len(), 4);
+        assert_eq!(
+            preview
+                .rows
+                .iter()
+                .map(|r| r.operation_kind)
+                .collect::<Vec<_>>(),
+            vec![
+                OperationKind::Card,
+                OperationKind::BankTransfer,
+                OperationKind::Fees,
+                OperationKind::DirectDebit,
+            ]
+        );
+        // The type column is surfaced on its own now, so it must not also be
+        // concatenated into the description the way an unrecognized column is.
+        assert_eq!(
+            preview
+                .rows
+                .iter()
+                .map(|r| r.description.as_str())
+                .collect::<Vec<_>>(),
+            vec!["SOME STORE", "EMPLOYER", "TENUE DE COMPTE", "UTILITY CO"]
+        );
+    }
+
+    /// A bare "Type" header has nothing else it could be qualifying, so it's
+    /// accepted — but only as an exact match, never as a substring of
+    /// something like "Type de compte".
+    #[test]
+    fn build_preview_accepts_a_bare_type_header() {
+        let text = "\
+Date;Amount;Type;Description
+01/07/2026;-35,00;Virement;SOMEONE
+02/07/2026;-12,00;Carte;SOME STORE
+";
+        let preview = build_preview(text.as_bytes());
+
+        assert_eq!(preview.rows[0].operation_kind, OperationKind::BankTransfer);
+        assert_eq!(preview.rows[1].operation_kind, OperationKind::Card);
+        assert_eq!(preview.rows[0].description, "SOMEONE");
+    }
+
+    /// "Type de compte" is the account's type, not the operation's — reading
+    /// it as one would label every row of the file from a column that says
+    /// nothing about how the money moved, *and* strip it from the description.
+    #[test]
+    fn build_preview_does_not_mistake_an_account_type_column_for_the_operation_type() {
+        let text = "\
+Date;Amount;Type de compte;Description
+01/07/2026;-35,00;Compte courant;VIREMENT SOMEONE
+02/07/2026;-12,00;Compte courant;SOME STORE
+";
+        let preview = build_preview(text.as_bytes());
+
+        // Both rows fall through to the description, which is the only place
+        // an instrument is actually named here. Had the column been mistaken
+        // for the operation type, "Compte courant" would have been read as a
+        // label naming no instrument this vocabulary knows — `Other` — on
+        // both rows, rather than these two different, correct answers.
+        assert_eq!(preview.rows[0].operation_kind, OperationKind::BankTransfer);
+        assert_eq!(preview.rows[1].operation_kind, OperationKind::Card);
+    }
+
+    /// The headerless shape of a real French export: the instrument sits in
+    /// an unlabeled column, which the description concatenation sweeps up —
+    /// so reading the description is what recovers it.
+    #[test]
+    fn build_preview_reads_the_operation_kind_from_a_headerless_export() {
+        let text = "\
+01/07/2026;500,00;;ACC REF 12345
+01/07/2026;-35,00;Carte;;CB SOME STORE   30/06/26;;0;Divers
+01/07/2026;120,50;Virement;;;INCOMING WAGES;;
+01/07/2026;-19,99;Prelevement;;PRLV SEPA SOME BILL;;;
+05/07/2026;565,51;;ACC REF 12345
+";
+        let preview = build_preview(text.as_bytes());
+
+        assert_eq!(preview.rows[1].operation_kind, OperationKind::Card);
+        assert_eq!(preview.rows[2].operation_kind, OperationKind::BankTransfer);
+        assert_eq!(preview.rows[3].operation_kind, OperationKind::DirectDebit);
+    }
+
+    /// A file with a type column that's blank on some rows must fall through
+    /// to the description for those rows only, not label the whole file from
+    /// whichever rows did have a value.
+    #[test]
+    fn build_preview_falls_back_per_row_when_the_type_cell_is_blank() {
+        let text = "\
+Date;Amount;Type opération;Description
+01/07/2026;-35,00;Chèque;RENT
+02/07/2026;120,50;;VIR SALARY
+03/07/2026;-12,00;;SOME STORE
+";
+        let preview = build_preview(text.as_bytes());
+
+        assert_eq!(preview.rows[0].operation_kind, OperationKind::Check);
+        assert_eq!(preview.rows[1].operation_kind, OperationKind::BankTransfer);
+        assert_eq!(preview.rows[2].operation_kind, OperationKind::Card);
     }
 
     #[test]

@@ -7,7 +7,8 @@ use scrat_domain::ports::{
 };
 use scrat_domain::recurring::{self, RecurringCharge};
 use scrat_domain::transaction::{
-    Description, Transaction, TransactionError, TransactionId, TransactionRole, TransferGroupId,
+    Description, OperationKind, Transaction, TransactionError, TransactionId, TransactionRole,
+    TransferGroupId,
 };
 use scrat_domain::transfer_rule::TransferRule;
 use thiserror::Error;
@@ -39,6 +40,12 @@ pub struct ImportRow {
     pub amount_minor_units: i64,
     pub description: String,
     pub category_id: CategoryId,
+    /// How the money moved, as the importer read it off the file. Purely
+    /// descriptive — it never decides whether a row becomes a transfer pair
+    /// below. That is a transfer *rule* naming another of the user's own
+    /// accounts, and nothing else: a row labeled `BankTransfer` with no
+    /// matching rule is a wire to someone else, which is ordinary spending.
+    pub operation_kind: OperationKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -332,7 +339,8 @@ impl<'a> TransactionService<'a> {
                         account_id,
                         TransactionRole::Transfer,
                         Some(group_id),
-                    )?;
+                    )?
+                    .with_operation_kind(row.operation_kind);
                     let inflow = outflow.mirrored_onto(counterpart_id, group_id)?;
                     self.transactions.insert(&outflow)?;
                     self.transactions.insert(&inflow)?;
@@ -346,7 +354,8 @@ impl<'a> TransactionService<'a> {
                         description,
                         row.category_id,
                         account_id,
-                    )?;
+                    )?
+                    .with_operation_kind(row.operation_kind);
                     self.transactions.insert(&transaction)?;
                 }
             }
@@ -1017,6 +1026,7 @@ mod tests {
                 amount_minor_units,
                 description: description.to_string(),
                 category_id: self.category_id,
+                operation_kind: OperationKind::default(),
             }
         }
 
@@ -1384,6 +1394,58 @@ mod tests {
         assert_eq!(found, Some(f.account_id));
     }
 
+    /// The instrument the importer read has to reach storage. It travels
+    /// through a builder call rather than the constructor, which makes it
+    /// exactly the kind of field a refactor drops without anything failing
+    /// to compile.
+    #[test]
+    fn import_transactions_stores_each_rows_operation_kind() {
+        let f = fixture();
+        let service = f.service();
+        let mut fees = f.import_row("FRAIS TENUE DE COMPTE", -200);
+        fees.operation_kind = OperationKind::Fees;
+        let card = f.import_row("SOME STORE", -1_200);
+
+        service
+            .import_transactions(&[fees, card], f.account_id, &[])
+            .unwrap();
+
+        let stored = service.list_all().unwrap();
+        let by_description = |text: &str| {
+            stored
+                .iter()
+                .find(|t| t.description().as_str() == text)
+                .unwrap()
+                .operation_kind()
+        };
+        assert_eq!(by_description("FRAIS TENUE DE COMPTE"), OperationKind::Fees);
+        assert_eq!(by_description("SOME STORE"), OperationKind::Card);
+    }
+
+    /// A row that a transfer rule turns into a pair must put the instrument
+    /// on *both* legs — the counterpart is the same movement seen from the
+    /// other account, and it's written onto an account the user isn't even
+    /// looking at, so a gap there would be invisible.
+    #[test]
+    fn an_imported_transfer_pair_carries_the_operation_kind_onto_both_legs() {
+        let f = fixture();
+        let service = f.service();
+        let mut row = f.import_row("VIREMENT NEOBANK", -25_000);
+        row.operation_kind = OperationKind::BankTransfer;
+        let rule = f.transfer_rule("virement neobank", f.counterpart_account_id);
+
+        let outcome = service
+            .import_transactions(&[row], f.account_id, &[rule])
+            .unwrap();
+
+        assert_eq!(outcome.mirrored, 1);
+        let stored = service.list_all().unwrap();
+        assert_eq!(stored.len(), 2);
+        assert!(stored
+            .iter()
+            .all(|t| t.operation_kind() == OperationKind::BankTransfer));
+    }
+
     #[test]
     fn import_transactions_keeps_identical_rows_as_separate_transactions() {
         let f = fixture();
@@ -1398,6 +1460,7 @@ mod tests {
             amount_minor_units: -1_200,
             description: "Whole Foods".to_string(),
             category_id: f.category_id,
+            operation_kind: OperationKind::default(),
         };
 
         let first = service
@@ -2085,6 +2148,7 @@ mod tests {
             amount_minor_units: -1_200,
             description: "Whole Foods".to_string(),
             category_id: f.category_id,
+            operation_kind: OperationKind::default(),
         };
 
         let result = service.import_transactions(&[row], AccountId::new(), &[]);
@@ -2106,6 +2170,7 @@ mod tests {
             amount_minor_units: -1_200,
             description: "Whole Foods".to_string(),
             category_id: CategoryId::new(),
+            operation_kind: OperationKind::default(),
         };
 
         let result = service.import_transactions(&[row], f.account_id, &[]);

@@ -6,7 +6,7 @@ use scrat_domain::account::{Account, AccountId};
 use scrat_domain::category::{Category, CategoryId};
 use scrat_domain::ports::{AccountRepository, CategoryRepository};
 use scrat_domain::recurring::RecurringCharge;
-use scrat_domain::transaction::{Transaction, TransactionId};
+use scrat_domain::transaction::{OperationKind, Transaction, TransactionId};
 use scrat_infra_sqlite::{
     SqliteAccountRepository, SqliteCategoryRepository, SqliteTransactionRepository,
 };
@@ -32,6 +32,12 @@ pub struct TransactionDto {
     pub role: String,
     /// Shared by both legs of a transfer; `null` otherwise.
     pub transfer_group_id: Option<String>,
+    /// How the money moved: `"card"`, `"bank_transfer"`, `"direct_debit"`,
+    /// `"check"`, `"cash"`, `"fees"` or `"other"`. Descriptive only — unlike
+    /// `role`, it never affects whether a row counts toward a total. Note
+    /// `"bank_transfer"` is the *instrument* and is unrelated to the
+    /// `"transfer"` role.
+    pub operation_kind: String,
 }
 
 impl From<Transaction> for TransactionDto {
@@ -46,6 +52,7 @@ impl From<Transaction> for TransactionDto {
             account_id: transaction.account_id().as_string(),
             role: transaction.role().as_str().to_string(),
             transfer_group_id: transaction.transfer_group_id().map(|id| id.as_string()),
+            operation_kind: transaction.operation_kind().as_str().to_string(),
         }
     }
 }
@@ -407,6 +414,25 @@ fn category_columns<'a>(
     }
 }
 
+/// The human-readable label an export writes for a payment instrument —
+/// deliberately not the stored `as_str()` form (`"bank_transfer"`), which is
+/// a database value, not something to hand a spreadsheet.
+///
+/// Each of these is chosen to be read back correctly by `infra-csv`'s own
+/// label vocabulary, so an export re-imported into Scrat keeps its operation
+/// kinds instead of silently collapsing them all to "card".
+fn operation_kind_label(kind: OperationKind) -> &'static str {
+    match kind {
+        OperationKind::Card => "Card",
+        OperationKind::BankTransfer => "Bank transfer",
+        OperationKind::DirectDebit => "Direct debit",
+        OperationKind::Check => "Cheque",
+        OperationKind::Cash => "Cash",
+        OperationKind::Fees => "Fees",
+        OperationKind::Other => "Other",
+    }
+}
+
 /// Renders the export file body. Kept separate from the Tauri command (which
 /// only wires up repositories) so the formatting and hierarchy-resolution
 /// rules are unit-testable without a database or a Tauri runtime.
@@ -422,7 +448,11 @@ fn build_csv(
     let categories_by_id: HashMap<CategoryId, &Category> =
         categories.iter().map(|c| (c.id(), c)).collect();
 
-    let mut csv = String::from("Date;Amount;Currency;Description;Category;Subcategory;Account\n");
+    // "Type" is appended rather than slotted in among the existing columns:
+    // every other column keeps the position an earlier export gave it, so a
+    // spreadsheet or script built against the old file still reads.
+    let mut csv =
+        String::from("Date;Amount;Currency;Description;Category;Subcategory;Account;Type\n");
     for t in transactions {
         let (category, subcategory) = category_columns(t.category_id(), &categories_by_id);
         let account = account_names
@@ -430,7 +460,7 @@ fn build_csv(
             .copied()
             .unwrap_or_default();
         csv.push_str(&format!(
-            "{};{};{};{};{};{};{}\n",
+            "{};{};{};{};{};{};{};{}\n",
             t.date().format("%Y-%m-%d"),
             format_amount_for_csv(t.amount().minor_units()),
             t.amount().currency().code(),
@@ -438,6 +468,7 @@ fn build_csv(
             csv_field(category),
             csv_field(subcategory),
             csv_field(account),
+            operation_kind_label(t.operation_kind()),
         ));
     }
     csv
@@ -476,7 +507,7 @@ mod tests {
 
     use super::*;
 
-    const HEADER: &str = "Date;Amount;Currency;Description;Category;Subcategory;Account\n";
+    const HEADER: &str = "Date;Amount;Currency;Description;Category;Subcategory;Account;Type\n";
 
     fn eur() -> Currency {
         Currency::new("EUR").unwrap()
@@ -540,7 +571,7 @@ mod tests {
 
         assert_eq!(
             rows(&csv),
-            vec!["2026-03-14;-12,50;EUR;SUPERMARKET;Food;Groceries;Checking"]
+            vec!["2026-03-14;-12,50;EUR;SUPERMARKET;Food;Groceries;Checking;Card"]
         );
     }
 
@@ -554,7 +585,7 @@ mod tests {
 
         assert_eq!(
             rows(&csv),
-            vec!["2026-03-14;2500,00;EUR;ACME PAYROLL;Salary;;Checking"]
+            vec!["2026-03-14;2500,00;EUR;ACME PAYROLL;Salary;;Checking;Card"]
         );
     }
 
@@ -586,7 +617,7 @@ mod tests {
 
         let csv = build_csv(&[tx], &[], &[]);
 
-        assert_eq!(rows(&csv), vec!["2026-03-14;-1,00;EUR;MYSTERY;;;"]);
+        assert_eq!(rows(&csv), vec!["2026-03-14;-1,00;EUR;MYSTERY;;;;Card"]);
     }
 
     #[test]
@@ -600,7 +631,7 @@ mod tests {
 
         assert_eq!(
             rows(&csv),
-            vec!["2026-03-14;-1,00;EUR;SHOP;Groceries;;Checking"]
+            vec!["2026-03-14;-1,00;EUR;SHOP;Groceries;;Checking;Card"]
         );
     }
 
@@ -616,7 +647,7 @@ mod tests {
         assert_eq!(
             rows(&csv),
             vec![
-                "2026-03-14;-42,00;EUR;\"CITY; WATER\";\"Bills; utilities\";\"Water \"\"meter\"\"\";Checking"
+                "2026-03-14;-42,00;EUR;\"CITY; WATER\";\"Bills; utilities\";\"Water \"\"meter\"\"\";Checking;Card"
             ]
         );
     }

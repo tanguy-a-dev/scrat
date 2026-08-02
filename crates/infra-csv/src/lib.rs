@@ -3,6 +3,7 @@
 //! application layer to turn into transactions.
 
 mod detection;
+mod operation_kind;
 
 pub use detection::{
     build_preview, decode_bytes, detect_columns, detect_header, parse_amount_cell, parse_date_cell,

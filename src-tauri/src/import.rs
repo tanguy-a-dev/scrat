@@ -3,6 +3,7 @@ use scrat_application::transaction_service::ImportRow;
 use scrat_domain::account::AccountId;
 use scrat_domain::category::CategoryId;
 use scrat_domain::ports::TransferRuleRepository;
+use scrat_domain::transaction::OperationKind;
 use scrat_infra_csv::build_preview;
 use scrat_infra_sqlite::SqliteTransferRuleRepository;
 use serde::{Deserialize, Serialize};
@@ -26,6 +27,10 @@ pub struct ImportPreviewRowDto {
     /// nests under `csv_category` on import, mirroring the app's own export
     /// format.
     pub csv_subcategory: Option<String>,
+    /// How the money moved, as read from the file's own operation-type
+    /// column or — failing that — from the description text. Shown in the
+    /// preview so the user can see what will be stored before committing.
+    pub operation_kind: String,
     /// True when the row looks like a bank's opening/closing balance line
     /// rather than a real transaction — surfaced so the frontend can flag
     /// it to the user, in addition to defaulting it unchecked.
@@ -54,6 +59,7 @@ pub fn preview_csv_import(bytes: Vec<u8>) -> ImportPreviewDto {
                 date: row.date.map(|d| d.format("%Y-%m-%d").to_string()),
                 amount_minor_units: row.amount_minor_units,
                 include_by_default: row.is_valid() && !row.is_likely_balance_row,
+                operation_kind: row.operation_kind.as_str().to_string(),
                 description: row.description,
                 csv_category: row.csv_category,
                 csv_subcategory: row.csv_subcategory,
@@ -85,6 +91,12 @@ pub struct ImportCommitRowDto {
     /// (or one of its subcategories) supplies the subcategory instead,
     /// before falling back to the bare top-level `category`.
     pub subcategory: Option<String>,
+    /// The stored `OperationKind` string the preview reported for this row.
+    /// Absent or unrecognized falls back to `card`, which is the same rule
+    /// the detector itself applies to a file that never says how the money
+    /// moved — a malformed value from the frontend shouldn't fail an import
+    /// over a purely descriptive field.
+    pub operation_kind: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -104,6 +116,7 @@ struct ParsedCommitRow {
     description: String,
     category: Option<String>,
     subcategory: Option<String>,
+    operation_kind: OperationKind,
 }
 
 #[tauri::command]
@@ -128,6 +141,11 @@ pub fn commit_csv_import(
                 description: row.description,
                 category: row.category,
                 subcategory: row.subcategory,
+                operation_kind: row
+                    .operation_kind
+                    .as_deref()
+                    .and_then(|raw| OperationKind::parse(raw).ok())
+                    .unwrap_or_default(),
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -188,6 +206,7 @@ pub fn commit_csv_import(
                     amount_minor_units: row.amount_minor_units,
                     description: row.description,
                     category_id,
+                    operation_kind: row.operation_kind,
                 })
             })
             .collect::<Result<Vec<_>, scrat_application::transaction_service::ApplicationError>>(

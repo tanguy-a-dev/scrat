@@ -5,7 +5,7 @@ use scrat_domain::category::CategoryId;
 use scrat_domain::money::{Currency, Money};
 use scrat_domain::ports::{RepositoryError, TransactionRepository};
 use scrat_domain::transaction::{
-    Description, Transaction, TransactionId, TransactionRole, TransferGroupId,
+    Description, OperationKind, Transaction, TransactionId, TransactionRole, TransferGroupId,
 };
 
 pub struct SqliteTransactionRepository<'a> {
@@ -45,6 +45,9 @@ impl<'a> SqliteTransactionRepository<'a> {
             .transpose()
             .map_err(invalid_column)?;
 
+        let operation_kind: String = row.get("operation_kind")?;
+        let operation_kind = OperationKind::parse(&operation_kind).map_err(invalid_column)?;
+
         let amount = Money::from_minor_units(amount_minor_units, self.currency.clone());
         Transaction::new_with_role(
             id,
@@ -56,6 +59,7 @@ impl<'a> SqliteTransactionRepository<'a> {
             role,
             transfer_group_id,
         )
+        .map(|t| t.with_operation_kind(operation_kind))
         .map_err(invalid_column)
     }
 }
@@ -70,13 +74,13 @@ fn sql_err(e: rusqlite::Error) -> RepositoryError {
 
 const INSERT_SQL: &str = "INSERT INTO transactions
     (id, date, amount_minor_units, description, category_id, account_id, fingerprint, created_at,
-     role, transfer_group_id)
- VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)";
+     role, transfer_group_id, operation_kind)
+ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)";
 
 /// Every column `row_to_transaction` reads, so the three read paths can't
 /// drift apart and silently drop a role or a transfer group.
 const SELECT_COLUMNS: &str = "id, date, amount_minor_units, description, category_id, account_id,
-     role, transfer_group_id";
+     role, transfer_group_id, operation_kind";
 
 /// Keeps each bulk `IN (...)` clause well under SQLite's variable-count
 /// limit (historically 999, `SQLITE_MAX_VARIABLE_NUMBER`), regardless of how
@@ -101,6 +105,7 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
                     now,
                     transaction.role().as_str(),
                     transaction.transfer_group_id().map(|id| id.as_string()),
+                    transaction.operation_kind().as_str(),
                 ],
             )
             .map_err(sql_err)?;
@@ -1124,6 +1129,52 @@ mod tests {
 
         assert_eq!(reloaded.role(), TransactionRole::Normal);
         assert_eq!(reloaded.transfer_group_id(), None);
+    }
+
+    /// The instrument has to survive storage like the role does — a row that
+    /// reloads as `card` regardless of what went in makes the whole column
+    /// worthless for grouping, and does it silently.
+    #[test]
+    fn operation_kind_survives_a_roundtrip() {
+        let conn = test_conn();
+        let (account_id, category_id) = seed_account_and_category(&conn);
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        let fees = Transaction::new(
+            TransactionId::new(),
+            NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+            Money::from_minor_units(-200, usd()),
+            Description::new("Frais tenue de compte").unwrap(),
+            category_id,
+            account_id,
+        )
+        .unwrap()
+        .with_operation_kind(OperationKind::Fees);
+        repo.insert(&fees).unwrap();
+
+        let reloaded = repo.find_by_id(fees.id()).unwrap().unwrap();
+
+        assert_eq!(reloaded.operation_kind(), OperationKind::Fees);
+    }
+
+    #[test]
+    fn a_transaction_stored_without_an_explicit_kind_reloads_as_card() {
+        let conn = test_conn();
+        let (account_id, category_id) = seed_account_and_category(&conn);
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        let transaction = Transaction::new(
+            TransactionId::new(),
+            NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+            Money::from_minor_units(-1_200, usd()),
+            Description::new("Whole Foods").unwrap(),
+            category_id,
+            account_id,
+        )
+        .unwrap();
+        repo.insert(&transaction).unwrap();
+
+        let reloaded = repo.find_by_id(transaction.id()).unwrap().unwrap();
+
+        assert_eq!(reloaded.operation_kind(), OperationKind::Card);
     }
 
     #[test]

@@ -6,9 +6,11 @@
     api,
     buildCategoryOptions,
     formatMoney,
+    operationKindLabel,
     type AccountDto,
     type CategoryDto,
     type ImportPreviewDto,
+    type OperationKind,
   } from "./api";
 
   let {
@@ -126,6 +128,7 @@
         description: string;
         category: string | null;
         subcategory: string | null;
+        operation_kind: OperationKind;
       }[] = [];
       preview.rows.forEach((r, i) => {
         if (included[i] && r.date !== null && r.amount_minor_units !== null) {
@@ -135,6 +138,7 @@
             description: r.description,
             category: r.csv_category,
             subcategory: r.csv_subcategory,
+            operation_kind: r.operation_kind,
           });
         }
       });
@@ -190,7 +194,10 @@
         confidence), amount column ({Math.round(preview.amount_confidence * 100)}%
         confidence). Rows that look like an opening/closing balance line are
         pre-unchecked — review and uncheck any other row that isn't a real
-        transaction. "Category" is the Category (and
+        transaction. "Type" is how the money moved, taken from the file's own
+        operation-type column if it has one and otherwise read from the
+        description — anything that names no instrument is recorded as a card
+        payment. "Category" is the Category (and
         Subcategory, if present) column from the file itself, if it has one —
         each row with one is filed under a matching category/subcategory
         (creating it if it doesn't exist yet). Rows without one use the
@@ -221,6 +228,7 @@
               <th>Date</th>
               <th>Amount</th>
               <th>Description</th>
+              <th>Type</th>
               <th>Category</th>
             </tr>
           </thead>
@@ -247,6 +255,7 @@
                     <span class="balance-hint">(likely a balance line)</span>
                   {/if}
                 </td>
+                <td class="suggestion">{operationKindLabel(row.operation_kind)}</td>
                 <td class="suggestion"
                   >{row.csv_subcategory
                     ? `${row.csv_category} / ${row.csv_subcategory}`
