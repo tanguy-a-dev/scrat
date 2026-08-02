@@ -107,21 +107,10 @@ Rules that follow from this, non-negotiably:
 - Migrations are append-only numbered SQL files in
   `crates/infra-sqlite/src/migrations/`, tracked via a `schema_migrations` table.
   Never edit or renumber a shipped migration — add a new one.
-- **Scrat never writes the passphrase to disk.** It exists only in the live,
+- The passphrase is never persisted anywhere. It exists only in the live,
   already-keyed `rusqlite::Connection` held in Tauri-managed state for the
   process lifetime. Don't add a "remember my passphrase" feature that writes it
   to disk in any form, hashed or not.
-- The one sanctioned exception is *delegating* storage to a secret manager the
-  user already controls: `src-tauri/src/onepassword.rs` can fetch the
-  passphrase from 1Password at unlock time. What Scrat stores is a
-  `op://vault/item/field` **reference** in a plain `onepassword.json` — a
-  pointer, never the secret. Two rules hold there: the fetched passphrase is
-  read and consumed entirely in Rust and never crosses IPC into the frontend,
-  and a 1Password failure always falls back to the manual passphrase form, so
-  the database is never unreachable because an external tool is missing.
-  Note the trade-off this accepts: the passphrase now lives in 1Password's
-  synced vault. That's the user's explicit choice, not a default — the feature
-  is off until configured in Settings.
 - **Never commit real financial data.** `.gitignore` excludes `*.db`, `sample-data/`,
   and `T_cpte_*.csv` (a real bank export was used to validate the CSV importer
   during development — the pattern stays as a guard even though that file is

@@ -117,20 +117,6 @@ export const api = {
     invoke<void>("create_db_with_passphrase", { passphrase }),
   unlockDb: (passphrase: string) => invoke<void>("unlock_db", { passphrase }),
 
-  /** The `op://vault/item/field` pointer to the passphrase, or null when
-   * 1Password unlock isn't set up. Readable while still locked. */
-  get1PasswordReference: () =>
-    invoke<string | null>("get_1password_reference"),
-  /** Pass null to turn the integration off. */
-  set1PasswordReference: (reference: string | null) =>
-    invoke<void>("set_1password_reference", { reference }),
-  /** Checks the referenced value actually opens this database. */
-  test1PasswordReference: (reference: string) =>
-    invoke<void>("test_1password_reference", { reference }),
-  /** Fetches the passphrase from 1Password and unlocks in one Rust-side
-   * step — the passphrase deliberately never crosses into JS. */
-  unlockWith1Password: () => invoke<void>("unlock_with_1password"),
-
   listAccounts: () => invoke<AccountDto[]>("list_accounts"),
   createAccount: (name: string, openingBalanceMinorUnits: number) =>
     invoke<AccountDto>("create_account", {

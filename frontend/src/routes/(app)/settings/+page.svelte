@@ -20,10 +20,6 @@
   let importing = $state(false);
   let importFileName = $derived(importPath?.split(/[\\/]/).pop() ?? "");
 
-  let onePasswordRef = $state("");
-  let savedOnePasswordRef = $state<string | null>(null);
-  let testingOnePassword = $state(false);
-
   onMount(async () => {
     try {
       currentCurrency = await api.getCurrency();
@@ -33,42 +29,7 @@
     } finally {
       loadingCurrency = false;
     }
-    try {
-      savedOnePasswordRef = await api.get1PasswordReference();
-      onePasswordRef = savedOnePasswordRef ?? "";
-    } catch {
-      // Not fatal — the rest of settings still works without it.
-    }
   });
-
-  /** Verifies before saving, so a typo surfaces here rather than at the
-   * next launch's unlock screen. */
-  async function handleSaveOnePassword(event: Event) {
-    event.preventDefault();
-    const reference = onePasswordRef.trim();
-    testingOnePassword = true;
-    try {
-      await api.test1PasswordReference(reference);
-      await api.set1PasswordReference(reference);
-      savedOnePasswordRef = reference;
-      toast.success("1Password unlock is set up. It takes effect at next launch.");
-    } catch (e) {
-      toast.error(String(e));
-    } finally {
-      testingOnePassword = false;
-    }
-  }
-
-  async function handleDisableOnePassword() {
-    try {
-      await api.set1PasswordReference(null);
-      savedOnePasswordRef = null;
-      onePasswordRef = "";
-      toast.success("1Password unlock turned off.");
-    } catch (e) {
-      toast.error(String(e));
-    }
-  }
 
   async function handleSaveCurrency(event: Event) {
     event.preventDefault();
@@ -209,40 +170,6 @@
       >
     </form>
   {/if}
-</section>
-
-<section>
-  <h2>Unlock with 1Password</h2>
-  <p class="hint">
-    Scrat can read your passphrase from your own 1Password vault at launch,
-    unlocked by Touch ID. Only the reference below is stored on this machine —
-    never the passphrase itself. Requires the 1Password CLI (<code
-      >brew install 1password-cli</code
-    >) and Settings → Developer → "Integrate with 1Password CLI" enabled in
-    the 1Password app.
-  </p>
-  <form onsubmit={handleSaveOnePassword}>
-    <input
-      type="text"
-      bind:value={onePasswordRef}
-      placeholder="op://Personal/Scrat/password"
-      spellcheck="false"
-      autocomplete="off"
-    />
-    <button
-      type="submit"
-      disabled={testingOnePassword || !onePasswordRef.trim()}
-    >
-      {testingOnePassword ? "Checking…" : "Verify and save"}
-    </button>
-    {#if savedOnePasswordRef}
-      <button
-        type="button"
-        onclick={handleDisableOnePassword}
-        disabled={testingOnePassword}>Turn off</button
-      >
-    {/if}
-  </form>
 </section>
 
 <section>

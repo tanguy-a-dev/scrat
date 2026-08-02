@@ -10,8 +10,6 @@
   let confirmPassphrase = $state("");
   let error = $state("");
   let submitting = $state(false);
-  let onePasswordConfigured = $state(false);
-  let waitingFor1Password = $state(false);
 
   onMount(async () => {
     try {
@@ -20,35 +18,8 @@
     } catch (e) {
       error = String(e);
       screen = "fatal";
-      return;
     }
-    if (screen !== "unlock") return;
-
-    // A missing/unreadable config must never block manual unlock, so this
-    // failing is silent — the passphrase form is already on screen.
-    try {
-      onePasswordConfigured = (await api.get1PasswordReference()) !== null;
-    } catch {
-      return;
-    }
-    if (onePasswordConfigured) await unlockVia1Password();
   });
-
-  /** Triggers 1Password's own Touch ID prompt. On any failure we fall back
-   * to the passphrase form rather than trapping the user — 1Password being
-   * unavailable must never make the database unreachable. */
-  async function unlockVia1Password() {
-    error = "";
-    waitingFor1Password = true;
-    try {
-      await api.unlockWith1Password();
-      await goto("/overview");
-    } catch (e) {
-      error = String(e);
-    } finally {
-      waitingFor1Password = false;
-    }
-  }
 
   async function handleCreate(event: Event) {
     event.preventDefault();
@@ -127,11 +98,7 @@
       </button>
     </form>
   {:else if screen === "unlock"}
-    <p class="subtitle">
-      {waitingFor1Password
-        ? "Waiting for 1Password…"
-        : "Enter your passphrase to unlock your data."}
-    </p>
+    <p class="subtitle">Enter your passphrase to unlock your data.</p>
     <form onsubmit={handleUnlock}>
       <input
         type="password"
@@ -140,22 +107,9 @@
         placeholder="Passphrase"
         bind:value={passphrase}
         autocomplete="current-password"
-        disabled={waitingFor1Password}
       />
       {#if error}<p class="error">{error}</p>{/if}
-      <button type="submit" disabled={submitting || waitingFor1Password}>
-        Unlock
-      </button>
-      {#if onePasswordConfigured}
-        <button
-          type="button"
-          class="secondary"
-          onclick={unlockVia1Password}
-          disabled={submitting || waitingFor1Password}
-        >
-          {waitingFor1Password ? "Waiting…" : "Unlock with 1Password"}
-        </button>
-      {/if}
+      <button type="submit" disabled={submitting}>Unlock</button>
     </form>
   {/if}
 </main>
@@ -214,16 +168,6 @@
   button:disabled {
     opacity: 0.6;
     cursor: default;
-  }
-
-  button.secondary {
-    background-color: transparent;
-    color: inherit;
-    border: 1px solid var(--color-shade-3);
-  }
-
-  input:disabled {
-    opacity: 0.6;
   }
 
   .error {
