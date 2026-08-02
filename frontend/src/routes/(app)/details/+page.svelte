@@ -12,6 +12,7 @@
     type RangeMode,
   } from "$lib/api";
   import DateRangePicker from "$lib/DateRangePicker.svelte";
+  import { pageViewState } from "$lib/pageCache";
 
   // Validated categorical palette (dark-mode steps) — passes CVD/contrast
   // checks against this app's dark surface. See dataviz skill's palette.md.
@@ -78,9 +79,26 @@
   let loading = $state(true);
   let error = $state("");
 
-  let rangeMode = $state<RangeMode>("month");
-  let customStart = $state(oneMonthAgoIsoDate());
-  let customEnd = $state(todayIsoDate());
+  // Everything on this page the user set by hand, kept across navigation —
+  // see `$lib/pageCache`. The transactions themselves are not cached; they're
+  // re-fetched on every mount as usual.
+  const view = pageViewState("details", () => ({
+    rangeMode: "month" as RangeMode,
+    customStart: oneMonthAgoIsoDate(),
+    customEnd: todayIsoDate(),
+    expanded: {
+      expense: new Set<string>(),
+      income: new Set<string>(),
+    } as Record<PanelKey, Set<string>>,
+    hidden: {
+      expense: new Set<string>(),
+      income: new Set<string>(),
+    } as Record<PanelKey, Set<string>>,
+  }));
+
+  let rangeMode = $state<RangeMode>(view.rangeMode);
+  let customStart = $state(view.customStart);
+  let customEnd = $state(view.customEnd);
 
   // Hovering the donut slice or the legend entry for a category highlights
   // both plus the matching breakdown row — but not the reverse: hovering the
@@ -93,8 +111,8 @@
   // its subcategories as extra rows underneath it, inline in the same list,
   // rather than replacing the panel's own root-level breakdown.
   let expandedCategoryIds = $state<Record<PanelKey, Set<string>>>({
-    expense: new Set(),
-    income: new Set(),
+    expense: new Set(view.expanded.expense),
+    income: new Set(view.expanded.income),
   });
 
   // Categories the user has hidden via the eye toggle, per panel. Hiding is
@@ -103,8 +121,25 @@
   // A hidden category's transactions drop out of that panel's total, so every
   // other category's percentage recomputes over what's left.
   let hiddenCategoryIds = $state<Record<PanelKey, Set<string>>>({
-    expense: new Set(),
-    income: new Set(),
+    expense: new Set(view.hidden.expense),
+    income: new Set(view.hidden.income),
+  });
+
+  // Mirrors the user's choices back into the cache. Copies rather than storing
+  // the `$state` proxies themselves, so what outlives this component is a
+  // plain object and not a handle into a torn-down reactive graph.
+  $effect(() => {
+    view.rangeMode = rangeMode;
+    view.customStart = customStart;
+    view.customEnd = customEnd;
+    view.expanded = {
+      expense: new Set(expandedCategoryIds.expense),
+      income: new Set(expandedCategoryIds.income),
+    };
+    view.hidden = {
+      expense: new Set(hiddenCategoryIds.expense),
+      income: new Set(hiddenCategoryIds.income),
+    };
   });
 
   function categoryHasChildren(id: string): boolean {
@@ -160,7 +195,6 @@
   async function load() {
     loading = true;
     error = "";
-    expandedCategoryIds = { expense: new Set(), income: new Set() };
     try {
       const range = computeRange(rangeMode, {
         start: customStart,
@@ -179,8 +213,21 @@
     }
   }
 
+  /** Collapsing on a range change is deliberate: the rows underneath an
+   * expanded category are about to be a different breakdown entirely. It
+   * lives here rather than in `load()` so that remounting the page — which
+   * also calls `load()` — restores what the user had open instead of
+   * closing it behind their back. */
   function setRange(mode: RangeMode) {
     rangeMode = mode;
+    expandedCategoryIds = { expense: new Set(), income: new Set() };
+    load();
+  }
+
+  function setCustomRange(start: string, end: string) {
+    customStart = start;
+    customEnd = end;
+    expandedCategoryIds = { expense: new Set(), income: new Set() };
     load();
   }
 
@@ -401,15 +448,7 @@
     >
   </div>
   {#if rangeMode === "custom"}
-    <DateRangePicker
-      start={customStart}
-      end={customEnd}
-      onChange={(s, e) => {
-        customStart = s;
-        customEnd = e;
-        load();
-      }}
-    />
+    <DateRangePicker start={customStart} end={customEnd} onChange={setCustomRange} />
   {/if}
 </div>
 
