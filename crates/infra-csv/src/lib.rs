@@ -19,7 +19,7 @@ pub use detection::{
     parse_date_cell_with, parse_rows, sniff_delimiter, DATE_FORMATS,
 };
 pub use mapping::{
-    apply_mapping, build_preview, detect_mapping, parse_file, preview_with_mapping,
+    apply_mapping, build_preview, detect_mapping, file_signature, parse_file, preview_with_mapping,
     summarize_columns, AmountSource, ColumnMapping, ColumnSummary, DescriptionSource,
     ImportPreview, ParsedFile, ParsedRow,
 };

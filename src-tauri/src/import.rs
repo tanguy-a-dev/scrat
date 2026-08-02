@@ -5,10 +5,10 @@ use scrat_domain::category::CategoryId;
 use scrat_domain::ports::TransferRuleRepository;
 use scrat_domain::transaction::OperationKind;
 use scrat_infra_csv::{
-    apply_mapping, detect_mapping, parse_file, AmountSource, ColumnMapping, DescriptionSource,
-    DATE_FORMATS,
+    apply_mapping, detect_mapping, file_signature, parse_file, AmountSource, ColumnMapping,
+    DescriptionSource, DATE_FORMATS,
 };
-use scrat_infra_sqlite::SqliteTransferRuleRepository;
+use scrat_infra_sqlite::{get_csv_mapping, save_csv_mapping, SqliteTransferRuleRepository};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -168,6 +168,14 @@ pub struct ImportPreviewDto {
     pub mapping: ColumnMappingDto,
     pub columns: Vec<ColumnSummaryDto>,
     pub date_formats: Vec<DateFormatOptionDto>,
+    /// Identifies this file's *layout*, so the mapping can be remembered
+    /// against it once an import is committed. Sent back on commit.
+    pub signature: String,
+    /// True when the mapping above came from a previously committed import
+    /// of the same layout rather than from detection — surfaced so the user
+    /// knows why the columns are already right, and that changing them
+    /// changes what's remembered.
+    pub remembered: bool,
     /// Fraction of rows that yielded a usable date / non-zero amount —
     /// measured from the parsed result, so a mapping that produces nothing
     /// reports 0, not 100.
@@ -175,13 +183,31 @@ pub struct ImportPreviewDto {
     pub amount_confidence: f64,
 }
 
-/// Previews `bytes`. With no `mapping`, the columns are detected; with one,
-/// it is applied verbatim — the path the dialog takes after the user
-/// corrects a column.
+/// Previews `bytes`. With an explicit `mapping` it is applied verbatim — the
+/// path the dialog takes after the user corrects a column. Without one, a
+/// mapping remembered from a previous import of the same layout wins over
+/// detection, and detection is the fallback.
 #[tauri::command]
-pub fn preview_csv_import(bytes: Vec<u8>, mapping: Option<ColumnMappingDto>) -> ImportPreviewDto {
+pub fn preview_csv_import(
+    state: State<DbState>,
+    bytes: Vec<u8>,
+    mapping: Option<ColumnMappingDto>,
+) -> ImportPreviewDto {
     let mut file = parse_file(&bytes);
-    let mapping = match mapping {
+    let signature = file_signature(&file);
+
+    // A remembered mapping is only worth anything if the file still has the
+    // same number of columns; a bank that adds one has invalidated it.
+    let remembered_mapping = mapping.is_none().then(|| {
+        let guard = state.0.lock().ok()?;
+        let conn = guard.as_ref()?;
+        let json = get_csv_mapping(conn, &signature).ok()??;
+        let dto: ColumnMappingDto = serde_json::from_str(&json).ok()?;
+        (dto.column_count == file.column_count).then_some(dto)
+    });
+    let remembered = matches!(remembered_mapping, Some(Some(_)));
+
+    let mapping = match mapping.or(remembered_mapping.flatten()) {
         Some(dto) => {
             let mapping = dto.into_domain(file.delimiter);
             file.set_has_header(mapping.has_header);
@@ -224,6 +250,8 @@ pub fn preview_csv_import(bytes: Vec<u8>, mapping: Option<ColumnMappingDto>) -> 
                 label: label.to_string(),
             })
             .collect(),
+        signature,
+        remembered,
         date_confidence: preview.date_confidence,
         amount_confidence: preview.amount_confidence,
     }
@@ -276,12 +304,38 @@ struct ParsedCommitRow {
     operation_kind: OperationKind,
 }
 
+/// Remembers the mapping this import was committed with, against the file
+/// layout it was read from.
+///
+/// Only on commit: a mapping the user was still editing in the dialog is not
+/// one they endorsed. Failing to remember is not worth failing an import
+/// that already succeeded, so an error here is swallowed — the user simply
+/// re-corrects the columns next time, which is the behavior they had before
+/// this existed.
+fn remember_mapping(
+    conn: &scrat_infra_sqlite::Connection,
+    signature: Option<&str>,
+    mapping: Option<&ColumnMappingDto>,
+) {
+    let (Some(signature), Some(mapping)) = (signature, mapping) else {
+        return;
+    };
+    if signature.is_empty() {
+        return;
+    }
+    if let Ok(json) = serde_json::to_string(mapping) {
+        let _ = save_csv_mapping(conn, signature, &json);
+    }
+}
+
 #[tauri::command]
 pub fn commit_csv_import(
     state: State<DbState>,
     rows: Vec<ImportCommitRowDto>,
     category_id: Option<String>,
     account_id: Option<String>,
+    signature: Option<String>,
+    mapping: Option<ColumnMappingDto>,
 ) -> Result<ImportSummaryDto, String> {
     let category_id = category_id
         .map(|id| CategoryId::parse(&id).map_err(|e| e.to_string()))
@@ -370,8 +424,17 @@ pub fn commit_csv_import(
             )?;
         s.import_transactions(&import_rows, account_id, &transfer_rules)
     })
-    .map(|outcome| ImportSummaryDto {
-        imported: outcome.imported,
-        mirrored: outcome.mirrored,
+    .map(|outcome| {
+        // After `with_service` has released the mutex — it locks the same
+        // one, and re-entering it here would deadlock.
+        if let Ok(guard) = state.0.lock() {
+            if let Some(conn) = guard.as_ref() {
+                remember_mapping(conn, signature.as_deref(), mapping.as_ref());
+            }
+        }
+        ImportSummaryDto {
+            imported: outcome.imported,
+            mirrored: outcome.mirrored,
+        }
     })
 }

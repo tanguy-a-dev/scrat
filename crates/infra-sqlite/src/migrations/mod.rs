@@ -11,6 +11,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (6, include_str!("0006_rename_source_to_description.sql")),
     (7, include_str!("0007_transaction_operation_kind.sql")),
     (8, include_str!("0008_account_opening_balance_set.sql")),
+    (9, include_str!("0009_csv_import_mappings.sql")),
 ];
 
 /// The version a freshly created database ends up at. Derived from
@@ -237,6 +238,31 @@ mod tests {
             rows,
             vec![("anchored".to_string(), 1), ("unset".to_string(), 0)]
         );
+    }
+
+    /// Upgrading an existing ledger must gain the remembered-mappings table
+    /// without disturbing anything already in the file.
+    ///
+    /// Seeded at version 4 rather than 8 for the same reason
+    /// `migration_7_backfills_existing_transactions_as_card` is: that's the
+    /// version `seed_one_transaction`'s column names belong to (6 renames
+    /// them). The row is just as pre-existing either way.
+    #[test]
+    fn migration_9_adds_the_csv_mapping_table_to_an_existing_database() {
+        let mut conn = conn_at_version(4);
+        seed_one_transaction(&conn);
+
+        run(&mut conn).unwrap();
+
+        conn.execute_batch(
+            "INSERT INTO csv_import_mappings (signature, mapping_json, updated_at)
+                 VALUES ('h1:date', '{}', '2026-01-01');",
+        )
+        .unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
     }
 
     #[test]

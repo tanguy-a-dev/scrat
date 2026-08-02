@@ -229,6 +229,8 @@
         rows,
         selectedCategoryId || null,
         selectedAccountId || null,
+        preview.signature,
+        preview.mapping,
       );
       onImported();
       onClose();
@@ -291,11 +293,21 @@
       {/if}
 
       <details class="mapping" bind:open={mappingOpen}>
-        <summary>Columns {remapping ? "— re-reading…" : ""}</summary>
+        <summary>
+          Columns{preview.remembered ? " — saved from your last import" : ""}{remapping
+            ? " — re-reading…"
+            : ""}
+        </summary>
 
         <p class="mapping-hint">
-          Each row of the file was read using these columns. Change any of them
-          and the preview below re-reads the file.
+          {#if preview.remembered}
+            These are the columns you imported this bank's export with last
+            time. Change any of them and the preview below re-reads the file —
+            whatever you import with is what gets remembered next.
+          {:else}
+            Each row of the file was read using these columns. Change any of
+            them and the preview below re-reads the file.
+          {/if}
         </p>
 
         <div class="mapping-grid">

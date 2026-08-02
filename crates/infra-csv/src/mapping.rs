@@ -244,6 +244,52 @@ pub fn parse_file(bytes: &[u8]) -> ParsedFile {
     }
 }
 
+/// A stable identifier for "files that look like this one", so a mapping the
+/// user corrected once can be offered again the next time they export from
+/// the same bank.
+///
+/// Keyed on the header row where there is one — that's what actually
+/// identifies a bank's export format, and it survives the file covering a
+/// different month with different data underneath.
+///
+/// A headerless file has no such name, so it's identified by its *shape*
+/// instead: the delimiter plus one character per column saying whether it
+/// holds dates, numbers, text, or nothing. That is weaker, and two banks
+/// could in principle collide on it. What keeps that safe is that a
+/// remembered mapping is never applied silently — the dialog shows the
+/// mapping and the resulting rows before anything is imported, so a wrong
+/// match is visible and correctable exactly like a wrong guess.
+///
+/// The `h1:`/`s1:` prefixes version the scheme, so changing how signatures
+/// are built retires the old rows instead of matching them wrongly.
+pub fn file_signature(file: &ParsedFile) -> String {
+    match &file.header {
+        Some(header) => {
+            let cells: Vec<String> = (0..file.column_count)
+                .map(|i| header.get(i).map(|c| fold(c.trim())).unwrap_or_default())
+                .collect();
+            format!("h1:{}", cells.join("\u{1f}"))
+        }
+        None => {
+            let shape: String = measure_columns(&file.rows, file.column_count)
+                .iter()
+                .map(|s| {
+                    if s.coverage == 0.0 {
+                        '-'
+                    } else if s.date_rate >= 0.8 {
+                        'd'
+                    } else if s.amount_rate >= 0.8 {
+                        'n'
+                    } else {
+                        't'
+                    }
+                })
+                .collect();
+            format!("s1:{}:{}", file.delimiter, shape)
+        }
+    }
+}
+
 /// One column as the import dialog needs to show it: what the file calls it,
 /// and enough real values to recognize it by when it calls it nothing.
 #[derive(Debug, Clone)]
@@ -1259,6 +1305,59 @@ Date;Amount;Type opération;Description
             columns[0].header.as_deref(),
             Some("Date de comptabilisation")
         );
+    }
+
+    /// The point of the signature: the *same bank, different month* must
+    /// come out identical, so last month's corrected mapping is found again.
+    #[test]
+    fn the_signature_survives_the_data_underneath_the_header_changing() {
+        let january = parse_file(CAISSE_SHAPE.as_bytes());
+        let february = parse_file(
+            "\
+Date de comptabilisation;Libelle simplifie;Libelle operation;Reference;Informations complementaires;Type operation;Categorie;Sous categorie;Debit;Credit;Date operation;Date de valeur;Pointage operation
+14/02/2026;CINEMA;CB CINEMA;B0009;B0009-;Carte bancaire;Loisirs;Sorties;-11,00;;14/02/2026;16/02/2026;0
+12/02/2026;PHARMACIE;CB PHARMACIE;B0010;B0010-;Carte bancaire;Sante;Pharmacie;-7,80;;12/02/2026;16/02/2026;0
+10/02/2026;EMPLOYER;VIR SEPA EMPLOYER;B0011;Virement EMPLOYER;Virement recu;Rentree d'argent;Salaire;;+3100,00;10/02/2026;16/02/2026;0
+"
+            .as_bytes(),
+        );
+        assert_eq!(file_signature(&january), file_signature(&february));
+    }
+
+    /// …and a different bank must not, or one bank's mapping would be
+    /// silently applied to another's file.
+    #[test]
+    fn a_different_header_produces_a_different_signature() {
+        let caisse = parse_file(CAISSE_SHAPE.as_bytes());
+        let other = parse_file(
+            "Date;Amount;Description;Category\n01/07/2026;-10,00;STORE A;Food\n02/07/2026;-5,00;STORE B;Food\n"
+                .as_bytes(),
+        );
+        assert_ne!(file_signature(&caisse), file_signature(&other));
+    }
+
+    /// Casing and stray whitespace in the header are formatting, not
+    /// identity — a bank that capitalizes differently one month is the same
+    /// bank.
+    #[test]
+    fn the_signature_ignores_header_casing_and_padding() {
+        let a = parse_file(
+            "Date;Amount;Description\n01/07/2026;-10,00;A\n02/07/2026;-5,00;B\n".as_bytes(),
+        );
+        let b = parse_file(
+            "  DATE ;amount;  Description\n01/07/2026;-10,00;A\n02/07/2026;-5,00;B\n".as_bytes(),
+        );
+        assert_eq!(file_signature(&a), file_signature(&b));
+    }
+
+    /// A headerless file has no name to go on, so it's identified by column
+    /// shape. Two files of the same layout must still match.
+    #[test]
+    fn a_headerless_file_is_identified_by_its_column_shape() {
+        let a = parse_file("01/07/2026;10,00;STORE A\n02/07/2026;-5,00;STORE B\n".as_bytes());
+        let b = parse_file("14/09/2026;-3,20;BAKERY\n15/09/2026;-8,00;CINEMA\n".as_bytes());
+        assert_eq!(file_signature(&a), file_signature(&b));
+        assert!(file_signature(&a).starts_with("s1:;:"));
     }
 
     /// An empty or unparseable file must report no confidence rather than

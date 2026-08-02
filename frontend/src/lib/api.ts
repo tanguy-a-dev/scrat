@@ -180,6 +180,12 @@ export interface ImportPreviewDto {
   mapping: ColumnMappingDto;
   columns: ColumnSummaryDto[];
   date_formats: DateFormatOptionDto[];
+  /** Identifies this file's layout so the mapping can be remembered against
+   * it. Send it back on commit. */
+  signature: string;
+  /** True when `mapping` was recalled from a previous import of the same
+   * layout rather than detected. */
+  remembered: boolean;
   /** Fraction of rows that yielded a usable date / non-zero amount. Measured
    * from the parsed result, so a mapping that produces nothing reports 0. */
   date_confidence: number;
@@ -364,11 +370,17 @@ export const api = {
     }[],
     categoryId: string | null,
     accountId: string | null,
+    /** Pass both to remember this mapping for the next export with the same
+     * layout. Omitting them imports without remembering anything. */
+    signature?: string,
+    mapping?: ColumnMappingDto,
   ) =>
     invoke<ImportSummaryDto>("commit_csv_import", {
       rows,
       categoryId,
       accountId,
+      signature: signature ?? null,
+      mapping: mapping ?? null,
     }),
 
   getCurrency: () => invoke<string>("get_currency"),
