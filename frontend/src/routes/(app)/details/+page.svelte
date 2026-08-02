@@ -480,8 +480,8 @@
   hidden: { categoryId: string; name: string; amountMinorUnits: number }[],
 )}
   <div class="graph-column">
-    <h2 class="panel-title">{label}</h2>
     <div class="graph-graphics">
+      <h2 class="panel-title">{label}</h2>
       <div class="donut-wrap">
         <svg viewBox="0 0 200 200" class="donut">
           <defs>
@@ -815,9 +815,15 @@
   }
 
   .panel-title {
+    /* Sits in the donut's own grid track (row 1, column 1) rather than above
+       the whole column: centered over the column as a whole, its middle landed
+       in the gap between the donut and the legend, which read as a heading for
+       neither. */
+    grid-column: 1;
+    grid-row: 1;
     text-align: center;
     font-size: 1rem;
-    margin-top: 0;
+    margin: 0 0 0.83rem;
   }
 
   .graph-graphics {
@@ -837,10 +843,15 @@
     --donut-size: min(260px, 60vw);
     display: grid;
     grid-template-columns: var(--donut-size) minmax(0, 8.5rem);
+    /* The panel title takes row 1 of the donut's column so it is centered on
+       the donut, not on donut+legend. Row 2 stays exactly the donut's size —
+       what used to be this grid's fixed `height` — so the legend still has a
+       definite height to scroll against instead of growing the row. */
+    grid-template-rows: auto var(--donut-size);
     align-items: center;
     justify-content: center;
-    gap: 1.5rem;
-    height: var(--donut-size);
+    column-gap: 1.5rem;
+    row-gap: 0;
     margin-bottom: 1.5rem;
   }
 
@@ -848,6 +859,8 @@
     /* scoped to the component, not :root — a page-level :root block is
        unmounted on navigation and takes its variables with it */
     --donut-track: rgba(255, 255, 255, 0.07);
+    grid-column: 1;
+    grid-row: 2;
     position: relative;
     width: var(--donut-size);
   }
@@ -909,6 +922,8 @@
        panel has no slices, so that track keeps its width. The row gives the
        height a definite 100% to resolve against, so a long list scrolls here
        instead of growing the row and dragging the donut down with it. */
+    grid-column: 2;
+    grid-row: 2;
     min-width: 0;
     max-height: 100%;
     overflow-y: auto;

@@ -1,6 +1,8 @@
 # Features
 
-## 
+## Details page
+
+ux: Expenses and Income titles should be above the middle of the graph, not between graph and ledeng
 
 ## Settings - update passphrase
 
