@@ -1,16 +1,52 @@
-use chrono::NaiveDate;
-use scrat_domain::transaction::OperationKind;
+//! Primitives the mapping detector is built out of: decoding, delimiter
+//! sniffing, row splitting, and per-cell/per-column type parsing.
+//!
+//! Nothing here decides *which* column means what — that's
+//! [`crate::mapping`]. Keeping the two apart is what lets a user-corrected
+//! mapping be applied through exactly the same code path as a detected one.
 
-use crate::operation_kind;
+use chrono::NaiveDate;
 
 const CANDIDATE_DELIMITERS: [char; 4] = [',', ';', '\t', '|'];
 
-/// Formats tried in priority order — when a date string is ambiguous under
-/// more than one format (e.g. "01/07/2026" is valid as both D/M/Y and
-/// M/D/Y whenever the day is ≤ 12), the earlier-listed format wins.
-const DATE_FORMATS: &[&str] = &[
-    "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%d.%m.%Y", "%Y/%m/%d",
+/// Date formats tried in priority order, each with a label for the import
+/// dialog's format picker.
+///
+/// The order matters: when a string is ambiguous under more than one format
+/// (`01/07/2026` is valid as both D/M/Y and M/D/Y whenever the day is ≤ 12),
+/// the earlier entry wins. Day-first precedes month-first because this app's
+/// users export from European banks — and because a whole column is
+/// disambiguated by [`detect_date_format`] as soon as a single row has a day
+/// above 12, which most months' worth of transactions will.
+pub const DATE_FORMATS: &[(&str, &str)] = &[
+    ("%Y-%m-%d", "2026-01-31  (YYYY-MM-DD)"),
+    ("%d/%m/%Y", "31/01/2026  (DD/MM/YYYY)"),
+    ("%m/%d/%Y", "01/31/2026  (MM/DD/YYYY)"),
+    ("%d-%m-%Y", "31-01-2026  (DD-MM-YYYY)"),
+    ("%d.%m.%Y", "31.01.2026  (DD.MM.YYYY)"),
+    ("%Y/%m/%d", "2026/01/31  (YYYY/MM/DD)"),
 ];
+
+/// Lowercases and strips the accents a French export routinely carries
+/// ("Prélèvement", "Catégorie", "Débit"), so every keyword list in this crate
+/// can be written in plain ASCII and still match. Shared with
+/// [`crate::operation_kind`], which folds free text the same way.
+pub(crate) fn fold(text: &str) -> String {
+    text.to_lowercase()
+        .chars()
+        .map(|c| match c {
+            'à' | 'â' | 'ä' | 'á' | 'ã' | 'å' => 'a',
+            'ç' => 'c',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'î' | 'ï' | 'í' | 'ì' => 'i',
+            'ô' | 'ö' | 'ó' | 'ò' | 'õ' => 'o',
+            'ù' | 'û' | 'ü' | 'ú' => 'u',
+            'ñ' => 'n',
+            'ÿ' => 'y',
+            other => other,
+        })
+        .collect()
+}
 
 /// Strips a UTF-8 BOM if present, then decodes as UTF-8; falls back to
 /// Windows-1252 (a common legacy encoding for European bank exports) if the
@@ -85,24 +121,110 @@ pub fn parse_rows(text: &str, delimiter: char) -> Vec<Vec<String>> {
         .collect()
 }
 
-/// Parses a cell as a date, trying each of [`DATE_FORMATS`] in order.
-pub fn parse_date_cell(raw: &str) -> Option<NaiveDate> {
+/// Parses a cell as a date under one specific chrono format.
+pub fn parse_date_cell_with(raw: &str, format: &str) -> Option<NaiveDate> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
     }
+    NaiveDate::parse_from_str(trimmed, format).ok()
+}
+
+/// Parses a cell as a date, trying each of [`DATE_FORMATS`] in order. Used
+/// for *detection* (does this column look like dates at all); once a column
+/// is chosen, [`detect_date_format`] pins one format for the whole column so
+/// a file can't silently switch interpretation halfway down.
+pub fn parse_date_cell(raw: &str) -> Option<NaiveDate> {
     DATE_FORMATS
         .iter()
-        .find_map(|fmt| NaiveDate::parse_from_str(trimmed, fmt).ok())
+        .find_map(|(fmt, _)| parse_date_cell_with(raw, fmt))
+}
+
+/// Picks the one format that parses the most of `values`, falling back to
+/// [`DATE_FORMATS`] order on a tie.
+///
+/// This is what resolves D/M/Y vs M/D/Y for a real column rather than a
+/// single cell: `03/04/2026` alone is undecidable, but one `25/12/2026`
+/// anywhere in the column rules month-first out entirely. Only when *every*
+/// value is ambiguous does the tie-break (day-first) decide — and that's the
+/// case the import dialog lets the user override by hand.
+pub fn detect_date_format(values: &[&str]) -> &'static str {
+    DATE_FORMATS
+        .iter()
+        .map(|(fmt, _)| {
+            let hits = values
+                .iter()
+                .filter(|v| parse_date_cell_with(v, fmt).is_some())
+                .count();
+            (*fmt, hits)
+        })
+        .fold(("%Y-%m-%d", 0), |best, current| {
+            if current.1 > best.1 {
+                current
+            } else {
+                best
+            }
+        })
+        .0
+}
+
+/// Currency codes allowed to sit next to an amount. Anything else alphabetic
+/// in the cell means it isn't one — see [`parse_amount_cell`].
+const CURRENCY_CODES: &[&str] = &[
+    "eur", "usd", "gbp", "chf", "cad", "aud", "jpy", "sek", "nok", "dkk", "pln", "czk",
+];
+
+/// Removes a leading or trailing currency code (`12,50 EUR`, `EUR 12,50`),
+/// which is the only alphabetic text a genuine amount cell ever carries.
+///
+/// Sliced through `str::get` rather than by raw byte index: this is external
+/// input, the codes are ASCII but the cell around them need not be, and a
+/// slice landing inside a multi-byte character would panic — taking the whole
+/// import down with it.
+fn strip_currency_code(text: &str) -> &str {
+    for code in CURRENCY_CODES {
+        if text
+            .get(..code.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(code))
+        {
+            let rest = &text[code.len()..];
+            if rest.is_empty() || rest.starts_with(|c: char| !c.is_alphanumeric()) {
+                return rest.trim();
+            }
+        }
+        let Some(start) = text.len().checked_sub(code.len()) else {
+            continue;
+        };
+        if text
+            .get(start..)
+            .is_some_and(|suffix| suffix.eq_ignore_ascii_case(code))
+        {
+            let rest = &text[..start];
+            if rest.ends_with(|c: char| !c.is_alphanumeric()) {
+                return rest.trim();
+            }
+        }
+    }
+    text
 }
 
 /// Parses a cell as a signed amount in integer minor units (cents). Handles
 /// both `,` and `.` as the decimal separator: whichever of the two appears
 /// *last* in the string is the decimal point if exactly 1–2 digits follow
 /// it; otherwise every separator is treated as a thousands grouping.
+///
+/// **A cell containing letters is not an amount.** This used to strip every
+/// non-digit character and parse whatever survived, so a description cell
+/// like `CB PLACEMINUTE COM 30/06/26` "parsed" as 300 626 — enough for a
+/// column of free text to score as a plausible amount column and win
+/// detection outright. Currency codes are the one exception, and only where
+/// a real amount puts them.
 pub fn parse_amount_cell(raw: &str) -> Option<i64> {
-    let trimmed = raw.trim();
+    let trimmed = strip_currency_code(raw.trim());
     if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.chars().any(char::is_alphabetic) {
         return None;
     }
     let cleaned: String = trimmed
@@ -205,25 +327,12 @@ pub fn detect_header(rows: &[Vec<String>]) -> bool {
     let mut header_like_columns = 0;
 
     for col in 0..column_count {
-        let rest_values: Vec<&str> = rest
-            .iter()
-            .filter_map(|r| r.get(col))
-            .map(|s| s.as_str())
-            .filter(|s| !s.trim().is_empty())
-            .collect();
+        let rest_values = column_values(rest, col);
         if rest_values.is_empty() {
             continue;
         }
-        let date_rate = rest_values
-            .iter()
-            .filter(|v| parse_date_cell(v).is_some())
-            .count() as f64
-            / rest_values.len() as f64;
-        let amount_rate = rest_values
-            .iter()
-            .filter(|v| parse_amount_cell(v).is_some())
-            .count() as f64
-            / rest_values.len() as f64;
+        let date_rate = rate(&rest_values, |v| parse_date_cell(v).is_some());
+        let amount_rate = rate(&rest_values, |v| parse_amount_cell(v).is_some());
 
         if date_rate < 0.8 && amount_rate < 0.8 {
             continue;
@@ -244,356 +353,114 @@ pub fn detect_header(rows: &[Vec<String>]) -> bool {
     type_bearing_columns > 0 && header_like_columns == type_bearing_columns
 }
 
+/// Every non-blank value in column `col`, trimmed of nothing (callers that
+/// care trim themselves — the parsers all do).
+pub(crate) fn column_values(rows: &[Vec<String>], col: usize) -> Vec<&str> {
+    rows.iter()
+        .filter_map(|r| r.get(col))
+        .map(|s| s.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .collect()
+}
+
+fn rate(values: &[&str], predicate: impl Fn(&str) -> bool) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    values.iter().filter(|v| predicate(v)).count() as f64 / values.len() as f64
+}
+
+/// What one column looks like, measured once and reused by every field's
+/// detector rather than recomputed per candidate.
 #[derive(Debug, Clone, Copy)]
-pub struct ColumnDetection {
-    pub date_column: usize,
-    pub amount_column: usize,
-    pub date_score: f64,
-    pub amount_score: f64,
+pub(crate) struct ColumnStats {
+    /// Fraction of this column's *non-blank* cells that parse as a date.
+    pub date_rate: f64,
+    /// Fraction of this column's *non-blank* cells that parse as an amount.
+    pub amount_rate: f64,
+    /// Fraction of *all* rows where this column is non-blank. Without this,
+    /// a column that's blank in all but one row (a sparse type/flag column,
+    /// say) can score a coincidental 100% on a single sample and out-rank
+    /// the real Date/Amount column, which is populated in nearly every row
+    /// but not always 100% clean.
+    pub coverage: f64,
+    /// See [`amount_plausibility`].
+    pub amount_plausibility: f64,
 }
 
-/// Scores every column by what fraction of its (non-blank) values parse as
-/// a date, and separately as an amount, then assigns Date to the
-/// highest-scoring column and Amount to the best of the *remaining*
-/// columns.
-pub fn detect_columns(rows: &[Vec<String>]) -> Option<ColumnDetection> {
-    let column_count = rows.iter().map(|r| r.len()).max().unwrap_or(0);
-    if column_count == 0 {
-        return None;
-    }
-
-    let mut date_scores = vec![0.0; column_count];
-    let mut amount_scores = vec![0.0; column_count];
-
-    for (col, (date_score, amount_score)) in date_scores
-        .iter_mut()
-        .zip(amount_scores.iter_mut())
-        .enumerate()
-    {
-        let values: Vec<&str> = rows
-            .iter()
-            .filter_map(|r| r.get(col))
-            .map(|s| s.as_str())
-            .filter(|s| !s.trim().is_empty())
-            .collect();
-        if values.is_empty() {
-            continue;
-        }
-        // Weight the hit-rate by how much of the column is even populated —
-        // without this, a column that's blank in all but one row (a
-        // sparse type/flag column, say) can score a coincidental 100% on a
-        // single sample and out-rank the real Date/Amount column, which is
-        // populated in nearly every row but not always 100% clean.
-        let coverage = values.len() as f64 / rows.len() as f64;
-        let date_hits = values
-            .iter()
-            .filter(|v| parse_date_cell(v).is_some())
-            .count();
-        let amount_hits = values
-            .iter()
-            .filter(|v| parse_amount_cell(v).is_some())
-            .count();
-        *date_score = (date_hits as f64 / values.len() as f64) * coverage;
-        *amount_score = (amount_hits as f64 / values.len() as f64) * coverage;
-    }
-
-    let date_column =
-        (0..column_count).max_by(|&a, &b| date_scores[a].partial_cmp(&date_scores[b]).unwrap())?;
-    let amount_column = (0..column_count)
-        .filter(|&c| c != date_column)
-        .max_by(|&a, &b| amount_scores[a].partial_cmp(&amount_scores[b]).unwrap())?;
-
-    Some(ColumnDetection {
-        date_column,
-        amount_column,
-        date_score: date_scores[date_column],
-        amount_score: amount_scores[amount_column],
-    })
-}
-
-#[derive(Debug, Clone)]
-pub struct ParsedRow {
-    pub date: Option<NaiveDate>,
-    pub amount_minor_units: Option<i64>,
-    pub description: String,
-    /// The raw text of a header column named "Category"/"Catégorie", if the
-    /// file has a header row and one exists — used to file the row under a
-    /// matching category (creating it if needed) instead of the fallback
-    /// category chosen for the whole import; see `commit_csv_import`.
-    pub csv_category: Option<String>,
-    /// The raw text of a header column named "Subcategory"/"Sous-catégorie",
-    /// if the file has a header row and one exists — nests under
-    /// `csv_category` when both are applied (see `commit_csv_import`),
-    /// mirroring the app's own CSV export format.
-    pub csv_subcategory: Option<String>,
-    /// How the money moved. Taken from a "Type opération"-style column when
-    /// the file has one, and otherwise read out of the description text —
-    /// falling back to [`OperationKind::Card`], which is both the commonest
-    /// instrument and the likeliest meaning of a file that never says. See
-    /// `crate::operation_kind`.
-    pub operation_kind: OperationKind,
-    /// True when this row looks like a bank's opening/closing balance line
-    /// rather than a real transaction — see `is_boundary_balance_row`.
-    /// Doesn't affect `is_valid` (the row still parses as a perfectly good
-    /// date+amount); it only changes the default checked state the import
-    /// UI starts the row at, since the heuristic can misfire and the user
-    /// can always re-check the row.
-    pub is_likely_balance_row: bool,
-    pub raw: Vec<String>,
-}
-
-impl ParsedRow {
-    /// A row usable for import needs both a date and a non-zero amount —
-    /// `Transaction` itself rejects zero amounts, and a missing date can't
-    /// be defaulted sensibly.
-    pub fn is_valid(&self) -> bool {
-        self.date.is_some() && matches!(self.amount_minor_units, Some(a) if a != 0)
-    }
-}
-
-/// The most common field count across `rows` — the shape real transaction
-/// rows share, used by [`is_boundary_balance_row`] as the baseline a
-/// boundary row is compared against.
-fn modal_row_len(rows: &[Vec<String>]) -> usize {
-    let mut frequency = std::collections::HashMap::new();
-    for r in rows {
-        *frequency.entry(r.len()).or_insert(0) += 1;
-    }
-    frequency
-        .into_iter()
-        .max_by_key(|&(_, count)| count)
-        .map(|(len, _)| len)
-        .unwrap_or(0)
-}
-
-/// True if row `idx` is the file's first or last data row and is
-/// structurally thinner than the rest. Most banks bookend an export with
-/// one row per boundary carrying the balance as of the start/end date — just
-/// a date, an amount, and a reference/account code — missing the
-/// transaction-type, counterparty, and reference columns a real transaction
-/// row has, so it parses into fewer fields than the modal row.
+/// How much a column that *parses* as numbers actually looks like money.
 ///
-/// Only the very first and very last row are ever considered: a short row
-/// in the middle of the file is far more likely to be a genuine transaction
-/// with some blank trailing fields than a balance line, and banks only ever
-/// bookend the whole file, never the middle of it.
-fn is_boundary_balance_row(rows: &[Vec<String>], idx: usize, modal_len: usize) -> bool {
-    rows.len() >= 3 && (idx == 0 || idx == rows.len() - 1) && rows[idx].len() < modal_len
-}
-
-#[derive(Debug, Clone)]
-pub struct ImportPreview {
-    pub rows: Vec<ParsedRow>,
-    pub date_confidence: f64,
-    pub amount_confidence: f64,
-}
-
-/// Finds the first header cell (skipping `exclude`, if given) whose
-/// lowercased text contains any of `keywords` — the general substring match
-/// every specific-column finder below is built on, since bank exports label
-/// columns inconsistently (language, casing, punctuation).
-fn find_labeled_column(
-    header: &[String],
-    keywords: &[&str],
-    exclude: Option<usize>,
-) -> Option<usize> {
-    header.iter().enumerate().find_map(|(i, cell)| {
-        if Some(i) == exclude {
-            return None;
-        }
-        let lower = cell.trim().to_lowercase();
-        keywords.iter().any(|k| lower.contains(k)).then_some(i)
-    })
-}
-
-/// Finds a header cell naming the subcategory column, e.g. "Subcategory" or
-/// the French "Sous-catégorie" — checked *before* the category column since
-/// "subcategory" also contains "categ" and would otherwise be mistaken for it.
-fn find_subcategory_column(header: &[String]) -> Option<usize> {
-    find_labeled_column(
-        header,
-        &["subcateg", "sous-categ", "sous categ", "souscateg"],
-        None,
-    )
-}
-
-/// Finds a header cell naming the category column, e.g. "Category" or the
-/// French "Catégorie" — matched loosely (substring, case-insensitive, and
-/// tolerant of the accent) since bank exports label it inconsistently.
-/// Excludes `subcategory_column` since "Subcategory" also matches "categ".
-fn find_category_column(header: &[String], subcategory_column: Option<usize>) -> Option<usize> {
-    find_labeled_column(header, &["categ", "catég"], subcategory_column)
-}
-
-/// Finds a header cell naming the currency column, e.g. "Currency" or the
-/// French "Devise" — the app has a single global currency setting (see
-/// `settings.currency_code`), so a per-row currency cell is never applied to
-/// the transaction, only excluded from `description` so it doesn't pollute it.
-fn find_currency_column(header: &[String]) -> Option<usize> {
-    find_labeled_column(header, &["currency", "devise"], None)
-}
-
-/// Finds a header cell naming the (bank) account column, e.g. "Account" or
-/// the French "Compte" — the destination account is chosen once for the
-/// whole import (or defaulted), so a per-row account cell is only excluded
-/// from `description`, never used to pick the account.
-fn find_account_column(header: &[String]) -> Option<usize> {
-    find_labeled_column(header, &["account", "compte"], None)
-}
-
-/// Finds a header cell naming the operation-type column, e.g. the French
-/// "Type opération" / "Nature de l'opération" or an English "Transaction
-/// type".
+/// Parsing is not plausibility, and the gap between them is where this
+/// crate's worst bug lived: Caisse d'Épargne exports a "Pointage operation"
+/// column that is `0` on every row. It parses perfectly, is populated on
+/// every row, and so scored a flawless 1.0 — beating the real "Debit"
+/// column, which is blank on income rows and therefore scores lower. Every
+/// amount in the file came out as zero, and since `Transaction` rejects zero
+/// amounts, *nothing in the file was importable* while the UI reported 100%
+/// confidence.
 ///
-/// Matched on the *pair* of words rather than a bare "type", which on its
-/// own is far too eager — "Type de compte" (account type) and "Type de
-/// carte" both contain it and mean something else entirely. A bare `type`
-/// header is accepted only as an exact cell match, where there's nothing
-/// else it could be qualifying.
-fn find_operation_kind_column(header: &[String]) -> Option<usize> {
-    find_labeled_column(
-        header,
-        &[
-            "type operation",
-            "type opération",
-            "type d'operation",
-            "type d'opération",
-            "typeoperation",
-            "operation type",
-            "transaction type",
-            "type de transaction",
-            "nature",
-            "libelle operation",
-            "payment method",
-            "mode de paiement",
-        ],
-        None,
-    )
-    .or_else(|| {
-        header
-            .iter()
-            .position(|cell| matches!(cell.trim().to_lowercase().as_str(), "type" | "operation"))
-    })
+/// Two signals separate money from the other numeric columns a bank export
+/// carries:
+///
+/// - **All zeroes.** Nothing that is zero on every row it appears in is a
+///   ledger of amounts, and `Transaction` rejects zero amounts anyway.
+///   Decisive at any sample size.
+/// - **Variance.** More generally, a column whose non-blank values are all
+///   the same number is a flag or a counter. Decisive too, but only once
+///   there are enough samples to mean anything: the *credit* half of a
+///   debit/credit pair legitimately holds a single value in a statement with
+///   one income row, and "all one sample is identical to itself" must not
+///   disqualify it.
+/// - **Cents and signs.** Money is written `-9,99` or `+2521,14`; reference
+///   numbers, counters and account codes are bare non-negative integers.
+///   This one is suggestive rather than decisive — plenty of legitimate
+///   exports round to whole units — so it only halves the score.
+pub(crate) fn amount_plausibility(values: &[&str]) -> f64 {
+    /// Below this many samples, "every value is identical" carries no
+    /// information about the column.
+    const MIN_SAMPLES_FOR_VARIANCE: usize = 3;
+
+    if values.is_empty() {
+        return 0.0;
+    }
+    let parsed: Vec<i64> = values.iter().filter_map(|v| parse_amount_cell(v)).collect();
+    if parsed.is_empty() || parsed.iter().all(|&v| v == 0) {
+        return 0.0;
+    }
+    let first = parsed[0];
+    if parsed.len() >= MIN_SAMPLES_FOR_VARIANCE && parsed.iter().all(|&v| v == first) {
+        return 0.0;
+    }
+    let expressive = rate(values, |v| {
+        let t = v.trim();
+        t.contains(',') || t.contains('.') || t.starts_with('-') || t.starts_with('+')
+    });
+    0.5 + 0.5 * expressive
 }
 
-/// The full detection pipeline: decode → sniff delimiter → parse → detect
-/// (and drop) a header → detect Date/Amount columns → build one
-/// [`ParsedRow`] per line, concatenating every other non-empty column as
-/// `description` (real exports often shift the description between columns
-/// depending on transaction type, so picking a single "description column"
-/// isn't reliable — concatenating whatever's left is). Columns identified by
-/// header name as Category, Subcategory, Currency, Account, or operation type
-/// are excluded from that concatenation: Category/Subcategory and the
-/// operation type are surfaced separately (`csv_category`/`csv_subcategory`/
-/// `operation_kind`), and Currency/Account never belong in `description` (the
-/// app has one global currency, and the destination account is chosen once for
-/// the whole import) — otherwise they'd leak into it, e.g. "EUR" and a bank
-/// name getting prepended/appended to every description. Each
-/// row is also checked against [`is_boundary_balance_row`] and flagged via
-/// `is_likely_balance_row` when it looks like an opening/closing balance
-/// line rather than a real transaction.
-pub fn build_preview(bytes: &[u8]) -> ImportPreview {
-    let text = decode_bytes(bytes);
-    let delimiter = sniff_delimiter(&text);
-    let mut rows = parse_rows(&text, delimiter);
-
-    let (
-        category_column,
-        subcategory_column,
-        currency_column,
-        account_column,
-        operation_kind_column,
-    ) = if detect_header(&rows) && !rows.is_empty() {
-        let header = rows.remove(0);
-        let subcategory_column = find_subcategory_column(&header);
-        let category_column = find_category_column(&header, subcategory_column);
-        let currency_column = find_currency_column(&header);
-        let account_column = find_account_column(&header);
-        let operation_kind_column = find_operation_kind_column(&header);
-        (
-            category_column,
-            subcategory_column,
-            currency_column,
-            account_column,
-            operation_kind_column,
-        )
-    } else {
-        (None, None, None, None, None)
-    };
-
-    let Some(detection) = detect_columns(&rows) else {
-        return ImportPreview {
-            rows: Vec::new(),
-            date_confidence: 0.0,
-            amount_confidence: 0.0,
-        };
-    };
-
-    let modal_len = modal_row_len(&rows);
-    let parsed_rows = rows
-        .iter()
-        .enumerate()
-        .map(|(i, raw)| {
-            let date_cell = raw
-                .get(detection.date_column)
-                .map(|s| s.as_str())
-                .unwrap_or("");
-            let amount_cell = raw
-                .get(detection.amount_column)
-                .map(|s| s.as_str())
-                .unwrap_or("");
-            let cell_text = |col: Option<usize>| {
-                col.and_then(|c| raw.get(c))
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-            };
-            let csv_category = cell_text(category_column);
-            let csv_subcategory = cell_text(subcategory_column);
-            let description = raw
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| {
-                    let i = Some(*i);
-                    i != Some(detection.date_column)
-                        && i != Some(detection.amount_column)
-                        && i != category_column
-                        && i != subcategory_column
-                        && i != currency_column
-                        && i != account_column
-                        && i != operation_kind_column
-                })
-                .map(|(_, v)| v.trim())
-                .filter(|v| !v.is_empty())
-                .collect::<Vec<_>>()
-                .join(" ");
-
-            // A labeled column is the bank's own answer, so it wins. Without
-            // one — no header at all, or a blank cell — the instrument is
-            // read out of the description, which in a headerless export is
-            // exactly where it ended up: the unlabeled "Carte"/"Virement"
-            // column got concatenated into it a few lines above.
-            let operation_kind = cell_text(operation_kind_column)
-                .and_then(|label| operation_kind::from_label(&label))
-                .unwrap_or_else(|| operation_kind::from_description(&description));
-
-            ParsedRow {
-                date: parse_date_cell(date_cell),
-                amount_minor_units: parse_amount_cell(amount_cell),
-                operation_kind,
-                description,
-                csv_category,
-                csv_subcategory,
-                is_likely_balance_row: is_boundary_balance_row(&rows, i, modal_len),
-                raw: raw.clone(),
+/// Measures every column of `rows` once. `column_count` is passed in rather
+/// than derived so ragged rows can't shrink the grid the mapping is
+/// expressed against.
+pub(crate) fn measure_columns(rows: &[Vec<String>], column_count: usize) -> Vec<ColumnStats> {
+    (0..column_count)
+        .map(|col| {
+            let values = column_values(rows, col);
+            if values.is_empty() || rows.is_empty() {
+                return ColumnStats {
+                    date_rate: 0.0,
+                    amount_rate: 0.0,
+                    coverage: 0.0,
+                    amount_plausibility: 0.0,
+                };
+            }
+            ColumnStats {
+                date_rate: rate(&values, |v| parse_date_cell(v).is_some()),
+                amount_rate: rate(&values, |v| parse_amount_cell(v).is_some()),
+                coverage: values.len() as f64 / rows.len() as f64,
+                amount_plausibility: amount_plausibility(&values),
             }
         })
-        .collect();
-
-    ImportPreview {
-        rows: parsed_rows,
-        date_confidence: detection.date_score,
-        amount_confidence: detection.amount_score,
-    }
+        .collect()
 }
 
 #[cfg(test)]
@@ -641,6 +508,32 @@ mod tests {
         assert_eq!(parse_date_cell("not a date"), None);
     }
 
+    /// A single day above 12 rules month-first out for the whole column,
+    /// which is the only evidence that exists for the D/M/Y vs M/D/Y
+    /// question short of asking the user.
+    #[test]
+    fn detect_date_format_uses_an_unambiguous_row_to_settle_the_whole_column() {
+        assert_eq!(
+            detect_date_format(&["03/04/2026", "25/12/2026", "01/02/2026"]),
+            "%d/%m/%Y"
+        );
+        assert_eq!(
+            detect_date_format(&["03/04/2026", "12/25/2026", "01/02/2026"]),
+            "%m/%d/%Y"
+        );
+    }
+
+    /// When every value is ambiguous there is nothing to go on, so the
+    /// listed order decides — and the import dialog lets the user override
+    /// it, because this is exactly the case detection cannot win.
+    #[test]
+    fn detect_date_format_falls_back_to_day_first_when_every_value_is_ambiguous() {
+        assert_eq!(
+            detect_date_format(&["03/04/2026", "01/02/2026"]),
+            "%d/%m/%Y"
+        );
+    }
+
     #[test]
     fn parse_amount_cell_handles_comma_decimal() {
         assert_eq!(parse_amount_cell("841,76"), Some(84_176));
@@ -672,6 +565,47 @@ mod tests {
         assert_eq!(parse_amount_cell("n/a"), None);
     }
 
+    /// The bug that let a whole column of free text masquerade as amounts:
+    /// stripping non-digits left a parseable number behind in every one of
+    /// these, and a description column then out-scored the real amount
+    /// column.
+    #[test]
+    fn parse_amount_cell_rejects_text_that_merely_contains_digits() {
+        for cell in [
+            "CB  PLACEMINUTE COM  30/06/26",
+            "INTERETS DEBITEURS AU 30 06 26",
+            "00122 021115Z",
+            "VIR SEPA ACME 2621122K10552598",
+            "2621122G10408668-",
+        ] {
+            assert_eq!(parse_amount_cell(cell), None, "cell: {cell}");
+        }
+    }
+
+    /// …while a currency code sitting where a real amount puts one is fine.
+    #[test]
+    fn parse_amount_cell_tolerates_an_adjacent_currency_code() {
+        assert_eq!(parse_amount_cell("12,50 EUR"), Some(1_250));
+        assert_eq!(parse_amount_cell("EUR 12,50"), Some(1_250));
+        assert_eq!(parse_amount_cell("-60.80 usd"), Some(-6_080));
+    }
+
+    /// Currency-code stripping slices a string this crate did not create.
+    /// Multi-byte characters sitting where an ASCII code would be must not
+    /// slice mid-character — that's a panic, and it takes the import with it.
+    #[test]
+    fn parse_amount_cell_does_not_panic_on_multibyte_text() {
+        for cell in ["ÉÛR 12", "€€€", "£€ 1,00", "ÀÉÎ", "日本 12"] {
+            let _ = parse_amount_cell(cell);
+        }
+    }
+
+    #[test]
+    fn parse_amount_cell_handles_a_currency_symbol() {
+        assert_eq!(parse_amount_cell("-€60.80"), Some(-6_080));
+        assert_eq!(parse_amount_cell("£1,234.56"), Some(123_456));
+    }
+
     #[test]
     fn parse_amount_cell_rejects_implausibly_large_reference_number_without_panicking() {
         // A long account/reference number can still parse as a plain
@@ -685,6 +619,37 @@ mod tests {
         // A value whose integer part alone fits i64 but overflows once
         // multiplied by 100 (minor units) must be rejected, not panic.
         assert_eq!(parse_amount_cell("123456789012345678"), None);
+    }
+
+    /// The "Pointage operation" bug, isolated: a constant column parses
+    /// perfectly and must still score zero as an amount.
+    #[test]
+    fn amount_plausibility_rejects_a_constant_flag_column() {
+        assert_eq!(amount_plausibility(&["0", "0", "0", "0"]), 0.0);
+        assert_eq!(amount_plausibility(&["1", "1", "1"]), 0.0);
+    }
+
+    /// An all-zero column is a flag however few rows the file has.
+    #[test]
+    fn amount_plausibility_rejects_an_all_zero_column_at_any_size() {
+        assert_eq!(amount_plausibility(&["0"]), 0.0);
+        assert_eq!(amount_plausibility(&["0", "0"]), 0.0);
+    }
+
+    /// …but the credit half of a debit/credit pair legitimately holds a
+    /// single value when the statement covers one income row, and must not
+    /// be disqualified for being trivially "constant".
+    #[test]
+    fn amount_plausibility_accepts_a_column_holding_a_single_real_amount() {
+        assert_eq!(amount_plausibility(&["+2521,14"]), 1.0);
+    }
+
+    #[test]
+    fn amount_plausibility_prefers_values_carrying_cents_or_a_sign() {
+        let money = amount_plausibility(&["-9,99", "+2521,14", "-3,00"]);
+        let bare_integers = amount_plausibility(&["1", "2", "3"]);
+        assert!(money > bare_integers);
+        assert_eq!(money, 1.0);
     }
 
     #[test]
@@ -706,293 +671,9 @@ mod tests {
     }
 
     #[test]
-    fn detect_columns_identifies_date_and_amount() {
-        let rows = parse_rows(
-            "01/07/2026;10,00;STORE A\n02/07/2026;-5,00;STORE B\n03/07/2026;-6,00;STORE C\n",
-            ';',
-        );
-        let detection = detect_columns(&rows).unwrap();
-        assert_eq!(detection.date_column, 0);
-        assert_eq!(detection.amount_column, 1);
-        assert!(detection.date_score > 0.8);
-        assert!(detection.amount_score > 0.8);
-    }
-
-    #[test]
-    fn modal_row_len_picks_the_most_common_field_count() {
-        let rows = parse_rows(
-            "01/07/2026;500,00;;REF\n01/07/2026;-35,00;Carte;;STORE;;0;Misc\n01/07/2026;10,00;Carte;;STORE;;0;Misc\n",
-            ';',
-        );
-        assert_eq!(modal_row_len(&rows), 8);
-    }
-
-    #[test]
-    fn is_boundary_balance_row_flags_only_a_thinner_first_or_last_row() {
-        // Three modal-shape (8-field) rows outnumber the two 4-field
-        // boundary rows, so `modal_len` is unambiguous.
-        let rows = parse_rows(
-            "01/07/2026;500,00;;REF\n01/07/2026;-35,00;Carte;;STORE;;0;Misc\n01/07/2026;10,00;Carte;;STORE;;0;Misc\n01/07/2026;-1,00;Carte;;STORE;;0;Misc\n05/07/2026;600,00;;REF\n",
-            ';',
-        );
-        let modal_len = modal_row_len(&rows);
-        assert!(is_boundary_balance_row(&rows, 0, modal_len));
-        assert!(is_boundary_balance_row(&rows, 4, modal_len));
-        assert!(!is_boundary_balance_row(&rows, 1, modal_len));
-        assert!(!is_boundary_balance_row(&rows, 2, modal_len));
-        assert!(!is_boundary_balance_row(&rows, 3, modal_len));
-    }
-
-    #[test]
-    fn build_preview_on_headerless_ragged_data_concatenates_remaining_columns_as_description() {
-        // Structurally mirrors a real French bank export: no header,
-        // semicolon-delimited, decimal comma, two 4-field balance rows
-        // bookending several 8-field transaction rows whose description
-        // shifts column depending on transaction type. All values here are
-        // fabricated.
-        let text = "\
-01/07/2026;500,00;;ACC REF 12345
-01/07/2026;-35,00;Carte;;CB SOME STORE   30/06/26;;0;Divers
-01/07/2026;120,50;Virement;;;INCOMING WAGES;;
-01/07/2026;-19,99;Virement;;PRLV SEPA SOME BILL;;;
-05/07/2026;565,51;;ACC REF 12345
-";
-        let preview = build_preview(text.as_bytes());
-
-        assert!(preview.date_confidence > 0.8);
-        assert!(preview.amount_confidence > 0.8);
-        assert_eq!(preview.rows.len(), 5);
-
-        let card_row = &preview.rows[1];
-        assert_eq!(card_row.date, NaiveDate::from_ymd_opt(2026, 7, 1));
-        assert_eq!(card_row.amount_minor_units, Some(-3_500));
-        assert!(card_row.description.contains("CB SOME STORE"));
-
-        let wire_row = &preview.rows[2];
-        assert_eq!(wire_row.amount_minor_units, Some(12_050));
-        assert!(wire_row.description.contains("INCOMING WAGES"));
-
-        // The two summary/balance rows still parse as date+amount, and stay
-        // `is_valid` — this is exactly why the import UI keeps a per-row
-        // include/exclude checkbox rather than silently dropping rows. But
-        // they're structurally thinner (4 fields) than the surrounding
-        // transaction rows (8 fields) and sit at the file's boundary, so
-        // they get flagged as likely balance lines and default unchecked.
-        assert!(preview.rows[0].is_valid());
-        assert!(preview.rows[0].is_likely_balance_row);
-        assert!(preview.rows[4].is_valid());
-        assert!(preview.rows[4].is_likely_balance_row);
-
-        assert!(!card_row.is_likely_balance_row);
-        assert!(!wire_row.is_likely_balance_row);
-    }
-
-    #[test]
-    fn build_preview_does_not_flag_a_short_row_in_the_middle_of_the_file() {
-        // A short row that isn't at the file's boundary is far more likely
-        // to be a genuine transaction with some blank trailing fields (e.g.
-        // no counterparty reference) than a balance line — only the first
-        // and last row are ever candidates.
-        let text = "\
-01/07/2026;-35,00;Carte;;CB SOME STORE   30/06/26;;0;Divers
-02/07/2026;10,00;;
-03/07/2026;-19,99;Virement;;PRLV SEPA SOME BILL;;;
-";
-        let preview = build_preview(text.as_bytes());
-        assert_eq!(preview.rows.len(), 3);
-        assert!(!preview.rows[1].is_likely_balance_row);
-    }
-
-    #[test]
-    fn build_preview_does_not_flag_boundary_rows_in_a_very_short_file() {
-        // With fewer than 3 rows there's no reliable "modal" shape to
-        // compare against, so nothing is flagged even if the two rows
-        // differ in length.
-        let text = "\
-01/07/2026;500,00;;ACC REF 12345
-01/07/2026;-35,00;Carte;;CB SOME STORE   30/06/26;;0;Divers
-";
-        let preview = build_preview(text.as_bytes());
-        assert_eq!(preview.rows.len(), 2);
-        assert!(preview.rows.iter().all(|r| !r.is_likely_balance_row));
-    }
-
-    #[test]
-    fn build_preview_extracts_csv_category_column_and_excludes_it_from_description() {
-        let text = "\
-Date;Amount;Description;Category
-04/04/2023;-60,80;SC-SUSHI SASHI;Food & Drinks
-04/04/2023;-20,97;LES SUPER HEROS;Books
-";
-        let preview = build_preview(text.as_bytes());
-
-        assert_eq!(preview.rows.len(), 2);
-        assert_eq!(
-            preview.rows[0].csv_category,
-            Some("Food & Drinks".to_string())
-        );
-        assert_eq!(preview.rows[0].description, "SC-SUSHI SASHI");
-        assert_eq!(preview.rows[1].csv_category, Some("Books".to_string()));
-        assert_eq!(preview.rows[1].description, "LES SUPER HEROS");
-    }
-
-    #[test]
-    fn build_preview_has_no_csv_category_without_a_matching_header() {
-        let text = "01/07/2026;10,00;STORE A\n02/07/2026;-5,00;STORE B\n";
-        let preview = build_preview(text.as_bytes());
-
-        assert!(preview.rows.iter().all(|r| r.csv_category.is_none()));
-    }
-
-    #[test]
-    fn build_preview_extracts_subcategory_and_excludes_currency_and_account_from_description() {
-        // Mirrors the app's own export format (Date;Amount;Currency;Description;
-        // Category;Subcategory;Account) — Currency and Account must not leak
-        // into `description`, and Subcategory must be captured separately from
-        // Category rather than folded into the description concatenation.
-        let text = "\
-Date;Amount;Currency;Description;Category;Subcategory;Account
-2026-08-04;-12,25;EUR;HEMA GARERER CHA;Home;;LCL
-2026-08-04;-20,97;EUR;LES SUPER HEROS;Education;Books;LCL
-2026-08-04;-60,80;EUR;SC-SUSHI SASHI;Food & Drinks;;LCL
-";
-        let preview = build_preview(text.as_bytes());
-
-        assert_eq!(preview.rows.len(), 3);
-
-        assert_eq!(preview.rows[0].description, "HEMA GARERER CHA");
-        assert_eq!(preview.rows[0].csv_category, Some("Home".to_string()));
-        assert_eq!(preview.rows[0].csv_subcategory, None);
-
-        assert_eq!(preview.rows[1].description, "LES SUPER HEROS");
-        assert_eq!(preview.rows[1].csv_category, Some("Education".to_string()));
-        assert_eq!(preview.rows[1].csv_subcategory, Some("Books".to_string()));
-
-        assert_eq!(preview.rows[2].description, "SC-SUSHI SASHI");
-        assert_eq!(
-            preview.rows[2].csv_category,
-            Some("Food & Drinks".to_string())
-        );
-    }
-
-    #[test]
-    fn build_preview_reads_a_labeled_operation_type_column_and_keeps_it_out_of_the_description() {
-        let text = "\
-Date;Amount;Type opération;Description
-01/07/2026;-35,00;Carte bancaire;SOME STORE
-02/07/2026;120,50;Virement reçu;EMPLOYER
-03/07/2026;-2,00;Frais bancaires;TENUE DE COMPTE
-04/07/2026;-19,99;Prélèvement;UTILITY CO
-";
-        let preview = build_preview(text.as_bytes());
-
-        assert_eq!(preview.rows.len(), 4);
-        assert_eq!(
-            preview
-                .rows
-                .iter()
-                .map(|r| r.operation_kind)
-                .collect::<Vec<_>>(),
-            vec![
-                OperationKind::Card,
-                OperationKind::BankTransfer,
-                OperationKind::Fees,
-                OperationKind::DirectDebit,
-            ]
-        );
-        // The type column is surfaced on its own now, so it must not also be
-        // concatenated into the description the way an unrecognized column is.
-        assert_eq!(
-            preview
-                .rows
-                .iter()
-                .map(|r| r.description.as_str())
-                .collect::<Vec<_>>(),
-            vec!["SOME STORE", "EMPLOYER", "TENUE DE COMPTE", "UTILITY CO"]
-        );
-    }
-
-    /// A bare "Type" header has nothing else it could be qualifying, so it's
-    /// accepted — but only as an exact match, never as a substring of
-    /// something like "Type de compte".
-    #[test]
-    fn build_preview_accepts_a_bare_type_header() {
-        let text = "\
-Date;Amount;Type;Description
-01/07/2026;-35,00;Virement;SOMEONE
-02/07/2026;-12,00;Carte;SOME STORE
-";
-        let preview = build_preview(text.as_bytes());
-
-        assert_eq!(preview.rows[0].operation_kind, OperationKind::BankTransfer);
-        assert_eq!(preview.rows[1].operation_kind, OperationKind::Card);
-        assert_eq!(preview.rows[0].description, "SOMEONE");
-    }
-
-    /// "Type de compte" is the account's type, not the operation's — reading
-    /// it as one would label every row of the file from a column that says
-    /// nothing about how the money moved, *and* strip it from the description.
-    #[test]
-    fn build_preview_does_not_mistake_an_account_type_column_for_the_operation_type() {
-        let text = "\
-Date;Amount;Type de compte;Description
-01/07/2026;-35,00;Compte courant;VIREMENT SOMEONE
-02/07/2026;-12,00;Compte courant;SOME STORE
-";
-        let preview = build_preview(text.as_bytes());
-
-        // Both rows fall through to the description, which is the only place
-        // an instrument is actually named here. Had the column been mistaken
-        // for the operation type, "Compte courant" would have been read as a
-        // label naming no instrument this vocabulary knows — `Other` — on
-        // both rows, rather than these two different, correct answers.
-        assert_eq!(preview.rows[0].operation_kind, OperationKind::BankTransfer);
-        assert_eq!(preview.rows[1].operation_kind, OperationKind::Card);
-    }
-
-    /// The headerless shape of a real French export: the instrument sits in
-    /// an unlabeled column, which the description concatenation sweeps up —
-    /// so reading the description is what recovers it.
-    #[test]
-    fn build_preview_reads_the_operation_kind_from_a_headerless_export() {
-        let text = "\
-01/07/2026;500,00;;ACC REF 12345
-01/07/2026;-35,00;Carte;;CB SOME STORE   30/06/26;;0;Divers
-01/07/2026;120,50;Virement;;;INCOMING WAGES;;
-01/07/2026;-19,99;Prelevement;;PRLV SEPA SOME BILL;;;
-05/07/2026;565,51;;ACC REF 12345
-";
-        let preview = build_preview(text.as_bytes());
-
-        assert_eq!(preview.rows[1].operation_kind, OperationKind::Card);
-        assert_eq!(preview.rows[2].operation_kind, OperationKind::BankTransfer);
-        assert_eq!(preview.rows[3].operation_kind, OperationKind::DirectDebit);
-    }
-
-    /// A file with a type column that's blank on some rows must fall through
-    /// to the description for those rows only, not label the whole file from
-    /// whichever rows did have a value.
-    #[test]
-    fn build_preview_falls_back_per_row_when_the_type_cell_is_blank() {
-        let text = "\
-Date;Amount;Type opération;Description
-01/07/2026;-35,00;Chèque;RENT
-02/07/2026;120,50;;VIR SALARY
-03/07/2026;-12,00;;SOME STORE
-";
-        let preview = build_preview(text.as_bytes());
-
-        assert_eq!(preview.rows[0].operation_kind, OperationKind::Check);
-        assert_eq!(preview.rows[1].operation_kind, OperationKind::BankTransfer);
-        assert_eq!(preview.rows[2].operation_kind, OperationKind::Card);
-    }
-
-    #[test]
-    fn build_preview_decodes_utf8_bom() {
-        let mut bytes = vec![0xEF, 0xBB, 0xBF];
-        bytes.extend_from_slice(b"01/07/2026;10,00;STORE A\n");
-        let preview = build_preview(&bytes);
-        assert_eq!(preview.rows.len(), 1);
-        assert_eq!(preview.rows[0].date, NaiveDate::from_ymd_opt(2026, 7, 1));
+    fn fold_strips_accents_and_case() {
+        assert_eq!(fold("Débit"), "debit");
+        assert_eq!(fold("Catégorie"), "categorie");
+        assert_eq!(fold("PRÉLÈVEMENT"), "prelevement");
     }
 }

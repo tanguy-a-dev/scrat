@@ -15,6 +15,8 @@
 
 use scrat_domain::transaction::OperationKind;
 
+use crate::detection::fold;
+
 /// Instrument vocabulary, most specific first — the first entry that matches
 /// wins, which is why [`OperationKind::Card`] is last: "Retrait carte" is a
 /// cash withdrawal and "Frais carte bancaire" is a bank charge, even though
@@ -49,26 +51,6 @@ const VOCABULARY: &[(OperationKind, &[&str], &[&str])] = &[
     ),
     (OperationKind::Card, &["carte", "card"], &["cb"]),
 ];
-
-/// Lowercases and strips the accents a French export routinely carries
-/// ("Prélèvement", "Chèque"), so the vocabulary above can be written in plain
-/// ASCII and still match.
-fn fold(text: &str) -> String {
-    text.to_lowercase()
-        .chars()
-        .map(|c| match c {
-            'à' | 'â' | 'ä' | 'á' | 'ã' | 'å' => 'a',
-            'ç' => 'c',
-            'é' | 'è' | 'ê' | 'ë' => 'e',
-            'î' | 'ï' | 'í' | 'ì' => 'i',
-            'ô' | 'ö' | 'ó' | 'ò' | 'õ' => 'o',
-            'ù' | 'û' | 'ü' | 'ú' => 'u',
-            'ñ' => 'n',
-            'ÿ' => 'y',
-            other => other,
-        })
-        .collect()
-}
 
 /// Splits on everything that isn't alphanumeric, so "VIR." and "VIR/SEPA"
 /// both yield the token `vir` while "VIRGIN" stays a single token that no
