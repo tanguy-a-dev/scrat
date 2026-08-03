@@ -20,7 +20,7 @@
   import ImportCsvDialog from "$lib/ImportCsvDialog.svelte";
   import Checkbox from "$lib/Checkbox.svelte";
   import DeleteButton from "$lib/DeleteButton.svelte";
-  import CategorySelect from "$lib/CategorySelect.svelte";
+  import SearchSelect from "$lib/SearchSelect.svelte";
   import FilterPopover from "$lib/FilterPopover.svelte";
   import DateRangePicker from "$lib/DateRangePicker.svelte";
   import { pageViewState } from "$lib/pageCache";
@@ -975,15 +975,16 @@
               <button type="button" onclick={() => toggleSort("category")}
                 >Category</button
               >
-              <CategorySelect
+              <SearchSelect
                 options={categoryFilterOptions}
                 value={categoryFilterFor(kind)}
                 onChange={(id) => setCategoryFilter(kind, id)}
+                searchPlaceholder="Search category…"
               >
                 {#snippet trigger()}
                   <Search size={14} aria-label="Filter by category" />
                 {/snippet}
-              </CategorySelect>
+              </SearchSelect>
             </div>
           </th>
           <th>Account</th>
@@ -1019,10 +1020,11 @@
               </td>
               <td class="kind-cell">{operationKindLabel(t.operation_kind)}</td>
               <td>
-                <CategorySelect
+                <SearchSelect
                   options={categoryOptions}
                   value={t.category_id}
                   onChange={(categoryId) => handleCategoryChange(t, categoryId)}
+                  searchPlaceholder="Search category…"
                 />
               </td>
               <td>{accountName(t.account_id)}</td>
@@ -1160,15 +1162,16 @@
             aria-live="polite"
           >
             <span class="bulk-count">{visibleSelectedExpenseIds.length} selected</span>
-            <CategorySelect
+            <SearchSelect
               options={categoryOptions}
               value=""
               onChange={(id) => handleBulkRecategorize("expense", id)}
+              searchPlaceholder="Search category…"
             >
               {#snippet trigger()}
                 <Pencil size={14} aria-label="Recategorize selected expenses" />
               {/snippet}
-            </CategorySelect>
+            </SearchSelect>
             <DeleteButton
               compact
               label={`Delete ${visibleSelectedExpenseIds.length} transactions`}
@@ -1190,15 +1193,16 @@
             aria-live="polite"
           >
             <span class="bulk-count">{visibleSelectedIncomeIds.length} selected</span>
-            <CategorySelect
+            <SearchSelect
               options={categoryOptions}
               value=""
               onChange={(id) => handleBulkRecategorize("income", id)}
+              searchPlaceholder="Search category…"
             >
               {#snippet trigger()}
                 <Pencil size={14} aria-label="Recategorize selected income" />
               {/snippet}
-            </CategorySelect>
+            </SearchSelect>
             <DeleteButton
               compact
               label={`Delete ${visibleSelectedIncomeIds.length} transactions`}

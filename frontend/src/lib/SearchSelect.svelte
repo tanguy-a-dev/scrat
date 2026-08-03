@@ -1,4 +1,12 @@
 <script lang="ts">
+  /** A dropdown you can type into, for lists too long or too nested to scan
+   * in a native `<select>`.
+   *
+   * Named for what it does rather than what it picks: it started as the
+   * category picker, but the account list wants the same control, and a
+   * component called `CategorySelect` choosing accounts is exactly the kind
+   * of name-that-lies this codebase avoids elsewhere.
+   */
   import type { Snippet } from "svelte";
 
   interface Option {
@@ -10,13 +18,17 @@
     options,
     value,
     onChange,
-    placeholder = "Category…",
+    placeholder = "Select…",
+    searchPlaceholder = "Search…",
     trigger,
   }: {
     options: Option[];
     value: string;
     onChange: (id: string) => void;
+    /** Shown on the closed trigger when nothing is selected. */
     placeholder?: string;
+    /** Shown in the filter box once the dropdown is open. */
+    searchPlaceholder?: string;
     trigger?: Snippet<[{ label: string; active: boolean }]>;
   } = $props();
 
@@ -101,7 +113,7 @@
 
 <svelte:window onclick={handleWindowClick} />
 
-<div class="category-select" class:icon-mode={!!trigger} bind:this={containerEl}>
+<div class="search-select" class:icon-mode={!!trigger} bind:this={containerEl}>
   <button
     type="button"
     class="trigger"
@@ -121,7 +133,7 @@
         bind:this={inputEl}
         bind:value={query}
         onkeydown={handleInputKeydown}
-        placeholder="Search category…"
+        placeholder={searchPlaceholder}
         spellcheck="false"
         autocomplete="off"
         autocorrect="off"
@@ -151,13 +163,13 @@
 </div>
 
 <style>
-  .category-select {
+  .search-select {
     position: relative;
     display: inline-block;
     max-width: 11rem;
   }
 
-  .category-select.icon-mode {
+  .search-select.icon-mode {
     max-width: none;
   }
 

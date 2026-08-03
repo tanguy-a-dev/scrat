@@ -386,6 +386,60 @@ pub(crate) struct ColumnStats {
     pub coverage: f64,
     /// See [`amount_plausibility`].
     pub amount_plausibility: f64,
+    /// See [`description_likelihood`].
+    pub description_likelihood: f64,
+}
+
+/// Tokens made mostly of letters — the unit "is this prose or is this a
+/// code" is measured in.
+///
+/// Splitting on non-alphanumerics and then requiring a majority of letters
+/// is what separates `CB`, `PLACEMINUTE`, `COM` (three words) from `00122`,
+/// `021115Z` and `A0001` (none): a reference number can carry a stray letter
+/// without becoming a word.
+fn wordlike_token_count(value: &str) -> usize {
+    value
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|token| {
+            let letters = token.chars().filter(|c| c.is_alphabetic()).count();
+            let total = token.chars().count();
+            total > 0 && letters * 2 > total
+        })
+        .count()
+}
+
+/// How much a column looks like the row's own free text, rather than one of
+/// the several other text-ish columns a bank export carries.
+///
+/// Bank exports surround the description with columns that are also "text":
+/// a payment-instrument column (`Carte`, `Virement`), a category hint
+/// (`Divers`), a reference (`00122 021115Z`), a flag (`0`). Sweeping all of
+/// them into the description is what a naive "everything not otherwise
+/// claimed" rule does, and it buries the merchant name in noise — which then
+/// also poisons the exact-description match used to auto-categorize.
+///
+/// Two signals separate them, and both are needed:
+///
+/// - **Words per value.** A description is prose (`CB SOME STORE 30/06/26`,
+///   three words); an instrument or a category label is one word, a
+///   reference number is none.
+/// - **Distinctness.** A description is different on nearly every row; the
+///   instrument and category columns repeat a small closed vocabulary. On
+///   its own this is fooled by a short file where the handful of rows happen
+///   to name three different instruments, which is exactly why it's
+///   multiplied by the word count rather than used alone.
+pub(crate) fn description_likelihood(values: &[&str]) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let mean_words = values
+        .iter()
+        .map(|v| wordlike_token_count(v.trim()))
+        .sum::<usize>() as f64
+        / values.len() as f64;
+    let distinct: std::collections::HashSet<&str> = values.iter().map(|v| v.trim()).collect();
+    let distinct_ratio = distinct.len() as f64 / values.len() as f64;
+    mean_words * distinct_ratio
 }
 
 /// How much a column that *parses* as numbers actually looks like money.
@@ -451,6 +505,7 @@ pub(crate) fn measure_columns(rows: &[Vec<String>], column_count: usize) -> Vec<
                     amount_rate: 0.0,
                     coverage: 0.0,
                     amount_plausibility: 0.0,
+                    description_likelihood: 0.0,
                 };
             }
             ColumnStats {
@@ -458,6 +513,7 @@ pub(crate) fn measure_columns(rows: &[Vec<String>], column_count: usize) -> Vec<
                 amount_rate: rate(&values, |v| parse_amount_cell(v).is_some()),
                 coverage: values.len() as f64 / rows.len() as f64,
                 amount_plausibility: amount_plausibility(&values),
+                description_likelihood: description_likelihood(&values),
             }
         })
         .collect()
@@ -668,6 +724,58 @@ mod tests {
             ';',
         );
         assert!(detect_header(&rows));
+    }
+
+    /// The columns a real headerless export puts either side of the
+    /// description, and why each is not it.
+    #[test]
+    fn description_likelihood_separates_prose_from_the_columns_around_it() {
+        let description = description_likelihood(&[
+            "CB  PLACEMINUTE COM  30/06/26",
+            "INTERETS DEBITEURS AU 30 06 26",
+            "CB  FLOWERS' CITY    30/06/26",
+            "PRLV SEPA ORANGE MOBILE",
+        ]);
+        // An instrument column: one word, repeated from a closed vocabulary.
+        let instrument = description_likelihood(&["Carte", "Carte", "Virement", "Carte"]);
+        // A category hint: same shape.
+        let category = description_likelihood(&["Divers", "Divers", "Divers", "Divers"]);
+        // A reference: no words at all, just a code.
+        let reference = description_likelihood(&["00122 021115Z", "00122 021115Z"]);
+        // A flag.
+        let flag = description_likelihood(&["0", "0", "0"]);
+
+        for (label, other) in [
+            ("instrument", instrument),
+            ("category", category),
+            ("reference", reference),
+            ("flag", flag),
+        ] {
+            assert!(
+                description > other * 1.5,
+                "description ({description}) should clearly beat {label} ({other})"
+            );
+        }
+    }
+
+    /// The failure mode distinctness alone has: in a short file every row can
+    /// name a different instrument, making the column look perfectly varied.
+    /// Counting words is what still separates them.
+    #[test]
+    fn description_likelihood_is_not_fooled_by_a_short_file_of_distinct_labels() {
+        let instrument = description_likelihood(&["Carte", "Virement", "Prelevement"]);
+        let description =
+            description_likelihood(&["CB SOME STORE   30/06/26", "PRLV SEPA SOME BILL"]);
+        assert!(description > instrument * 1.5);
+    }
+
+    #[test]
+    fn wordlike_tokens_ignore_reference_codes_and_dates() {
+        assert_eq!(wordlike_token_count("CB  PLACEMINUTE COM  30/06/26"), 3);
+        assert_eq!(wordlike_token_count("00122 021115Z"), 0);
+        assert_eq!(wordlike_token_count("A0001-"), 0);
+        assert_eq!(wordlike_token_count("30/06/26"), 0);
+        assert_eq!(wordlike_token_count("VIREMENT ENTREPRISE"), 2);
     }
 
     #[test]

@@ -122,22 +122,6 @@ pub enum AmountSource {
     DebitCredit { debit: usize, credit: usize },
 }
 
-/// Where a row's description text comes from.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DescriptionSource {
-    /// Every column not claimed by another field, concatenated in order.
-    ///
-    /// Self-adjusting by design: it's re-derived from the rest of the
-    /// mapping at read time, so re-pointing the amount column in the import
-    /// dialog frees the old one back into the description instead of
-    /// stranding it. This is the right default for a headerless export,
-    /// where real files shift the description between columns depending on
-    /// transaction type and no single column holds all of it.
-    Remaining,
-    /// Specific columns, concatenated in the order given.
-    Columns(Vec<usize>),
-}
-
 /// A complete answer to "what does this file's grid mean" — everything
 /// detection guessed, in one editable value.
 #[derive(Debug, Clone, PartialEq)]
@@ -152,41 +136,22 @@ pub struct ColumnMapping {
     /// April dates.
     pub date_format: String,
     pub amount: Option<AmountSource>,
-    pub description: DescriptionSource,
+    /// Columns whose text is joined, in the order given, to form the row's
+    /// description.
+    ///
+    /// Always an explicit list — there is deliberately no "everything not
+    /// otherwise used" mode. A bank export surrounds the description with
+    /// columns that are also text (the instrument, a category hint, a
+    /// reference, a flag), and sweeping them all in buries the merchant name
+    /// in noise, which then poisons the exact-description match used to
+    /// auto-categorize an imported row. Which columns are in play is
+    /// something the user can see and correct; "whatever's left" is not.
+    pub description_columns: Vec<usize>,
     pub category_column: Option<usize>,
     pub subcategory_column: Option<usize>,
     pub currency_column: Option<usize>,
     pub account_column: Option<usize>,
     pub operation_kind_column: Option<usize>,
-}
-
-impl ColumnMapping {
-    /// Columns spoken for by a specific field — everything
-    /// [`DescriptionSource::Remaining`] must leave alone.
-    fn claimed_columns(&self) -> HashSet<usize> {
-        let mut claimed: HashSet<usize> = [
-            self.date_column,
-            self.category_column,
-            self.subcategory_column,
-            self.currency_column,
-            self.account_column,
-            self.operation_kind_column,
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        match self.amount {
-            Some(AmountSource::Single(c)) => {
-                claimed.insert(c);
-            }
-            Some(AmountSource::DebitCredit { debit, credit }) => {
-                claimed.insert(debit);
-                claimed.insert(credit);
-            }
-            None => {}
-        }
-        claimed
-    }
 }
 
 /// A CSV split into its header (if it has one) and its data rows, before any
@@ -544,6 +509,87 @@ fn detect_amount(
     .map(AmountSource::Single)
 }
 
+/// Picks the description columns from content, for a file whose header names
+/// none (or has no header at all).
+///
+/// Takes *every* column scoring at least half the best one, not just the
+/// winner, because a real export genuinely splits the description across
+/// columns: LCL writes card purchases in one column and transfers in the
+/// next, so either alone loses half the file's descriptions. Everything
+/// well below the best is the noise `description_likelihood` exists to
+/// reject — the instrument, the category hint, the reference, the flag.
+fn detect_description_columns(stats: &[ColumnStats], reserved: &HashSet<usize>) -> Vec<usize> {
+    /// Relative, not absolute: what counts as "wordy" depends on how wordy
+    /// this particular bank's descriptions are.
+    const SHARE_OF_BEST: f64 = 0.5;
+
+    let candidates: Vec<usize> = (0..stats.len()).filter(|c| !reserved.contains(c)).collect();
+    let best = candidates
+        .iter()
+        .map(|&c| stats[c].description_likelihood)
+        .fold(0.0, f64::max);
+    if best <= 0.0 {
+        return Vec::new();
+    }
+    candidates
+        .into_iter()
+        .filter(|&c| stats[c].description_likelihood >= best * SHARE_OF_BEST)
+        .collect()
+}
+
+/// Finds an unlabeled column holding the payment instrument, for a file
+/// whose header doesn't name one.
+///
+/// This exists because the description is no longer "everything left over".
+/// A headerless export like LCL puts `Carte` / `Virement` in a column of its
+/// own; that column used to reach `operation_kind` by accident, swept into
+/// the description text and read back out of it. Now that the description is
+/// only the columns that are actually prose, the instrument has to be
+/// recognized as the column it is.
+///
+/// Deliberately run *after* the description columns are chosen and excluded:
+/// description text routinely names an instrument too (`CB SOME STORE`,
+/// `PRLV SEPA SOME BILL`), so on its own this test would happily claim the
+/// description itself.
+fn detect_operation_kind_column(
+    rows: &[Vec<String>],
+    column_count: usize,
+    exclude: &HashSet<usize>,
+) -> Option<usize> {
+    /// An instrument column is a closed vocabulary of short labels. Both
+    /// bounds are what keep prose out.
+    const MAX_DISTINCT: usize = 8;
+    const MAX_LEN: usize = 24;
+    const MIN_RECOGNIZED: f64 = 0.8;
+
+    (0..column_count)
+        .filter(|c| !exclude.contains(c))
+        .filter_map(|c| {
+            let values = column_values(rows, c);
+            if values.is_empty() {
+                return None;
+            }
+            let distinct: HashSet<&str> = values.iter().map(|v| v.trim()).collect();
+            if distinct.len() > MAX_DISTINCT || distinct.iter().any(|v| v.chars().count() > MAX_LEN)
+            {
+                return None;
+            }
+            // `Other` means "named something this vocabulary doesn't know",
+            // which any text column would score — only a genuine hit counts.
+            let recognized = values
+                .iter()
+                .filter(|v| {
+                    matches!(operation_kind::from_label(v), Some(k) if k != OperationKind::Other)
+                })
+                .count() as f64
+                / values.len() as f64;
+            (recognized >= MIN_RECOGNIZED).then_some((c, values.len()))
+        })
+        // Prefer the column that labels the most rows.
+        .max_by_key(|&(_, populated)| populated)
+        .map(|(c, _)| c)
+}
+
 /// The full guess. Named fields are resolved first because they constrain
 /// what's left: a column the header calls "Categorie" is not a candidate for
 /// the amount, however its contents happen to parse.
@@ -601,9 +647,31 @@ pub fn detect_mapping(file: &ParsedFile) -> ColumnMapping {
     .collect();
 
     let date_column = detect_date_column(header, &stats, &reserved);
-    let mut amount_reserved = reserved.clone();
-    amount_reserved.extend(date_column);
-    let amount = detect_amount(header, &file.rows, &stats, &amount_reserved);
+    let mut claimed = reserved.clone();
+    claimed.extend(date_column);
+    let amount = detect_amount(header, &file.rows, &stats, &claimed);
+    match amount {
+        Some(AmountSource::Single(c)) => {
+            claimed.insert(c);
+        }
+        Some(AmountSource::DebitCredit { debit, credit }) => {
+            claimed.extend([debit, credit]);
+        }
+        None => {}
+    }
+
+    // A header that names the description settles it; otherwise the columns
+    // that read as prose are found by content.
+    let description_columns = match description_column {
+        Some(c) => vec![c],
+        None => detect_description_columns(&stats, &claimed),
+    };
+    claimed.extend(description_columns.iter().copied());
+
+    // Only now, with the description accounted for, can an unlabeled
+    // instrument column be told apart from the description itself.
+    let operation_kind_column = operation_kind_column
+        .or_else(|| detect_operation_kind_column(&file.rows, file.column_count, &claimed));
 
     let date_format = date_column
         .map(|c| detect_date_format(&column_values(&file.rows, c)))
@@ -617,10 +685,7 @@ pub fn detect_mapping(file: &ParsedFile) -> ColumnMapping {
         date_column,
         date_format,
         amount,
-        description: match description_column {
-            Some(c) => DescriptionSource::Columns(vec![c]),
-            None => DescriptionSource::Remaining,
-        },
+        description_columns,
         category_column,
         subcategory_column,
         currency_column,
@@ -772,14 +837,7 @@ fn amount_for_row(raw: &[String], source: Option<AmountSource>) -> Option<i64> {
 pub fn apply_mapping(file: &ParsedFile, mapping: &ColumnMapping) -> ImportPreview {
     let rows = &file.rows;
     let modal_len = modal_row_len(rows);
-    let claimed = mapping.claimed_columns();
-
-    let description_columns: Vec<usize> = match &mapping.description {
-        DescriptionSource::Columns(cols) => cols.clone(),
-        DescriptionSource::Remaining => (0..mapping.column_count)
-            .filter(|c| !claimed.contains(c))
-            .collect(),
-    };
+    let description_columns = &mapping.description_columns;
 
     let parsed_rows: Vec<ParsedRow> = rows
         .iter()
@@ -798,11 +856,11 @@ pub fn apply_mapping(file: &ParsedFile, mapping: &ColumnMapping) -> ImportPrevie
                 .collect::<Vec<_>>()
                 .join(" ");
 
-            // A labeled column is the bank's own answer, so it wins. Without
-            // one — no header at all, or a blank cell — the instrument is
-            // read out of the description, which in a headerless export is
-            // exactly where it ended up: the unlabeled "Carte"/"Virement"
-            // column got swept into it by `DescriptionSource::Remaining`.
+            // The instrument column is the bank's own answer, so it wins —
+            // whether the header named it or `detect_operation_kind_column`
+            // found it unlabeled. A blank cell falls back to reading the
+            // description text, which is where plenty of exports put the
+            // instrument inline ("CB SOME STORE", "PRLV SEPA UTILITY").
             let operation_kind = cell_text(mapping.operation_kind_column)
                 .and_then(|label| operation_kind::from_label(&label))
                 .unwrap_or_else(|| operation_kind::from_description(&description));
@@ -888,7 +946,7 @@ Date de comptabilisation;Libelle simplifie;Libelle operation;Reference;Informati
                 credit: 9
             })
         );
-        assert_eq!(mapping.description, DescriptionSource::Columns(vec![1]));
+        assert_eq!(mapping.description_columns, vec![1]);
         assert_eq!(
             mapping.operation_kind_column,
             Some(5),
@@ -1122,6 +1180,51 @@ Date;Libelle;Montant;Pointage
         assert!(!preview.rows[1].is_likely_balance_row);
     }
 
+    /// The full LCL column layout, described by its owner as: 1 date,
+    /// 2 amount, 3 transaction type, 4 reference id, 5 description,
+    /// 6 transfer description, 7 unknown flag, 8 category.
+    ///
+    /// Only 5 and 6 are the description. Treating the description as
+    /// "everything not otherwise claimed" pulled in the instrument, the
+    /// reference, the flag and the category too, producing
+    /// "Carte CB SOME STORE 30/06/26 0 Divers" where the merchant name is —
+    /// and, because imported rows are auto-categorized by matching that text
+    /// verbatim against history, making the match far less likely to land.
+    #[test]
+    fn a_headerless_export_picks_only_the_prose_columns_as_the_description() {
+        let text = "\
+01/05/2026;841,76;;00122 021115Z
+01/05/2026;-35;Carte;;CB  PLACEMINUTE COM  30/06/26;;0;Divers
+01/05/2026;2291,1;Virement;;;VIREMENT ENTREPRISE;;
+01/05/2026;-0,07;;;INTERETS DEBITEURS AU 30 06 26;;;
+01/05/2026;-4;Carte;;CB  FLOWERS CITY    30/06/26;;0;Divers
+01/05/2026;-30,91;Carte;;CB  STEAMGAMES.COM   29/06/26;;0;Divers
+02/05/2026;-19,99;Virement;;PRLV SEPA ORANGE MOBILE;;;
+03/05/2026;-25,5;Carte;;CB  SERVICE NAVIGO   02/07/26;;0;Divers
+05/06/2026;2890,27;;00122 021115Z
+";
+        let file = parse_file(text.as_bytes());
+        let mapping = detect_mapping(&file);
+
+        // Columns 5 and 6 as the user counts them; 4 and 5 zero-indexed.
+        assert_eq!(mapping.description_columns, vec![4, 5]);
+        // The instrument column is recognized as such rather than swept into
+        // the description — which is the only reason dropping it from the
+        // description doesn't cost the operation kind.
+        assert_eq!(mapping.operation_kind_column, Some(2));
+
+        let preview = apply_mapping(&file, &mapping);
+        assert_eq!(preview.rows[1].description, "CB  PLACEMINUTE COM  30/06/26");
+        assert_eq!(preview.rows[2].description, "VIREMENT ENTREPRISE");
+        assert_eq!(
+            preview.rows[3].description,
+            "INTERETS DEBITEURS AU 30 06 26"
+        );
+        assert_eq!(preview.rows[1].operation_kind, OperationKind::Card);
+        assert_eq!(preview.rows[2].operation_kind, OperationKind::BankTransfer);
+        assert!(preview.rows.iter().all(|r| r.is_valid()));
+    }
+
     #[test]
     fn build_preview_does_not_flag_a_short_row_in_the_middle_of_the_file() {
         let text = "\
@@ -1227,16 +1330,22 @@ Date;Amount;Type opération;Description
         assert_eq!(preview.rows[0].date, NaiveDate::from_ymd_opt(2026, 7, 1));
     }
 
-    /// The correction path. A user who re-points the amount at a different
-    /// column gets that column read, and the one it replaced falls back into
-    /// the description — which is what `DescriptionSource::Remaining` being
-    /// re-derived rather than frozen buys.
+    /// The correction path: a mapping the user edited is read exactly as
+    /// given.
+    ///
+    /// Note what does *not* happen — re-pointing the amount at column 2
+    /// leaves column 1 out of the description rather than sweeping it back
+    /// in. The description is an explicit list of columns, so the only thing
+    /// that changes it is changing it; a field quietly gaining a column
+    /// because some other field let go of one is the "everything unused"
+    /// behavior this replaced.
     #[test]
     fn a_corrected_mapping_is_applied_verbatim() {
         let text = "01/07/2026;10,00;-42,50;STORE A\n02/07/2026;-5,00;-7,25;STORE B\n";
         let file = parse_file(text.as_bytes());
         let detected = detect_mapping(&file);
         assert_eq!(detected.amount, Some(AmountSource::Single(1)));
+        assert_eq!(detected.description_columns, vec![3]);
 
         let corrected = ColumnMapping {
             amount: Some(AmountSource::Single(2)),
@@ -1246,8 +1355,16 @@ Date;Amount;Type opération;Description
 
         assert_eq!(preview.rows[0].amount_minor_units, Some(-4_250));
         assert_eq!(preview.rows[1].amount_minor_units, Some(-725));
-        assert!(preview.rows[0].description.contains("10,00"));
-        assert!(preview.rows[0].description.contains("STORE A"));
+        assert_eq!(preview.rows[0].description, "STORE A");
+
+        let widened = ColumnMapping {
+            description_columns: vec![1, 3],
+            ..corrected
+        };
+        assert_eq!(
+            apply_mapping(&file, &widened).rows[0].description,
+            "10,00 STORE A"
+        );
     }
 
     /// The genuinely undecidable case: every date in the column is valid

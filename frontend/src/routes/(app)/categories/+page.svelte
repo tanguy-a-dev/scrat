@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { api, buildCategoryOptions, type CategoryDto } from "$lib/api";
   import CategoryCard from "$lib/CategoryCard.svelte";
-  import CategorySelect from "$lib/CategorySelect.svelte";
+  import SearchSelect from "$lib/SearchSelect.svelte";
   import { toast } from "$lib/toasts.svelte";
 
   let categories = $state<CategoryDto[]>([]);
@@ -178,11 +178,12 @@
         category to move them to before deleting:
       </p>
       <div class="reassign-target">
-        <CategorySelect
+        <SearchSelect
           options={reassignOptions}
           value={reassignTarget}
           onChange={(id) => (reassignTarget = id)}
           placeholder="Select a category…"
+          searchPlaceholder="Search category…"
         />
       </div>
       <div class="actions">

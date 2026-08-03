@@ -3,7 +3,7 @@
   import { message } from "@tauri-apps/plugin-dialog";
   import { toast } from "$lib/toasts.svelte";
   import Checkbox from "$lib/Checkbox.svelte";
-  import CategorySelect from "$lib/CategorySelect.svelte";
+  import SearchSelect from "$lib/SearchSelect.svelte";
   import { Pencil } from "@lucide/svelte";
   import {
     api,
@@ -49,6 +49,13 @@
   let fallbackCategoryOptions = $derived([
     { id: "", label: "Uncategorized (default)" },
     ...categoryOptions,
+  ]);
+  let accountOptions = $derived([
+    { id: "", label: "Default account" },
+    ...accounts.map((a) => ({
+      id: a.id,
+      label: `${a.name}${a.is_default ? " (default)" : ""}`,
+    })),
   ]);
 
   let includableCount = $derived(
@@ -197,59 +204,13 @@
     updateMapping({ has_header: !preview.mapping.has_header });
   }
 
-  /** Every column a specific field has claimed — the complement of what
-   * "everything unused" actually resolves to. Mirrors
-   * `ColumnMapping::claimed_columns` on the Rust side. */
-  function claimedColumns(mapping: ColumnMappingDto): Set<number> {
-    const claimed = new Set<number>();
-    for (const c of [
-      mapping.date_column,
-      mapping.category_column,
-      mapping.subcategory_column,
-      mapping.currency_column,
-      mapping.account_column,
-      mapping.operation_kind_column,
-    ]) {
-      if (c !== null) claimed.add(c);
-    }
-    if (mapping.amount?.kind === "single") claimed.add(mapping.amount.column);
-    else if (mapping.amount?.kind === "debit_credit") {
-      claimed.add(mapping.amount.debit);
-      claimed.add(mapping.amount.credit);
-    }
-    return claimed;
-  }
+  let descriptionColumns = $derived(preview?.mapping.description_columns ?? []);
 
-  /** What "everything unused" resolves to right now — computed here rather
-   * than only on the backend, because the mapping editor shows it as ticked
-   * boxes so a description built from several columns doesn't read as if
-   * only one were in play. */
-  let remainingColumns = $derived.by(() => {
-    if (!preview) return [] as number[];
-    const claimed = claimedColumns(preview.mapping);
-    return preview.columns.map((c) => c.index).filter((i) => !claimed.has(i));
-  });
-
-  /** The columns actually feeding the description right now, whichever mode
-   * is active — what the checkbox grid renders as checked. */
-  let descriptionColumns = $derived(
-    preview?.mapping.description.kind === "columns"
-      ? preview.mapping.description.columns
-      : remainingColumns,
-  );
-
-  /** Ticking any box switches to explicit picking, seeded from whatever was
-   * actually included a moment ago (not from empty) — so correcting one
-   * column doesn't throw away the rest of what "everything unused" had
-   * right. */
   function toggleDescriptionColumn(index: number, checked: boolean) {
-    if (!preview) return;
-    const base =
-      preview.mapping.description.kind === "columns"
-        ? preview.mapping.description.columns
-        : remainingColumns;
-    const next = checked ? [...base, index].sort((a, b) => a - b) : base.filter((c) => c !== index);
-    updateMapping({ description: { kind: "columns", columns: next } });
+    const next = checked
+      ? [...descriptionColumns, index].sort((a, b) => a - b)
+      : descriptionColumns.filter((c) => c !== index);
+    updateMapping({ description_columns: next });
   }
 
   async function loadFile(file: File) {
@@ -548,30 +509,12 @@
 
         <fieldset class="description-source">
           <legend>Description</legend>
-          <label class="inline">
-            <input
-              type="radio"
-              name="description-mode"
-              checked={preview.mapping.description.kind === "remaining"}
-              onchange={() => updateMapping({ description: { kind: "remaining" } })}
-            />
-            Everything unused
-          </label>
-          <label class="inline">
-            <input
-              type="radio"
-              name="description-mode"
-              checked={preview.mapping.description.kind === "columns"}
-              onchange={() =>
-                updateMapping({ description: { kind: "columns", columns: remainingColumns } })}
-            />
-            Pick columns
-          </label>
           <p class="description-hint">
-            {#if preview.mapping.description.kind === "remaining"}
-              Currently these — every column not used by a field above:
+            {#if descriptionColumns.length === 0}
+              Pick at least one column — without it every row imports with a
+              blank description.
             {:else}
-              Joined in this order:
+              Joined in this order.
             {/if}
           </p>
           <div class="description-columns">
@@ -602,18 +545,20 @@
       </details>
 
       <div class="targets">
-        <CategorySelect
+        <SearchSelect
           options={fallbackCategoryOptions}
           value={selectedCategoryId}
           onChange={(id) => (selectedCategoryId = id)}
           placeholder="Fallback category (optional)…"
+          searchPlaceholder="Search category…"
         />
-        <select bind:value={selectedAccountId}>
-          <option value="">Destination account (optional)…</option>
-          {#each accounts as a (a.id)}
-            <option value={a.id}>{a.name}{a.is_default ? " (default)" : ""}</option>
-          {/each}
-        </select>
+        <SearchSelect
+          options={accountOptions}
+          value={selectedAccountId}
+          onChange={(id) => (selectedAccountId = id)}
+          placeholder="Destination account (optional)…"
+          searchPlaceholder="Search account…"
+        />
       </div>
 
       <div class="rows">
@@ -828,10 +773,10 @@
     margin-top: 0.3rem;
   }
 
-  /* CategorySelect's own root class — reached with :global since it renders
+  /* SearchSelect's own root class — reached with :global since it renders
      inside a child component, outside this file's scoped styles. Widened
      past its 11rem default so a longer category path doesn't truncate. */
-  .targets :global(.category-select) {
+  .targets :global(.search-select) {
     max-width: 16rem;
     flex: 1;
   }
@@ -845,9 +790,6 @@
     min-width: 0;
   }
 
-  .inline input {
-    flex: none;
-  }
 
   select,
   input[type="file"] {

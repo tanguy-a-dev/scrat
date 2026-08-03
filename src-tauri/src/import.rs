@@ -6,7 +6,7 @@ use scrat_domain::ports::TransferRuleRepository;
 use scrat_domain::transaction::OperationKind;
 use scrat_infra_csv::{
     apply_mapping, detect_mapping, file_signature, parse_file, AmountSource, ColumnMapping,
-    DescriptionSource, DATE_FORMATS,
+    DATE_FORMATS,
 };
 use scrat_infra_sqlite::{get_csv_mapping, save_csv_mapping, SqliteTransferRuleRepository};
 use serde::{Deserialize, Serialize};
@@ -64,17 +64,6 @@ pub enum AmountSourceDto {
     DebitCredit { debit: usize, credit: usize },
 }
 
-/// Where description text comes from. `remaining` carries no column list on
-/// purpose — it means "whatever no other field claimed", re-derived every
-/// time the mapping is applied, so re-pointing the amount column hands the
-/// old one back to the description instead of stranding it.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum DescriptionSourceDto {
-    Remaining,
-    Columns { columns: Vec<usize> },
-}
-
 /// The detector's guess, in the exact shape the user edits and sends back.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ColumnMappingDto {
@@ -83,7 +72,7 @@ pub struct ColumnMappingDto {
     pub date_column: Option<usize>,
     pub date_format: String,
     pub amount: Option<AmountSourceDto>,
-    pub description: DescriptionSourceDto,
+    pub description_columns: Vec<usize>,
     pub category_column: Option<usize>,
     pub subcategory_column: Option<usize>,
     pub currency_column: Option<usize>,
@@ -104,12 +93,7 @@ impl ColumnMappingDto {
                     AmountSourceDto::DebitCredit { debit, credit }
                 }
             }),
-            description: match &mapping.description {
-                DescriptionSource::Remaining => DescriptionSourceDto::Remaining,
-                DescriptionSource::Columns(columns) => DescriptionSourceDto::Columns {
-                    columns: columns.clone(),
-                },
-            },
+            description_columns: mapping.description_columns.clone(),
             category_column: mapping.category_column,
             subcategory_column: mapping.subcategory_column,
             currency_column: mapping.currency_column,
@@ -140,10 +124,7 @@ impl ColumnMappingDto {
                     AmountSource::DebitCredit { debit, credit }
                 }
             }),
-            description: match self.description {
-                DescriptionSourceDto::Remaining => DescriptionSource::Remaining,
-                DescriptionSourceDto::Columns { columns } => DescriptionSource::Columns(columns),
-            },
+            description_columns: self.description_columns,
             category_column: self.category_column,
             subcategory_column: self.subcategory_column,
             currency_column: self.currency_column,

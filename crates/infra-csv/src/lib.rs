@@ -20,6 +20,6 @@ pub use detection::{
 };
 pub use mapping::{
     apply_mapping, build_preview, detect_mapping, file_signature, parse_file, preview_with_mapping,
-    summarize_columns, AmountSource, ColumnMapping, ColumnSummary, DescriptionSource,
-    ImportPreview, ParsedFile, ParsedRow,
+    summarize_columns, AmountSource, ColumnMapping, ColumnSummary, ImportPreview, ParsedFile,
+    ParsedRow,
 };

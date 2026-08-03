@@ -142,13 +142,6 @@ export type AmountSourceDto =
   | { kind: "single"; column: number }
   | { kind: "debit_credit"; debit: number; credit: number };
 
-/** Where description text comes from. `remaining` means "every column no
- * other field claimed", re-derived each time the mapping is applied — so
- * re-pointing the amount column hands the old one back to the description. */
-export type DescriptionSourceDto =
-  | { kind: "remaining" }
-  | { kind: "columns"; columns: number[] };
-
 /** What each column of the file means. Detected on first preview, then
  * editable — send it back to `previewCsvImport` to re-read the file through
  * a corrected version. */
@@ -160,7 +153,11 @@ export interface ColumnMappingDto {
    * backend rather than handed to the date parser. */
   date_format: string;
   amount: AmountSourceDto | null;
-  description: DescriptionSourceDto;
+  /** Columns joined, in order, to form each row's description. Always
+   * explicit — there is no "everything unused" mode, because the columns a
+   * bank puts around the description (instrument, category hint, reference,
+   * flags) are text too, and sweeping them in buries the merchant name. */
+  description_columns: number[];
   category_column: number | null;
   subcategory_column: number | null;
   currency_column: number | null;
