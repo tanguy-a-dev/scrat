@@ -350,8 +350,7 @@
         <p class="warning">
           Only {Math.round(preview.date_confidence * 100)}% of dates and {Math.round(
             preview.amount_confidence * 100,
-          )}% of amounts could be read — the columns were probably guessed
-          wrong.
+          )}% of amounts could be read — the columns seem wrongly set.
         </p>
       {/if}
 

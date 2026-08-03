@@ -1041,7 +1041,7 @@
             ></th
           >
           <th>
-            <div class="column-header">
+            <div class="column-header" class:filtered={amountFilterActive(kind)}>
               <button type="button" onclick={() => toggleSort("amount")}
                 >Amount</button
               >
@@ -1080,7 +1080,10 @@
             </div>
           </th>
           <th>
-            <div class="column-header">
+            <div
+              class="column-header"
+              class:filtered={descriptionFilterFor(kind).trim() !== ""}
+            >
               <button type="button" onclick={() => toggleSort("description")}
                 >Description</button
               >
@@ -1103,7 +1106,7 @@
             </div>
           </th>
           <th class="kind-cell">
-            <div class="column-header">
+            <div class="column-header" class:filtered={typeFilterFor(kind) !== ""}>
               <span>Type</span>
               <SearchSelect
                 options={typeFilterOptions}
@@ -1118,7 +1121,10 @@
             </div>
           </th>
           <th>
-            <div class="column-header">
+            <div
+              class="column-header align-right"
+              class:filtered={categoryFilterFor(kind) !== ""}
+            >
               <button type="button" onclick={() => toggleSort("category")}
                 >Category</button
               >
@@ -1135,7 +1141,10 @@
             </div>
           </th>
           <th>
-            <div class="column-header">
+            <div
+              class="column-header align-right"
+              class:filtered={accountFilterFor(kind) !== ""}
+            >
               <span>Account</span>
               <SearchSelect
                 options={accountFilterOptions}
@@ -1489,7 +1498,7 @@
   button:not(.icon-button) {
     border-radius: 6px;
     border: 1px solid var(--color-shade-3);
-    padding: 0.45rem 0.7rem;
+    padding: 0.45rem 0.5rem;
     font-size: 0.9rem;
     font-family: inherit;
   }
@@ -1635,9 +1644,90 @@
   }
 
   .column-header {
-    display: flex;
+    display: inline-flex;
     align-items: center;
-    gap: 0.4rem;
+    gap: 0.15rem;
+  }
+
+  /* Deliberately still in flow, not `position: absolute`. An earlier version
+     took the trigger out of flow to make it free, but that only looked free
+     — it actually bet on the column already having slack beyond the label's
+     own width, and that bet doesn't hold. `table { width: 100% }` forces the
+     browser to distribute extra width across columns to fill the row, and
+     with real transaction rows on screen that extra goes disproportionately
+     to Description and Category (Type already opts out via `.kind-cell`'s
+     `width: 1%`), not evenly to every column. Amount, with only short
+     numbers in it, can render at exactly its own label width with zero
+     slack — at which point an out-of-flow icon has nowhere to sit but on
+     top of Description. Confirmed live: with short amounts and real-length
+     descriptions, the closed trigger measured 4–8px into the Description
+     header. The empty-state screenshot never showed this because a single
+     colspan row doesn't drive that uneven distribution, so Amount happened
+     to get enough slack there by accident.
+
+     Keeping the icon in flow means it counts toward the column's min-content
+     width, which table auto-layout can add to but never shrink below — so
+     the column is now guaranteed to always be at least "label + icon" wide,
+     regardless of how the row data happens to distribute the rest. The cost
+     is real (previously measured at ~76px per table over the fully free
+     version) rather than the free lunch the absolute version promised, but
+     it can't be spilled into a neighbour by a data shape this page didn't
+     anticipate. */
+  .column-header :global(.trigger) {
+    padding: 3px;
+    border: none;
+    background: transparent;
+    /* Faint, but not so faint the affordance is undiscoverable — this is
+       now the only thing advertising that a column can be filtered at all,
+       where before it was a bordered button. */
+    opacity: 0.55;
+  }
+
+  .column-header :global(svg) {
+    width: 10px;
+    height: 10px;
+  }
+
+  th:hover .column-header :global(.trigger) {
+    opacity: 1;
+  }
+
+  /* An active filter is now signalled by the column label, not by the icon.
+     Losing the filled accent chip would otherwise leave a 10px tinted glyph
+     as the only clue that a list is narrowed — and since the header count
+     silently reports the filtered total, a user can read a filtered ledger
+     without noticing. Tinting the label puts that signal on the widest,
+     most-looked-at thing in the cell. */
+  .column-header.filtered > button,
+  .column-header.filtered > span {
+    color: var(--color-accent);
+  }
+
+  /* Both trigger components fill themselves with the accent colour when
+     their filter is set. That chip read well while the icon was inline and
+     bordered; at 10px it collapses into a solid block with no glyph left in
+     it. The label carries the active signal now, so the icon only needs to
+     take the accent colour.
+
+     The selectors are deliberately this long: each component scopes its own
+     `.trigger.icon-trigger.active` rule, which lands at the same
+     specificity as a shorter version of this one, and a tie would be
+     settled by whichever stylesheet the bundler happened to emit last. */
+  .column-header :global(.trigger.active),
+  .column-header :global(.trigger.icon-trigger.active) {
+    background: transparent;
+    border-color: transparent;
+    color: var(--color-accent);
+    opacity: 1;
+  }
+
+  /* Both dropdowns open with `left: 0`, which for the right-hand columns
+     runs off the window — the Income table's Account panel measured 182px
+     past the viewport at 1440px wide. Flipping the rightmost columns to
+     open leftward keeps them on screen. */
+  .column-header.align-right :global(.dropdown) {
+    left: auto;
+    right: 0;
   }
 
   /* Plain (non-sortable) column labels — Type and Account — read the same
