@@ -7,6 +7,10 @@ like date, amount, descriptions, category. I want Type and Account to be clickab
 
 ## import CSV
 
+### File size
+
+Add safety: check for file size and reject if too big for a csv.
+
 ### Edit columns
 
 - Amount layout: this option is not needed for the user since we can select Debit and Credit columns

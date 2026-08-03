@@ -184,20 +184,50 @@
     return value === "" ? null : Number(value);
   }
 
-  function setAmountLayout(layout: "single" | "debit_credit") {
-    if (!preview) return;
-    const current = preview.mapping.amount;
-    if (layout === "single") {
-      const column = current === null ? 0 : current.kind === "single" ? current.column : current.debit;
-      updateMapping({ amount: { kind: "single", column } });
+  /** A file carries exactly two facts about an amount — where money out is
+   * written and where money in is — so the editor asks those two questions
+   * and nothing else. A single signed column is the case where both answers
+   * are the same column, not a third layout the user has to classify the
+   * file into first. */
+  let debitColumn = $derived(
+    preview?.mapping.amount == null
+      ? null
+      : preview.mapping.amount.kind === "single"
+        ? preview.mapping.amount.column
+        : preview.mapping.amount.debit,
+  );
+  let creditColumn = $derived(
+    preview?.mapping.amount == null
+      ? null
+      : preview.mapping.amount.kind === "single"
+        ? preview.mapping.amount.column
+        : preview.mapping.amount.credit,
+  );
+
+  function setAmountColumns(debit: number | null, credit: number | null) {
+    // Half an answer can't be read: taking the one side that is set would
+    // import money moving in one direction only, which is the failure the
+    // debit/credit pair exists to prevent. Clearing either side clears both.
+    if (debit === null || credit === null) {
+      updateMapping({ amount: null });
+    } else if (debit === credit) {
+      updateMapping({ amount: { kind: "single", column: debit } });
     } else {
-      const debit = current === null ? 0 : current.kind === "single" ? current.column : current.debit;
-      const credit =
-        current !== null && current.kind === "debit_credit"
-          ? current.credit
-          : Math.min(debit + 1, preview.mapping.column_count - 1);
       updateMapping({ amount: { kind: "debit_credit", debit, credit } });
     }
+  }
+
+  /** Answering one side while the other is unset assumes the common shape —
+   * one signed column — so a preview appears immediately; picking a
+   * different column on the other side then splits the pair. */
+  function setDebitColumn(value: string) {
+    const column = toColumn(value);
+    setAmountColumns(column, column === null ? null : (creditColumn ?? column));
+  }
+
+  function setCreditColumn(value: string) {
+    const column = toColumn(value);
+    setAmountColumns(column === null ? null : (debitColumn ?? column), column);
   }
 
   function toggleHasHeader() {
@@ -394,76 +424,33 @@
           </label>
 
           <label>
-            Amount layout
+            Money out (debit)
             <select
-              value={preview.mapping.amount?.kind ?? "single"}
-              onchange={(e) =>
-                setAmountLayout(e.currentTarget.value as "single" | "debit_credit")}
+              value={debitColumn ?? ""}
+              onchange={(e) => setDebitColumn(e.currentTarget.value)}
             >
-              <option value="single">One signed column</option>
-              <option value="debit_credit">Separate debit and credit columns</option>
+              <option value="">Not set</option>
+              {#each preview.columns as c (c.index)}
+                <option value={c.index}>{columnLabel(c)}</option>
+              {/each}
             </select>
           </label>
 
-          {#if preview.mapping.amount?.kind === "debit_credit"}
-            {@const amount = preview.mapping.amount}
-            <label>
-              Debit (money out)
-              <select
-                value={amount.debit}
-                onchange={(e) =>
-                  updateMapping({
-                    amount: {
-                      kind: "debit_credit",
-                      debit: Number(e.currentTarget.value),
-                      credit: amount.credit,
-                    },
-                  })}
-              >
-                {#each preview.columns as c (c.index)}
-                  <option value={c.index}>{columnLabel(c)}</option>
-                {/each}
-              </select>
-            </label>
-            <label>
-              Credit (money in)
-              <select
-                value={amount.credit}
-                onchange={(e) =>
-                  updateMapping({
-                    amount: {
-                      kind: "debit_credit",
-                      debit: amount.debit,
-                      credit: Number(e.currentTarget.value),
-                    },
-                  })}
-              >
-                {#each preview.columns as c (c.index)}
-                  <option value={c.index}>{columnLabel(c)}</option>
-                {/each}
-              </select>
-            </label>
-          {:else}
-            <label>
-              Amount
-              <select
-                value={preview.mapping.amount?.kind === "single"
-                  ? preview.mapping.amount.column
-                  : ""}
-                onchange={(e) => {
-                  const column = toColumn(e.currentTarget.value);
-                  updateMapping({
-                    amount: column === null ? null : { kind: "single", column },
-                  });
-                }}
-              >
-                <option value="">Not set</option>
-                {#each preview.columns as c (c.index)}
-                  <option value={c.index}>{columnLabel(c)}</option>
-                {/each}
-              </select>
-            </label>
-          {/if}
+          <label>
+            Money in (credit)
+            <select
+              value={creditColumn ?? ""}
+              onchange={(e) => setCreditColumn(e.currentTarget.value)}
+            >
+              <option value="">Not set</option>
+              {#each preview.columns as c (c.index)}
+                <option value={c.index}>{columnLabel(c)}</option>
+              {/each}
+            </select>
+            <span class="field-hint">
+              Same column as money out when one signed column holds both.
+            </span>
+          </label>
 
           <label>
             Type
@@ -756,6 +743,11 @@
   .mapping-grid select {
     max-width: 100%;
     font-size: 0.8rem;
+  }
+
+  .field-hint {
+    font-size: 0.72rem;
+    opacity: 0.65;
   }
 
   .description-source {
