@@ -14,7 +14,9 @@
     operationKindLabel,
     type AccountDto,
     type CategoryDto,
+    type OperationKind,
     type TransactionDto,
+    type TransactionFilters,
     type RangeMode,
   } from "$lib/api";
   import ImportCsvDialog from "$lib/ImportCsvDialog.svelte";
@@ -30,6 +32,19 @@
   function autofocus(node: HTMLElement) {
     node.focus();
   }
+
+  /** Every operation kind the domain knows about, in the order shown in the
+   * Type filter dropdown — kept here rather than derived from data, since a
+   * kind with no transactions yet must still be choosable as a filter. */
+  const OPERATION_KINDS: OperationKind[] = [
+    "card",
+    "bank_transfer",
+    "direct_debit",
+    "check",
+    "cash",
+    "fees",
+    "other",
+  ];
 
   type SelectionKind = "expense" | "income";
 
@@ -89,12 +104,20 @@
     customEnd: todayIsoDate(),
     sortField: "date" as SortField,
     sortDir: "desc" as "asc" | "desc",
-    // Expenses and Income keep independent category/description filters — a
-    // search on one list must never narrow the other.
+    // Expenses and Income keep independent filters — a search or filter set
+    // on one list must never narrow the other.
     expenseCategoryFilter: "",
     expenseDescriptionFilter: "",
+    expenseAccountFilter: "",
+    expenseTypeFilter: "",
+    expenseMinAmount: "",
+    expenseMaxAmount: "",
     incomeCategoryFilter: "",
     incomeDescriptionFilter: "",
+    incomeAccountFilter: "",
+    incomeTypeFilter: "",
+    incomeMinAmount: "",
+    incomeMaxAmount: "",
     loadedExpenseRows: 0,
     loadedIncomeRows: 0,
     scrollY: 0,
@@ -153,8 +176,20 @@
   let sortDir = $state<"asc" | "desc">(view.sortDir);
   let expenseCategoryFilter = $state(view.expenseCategoryFilter);
   let expenseDescriptionFilter = $state(view.expenseDescriptionFilter);
+  let expenseAccountFilter = $state(view.expenseAccountFilter);
+  let expenseTypeFilter = $state<OperationKind | "">(
+    view.expenseTypeFilter as OperationKind | "",
+  );
+  let expenseMinAmount = $state(view.expenseMinAmount);
+  let expenseMaxAmount = $state(view.expenseMaxAmount);
   let incomeCategoryFilter = $state(view.incomeCategoryFilter);
   let incomeDescriptionFilter = $state(view.incomeDescriptionFilter);
+  let incomeAccountFilter = $state(view.incomeAccountFilter);
+  let incomeTypeFilter = $state<OperationKind | "">(
+    view.incomeTypeFilter as OperationKind | "",
+  );
+  let incomeMinAmount = $state(view.incomeMinAmount);
+  let incomeMaxAmount = $state(view.incomeMaxAmount);
 
   // Mirrors the user's choices back into the cache. `loadedExpenseRows` /
   // `loadedIncomeRows` only mean anything in "All Time" — every other range
@@ -167,8 +202,16 @@
     view.sortDir = sortDir;
     view.expenseCategoryFilter = expenseCategoryFilter;
     view.expenseDescriptionFilter = expenseDescriptionFilter;
+    view.expenseAccountFilter = expenseAccountFilter;
+    view.expenseTypeFilter = expenseTypeFilter;
+    view.expenseMinAmount = expenseMinAmount;
+    view.expenseMaxAmount = expenseMaxAmount;
     view.incomeCategoryFilter = incomeCategoryFilter;
     view.incomeDescriptionFilter = incomeDescriptionFilter;
+    view.incomeAccountFilter = incomeAccountFilter;
+    view.incomeTypeFilter = incomeTypeFilter;
+    view.incomeMinAmount = incomeMinAmount;
+    view.incomeMaxAmount = incomeMaxAmount;
     view.loadedExpenseRows = rangeMode === "all" ? expenseOffset : 0;
     view.loadedIncomeRows = rangeMode === "all" ? incomeOffset : 0;
   });
@@ -226,29 +269,47 @@
 
   onMount(load);
 
-  /** A list's filters in the shape the backend takes them, empty meaning
-   * "no filter", not "match the empty string". */
-  function activeFilters(kind: SelectionKind): {
-    category: string | null;
-    description: string | null;
-  } {
-    return kind === "expense"
-      ? {
-          category: expenseCategoryFilter || null,
-          description: expenseDescriptionFilter.trim() || null,
-        }
-      : {
-          category: incomeCategoryFilter || null,
-          description: incomeDescriptionFilter.trim() || null,
-        };
+  /** Parses a user-typed amount filter bound into minor units, or `null`
+   * when blank or unparseable — a filter box left empty or mid-edit means
+   * "no bound", not zero. Always non-negative: bounds compare against the
+   * transaction's magnitude, and a negative bound would silently exclude
+   * everything. */
+  function amountBoundMinorUnits(raw: string): number | null {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    const parsed = parseToMinorUnits(trimmed);
+    if (parsed === null) return null;
+    return Math.abs(parsed);
   }
 
-  /** Identity of the filter pair a list's rows on screen were fetched with,
+  /** A list's filters in the shape the backend takes them — every field
+   * `null` means "no filter", not "match nothing". `isIncome` is baked in
+   * from `kind` itself, since the Expenses and Income lists never mix
+   * signs. */
+  function activeFilters(kind: SelectionKind): TransactionFilters {
+    const category = kind === "expense" ? expenseCategoryFilter : incomeCategoryFilter;
+    const description =
+      kind === "expense" ? expenseDescriptionFilter : incomeDescriptionFilter;
+    const account = kind === "expense" ? expenseAccountFilter : incomeAccountFilter;
+    const type = kind === "expense" ? expenseTypeFilter : incomeTypeFilter;
+    const minAmount = kind === "expense" ? expenseMinAmount : incomeMinAmount;
+    const maxAmount = kind === "expense" ? expenseMaxAmount : incomeMaxAmount;
+    return {
+      categoryId: category || null,
+      descriptionContains: description.trim() || null,
+      isIncome: kind === "income",
+      accountId: account || null,
+      operationKind: type || null,
+      minAmountMinorUnits: amountBoundMinorUnits(minAmount),
+      maxAmountMinorUnits: amountBoundMinorUnits(maxAmount),
+    };
+  }
+
+  /** Identity of the filter set a list's rows on screen were fetched with,
    * so the debounced effect below can tell a real filter change from its
    * own first run after `load()` already fetched with these same values. */
   function filterKey(kind: SelectionKind): string {
-    const { category, description } = activeFilters(kind);
-    return `${category ?? ""} ${description ?? ""}`;
+    return JSON.stringify(activeFilters(kind));
   }
 
   let appliedExpenseFilterKey = "";
@@ -296,20 +357,8 @@
         const expenseLimit = Math.max(PAGE_SIZE, pendingRestore?.expenseRows ?? 0);
         const incomeLimit = Math.max(PAGE_SIZE, pendingRestore?.incomeRows ?? 0);
         const [expenseBatch, incomeBatch] = await Promise.all([
-          api.listTransactionsPage(
-            0,
-            expenseLimit,
-            expenseFilters.category,
-            expenseFilters.description,
-            false,
-          ),
-          api.listTransactionsPage(
-            0,
-            incomeLimit,
-            incomeFilters.category,
-            incomeFilters.description,
-            true,
-          ),
+          api.listTransactionsPage(0, expenseLimit, expenseFilters),
+          api.listTransactionsPage(0, incomeLimit, incomeFilters),
         ]);
         if (token !== loadToken) return;
         expenseRows = expenseBatch;
@@ -345,17 +394,11 @@
    * with it the filter control the user is still interacting with. */
   async function reloadFilteredAllTimeKind(kind: SelectionKind) {
     const token = bumpToken(kind);
-    const { category, description } = activeFilters(kind);
+    const filters = activeFilters(kind);
     if (kind === "expense") loadingMoreExpense = true;
     else loadingMoreIncome = true;
     try {
-      const batch = await api.listTransactionsPage(
-        0,
-        PAGE_SIZE,
-        category,
-        description,
-        kind === "income",
-      );
+      const batch = await api.listTransactionsPage(0, PAGE_SIZE, filters);
       if (token !== currentToken(kind) || rangeMode !== "all") return;
       if (kind === "expense") {
         expenseRows = batch;
@@ -386,15 +429,9 @@
     if (kind === "expense") loadingMoreExpense = true;
     else loadingMoreIncome = true;
     try {
-      const { category, description } = activeFilters(kind);
+      const filters = activeFilters(kind);
       const offset = kind === "expense" ? expenseOffset : incomeOffset;
-      const batch = await api.listTransactionsPage(
-        offset,
-        PAGE_SIZE,
-        category,
-        description,
-        kind === "income",
-      );
+      const batch = await api.listTransactionsPage(offset, PAGE_SIZE, filters);
       // The range mode, this list's filters, or the whole page may have
       // moved on while this was in flight — don't splice a stale batch into
       // whatever's showing now.
@@ -491,13 +528,10 @@
 
   async function refreshCount(kind: SelectionKind) {
     try {
-      const { category, description } = activeFilters(kind);
       const count = await api.countTransactions(
         currentRange.start,
         currentRange.end,
-        category,
-        description,
-        kind === "income",
+        activeFilters(kind),
       );
       if (kind === "expense") expenseCount = count;
       else incomeCount = count;
@@ -601,6 +635,57 @@
   function setDescriptionFilter(kind: SelectionKind, value: string) {
     if (kind === "expense") expenseDescriptionFilter = value;
     else incomeDescriptionFilter = value;
+  }
+
+  let accountFilterOptions = $derived([
+    { id: "", label: "All accounts" },
+    ...accounts.map((a) => ({ id: a.id, label: a.name })),
+  ]);
+
+  function accountFilterFor(kind: SelectionKind): string {
+    return kind === "expense" ? expenseAccountFilter : incomeAccountFilter;
+  }
+
+  function setAccountFilter(kind: SelectionKind, id: string) {
+    if (kind === "expense") expenseAccountFilter = id;
+    else incomeAccountFilter = id;
+  }
+
+  let typeFilterOptions = $derived([
+    { id: "", label: "All types" },
+    ...OPERATION_KINDS.map((kind) => ({ id: kind, label: operationKindLabel(kind) })),
+  ]);
+
+  function typeFilterFor(kind: SelectionKind): string {
+    return kind === "expense" ? expenseTypeFilter : incomeTypeFilter;
+  }
+
+  function setTypeFilter(kind: SelectionKind, id: string) {
+    const value = id as OperationKind | "";
+    if (kind === "expense") expenseTypeFilter = value;
+    else incomeTypeFilter = value;
+  }
+
+  function minAmountFilterFor(kind: SelectionKind): string {
+    return kind === "expense" ? expenseMinAmount : incomeMinAmount;
+  }
+
+  function maxAmountFilterFor(kind: SelectionKind): string {
+    return kind === "expense" ? expenseMaxAmount : incomeMaxAmount;
+  }
+
+  function setMinAmountFilter(kind: SelectionKind, value: string) {
+    if (kind === "expense") expenseMinAmount = value;
+    else incomeMinAmount = value;
+  }
+
+  function setMaxAmountFilter(kind: SelectionKind, value: string) {
+    if (kind === "expense") expenseMaxAmount = value;
+    else incomeMaxAmount = value;
+  }
+
+  function amountFilterActive(kind: SelectionKind): boolean {
+    return minAmountFilterFor(kind).trim() !== "" || maxAmountFilterFor(kind).trim() !== "";
   }
 
   async function handleDescriptionBlur() {
@@ -711,32 +796,46 @@
     });
   }
 
+  /** The same predicate the backend applies for "All Time", re-derived here
+   * for the other ranges — those fetch the whole (unfiltered, mixed-sign)
+   * range in one shot and filter it client-side, so this has to agree with
+   * `TransactionFilters` field for field rather than reimplementing it. */
+  function matchesFilters(t: TransactionDto, filters: TransactionFilters): boolean {
+    if (filters.categoryId && t.category_id !== filters.categoryId) return false;
+    if (
+      filters.descriptionContains &&
+      !t.description.toLowerCase().includes(filters.descriptionContains.toLowerCase())
+    ) {
+      return false;
+    }
+    if (filters.accountId && t.account_id !== filters.accountId) return false;
+    if (filters.operationKind && t.operation_kind !== filters.operationKind) return false;
+    const magnitude = Math.abs(t.amount_minor_units);
+    if (filters.minAmountMinorUnits !== null && magnitude < filters.minAmountMinorUnits) {
+      return false;
+    }
+    if (filters.maxAmountMinorUnits !== null && magnitude > filters.maxAmountMinorUnits) {
+      return false;
+    }
+    return true;
+  }
+
   // "All Time" already fetches each list pre-filtered and sign-narrowed
   // from the backend — `expenseRows`/`incomeRows` need only sorting. Every
   // other range fetches the whole (unfiltered, mixed-sign) range in one
   // shot, so this list applies its own filter and sign split client-side.
   let expenses = $derived.by(() => {
     if (rangeMode === "all") return sortTransactions(expenseRows);
-    const description = expenseDescriptionFilter.trim().toLowerCase();
+    const filters = activeFilters("expense");
     return sortTransactions(
-      transactions.filter(
-        (t) =>
-          t.amount_minor_units < 0 &&
-          (!expenseCategoryFilter || t.category_id === expenseCategoryFilter) &&
-          (!description || t.description.toLowerCase().includes(description)),
-      ),
+      transactions.filter((t) => t.amount_minor_units < 0 && matchesFilters(t, filters)),
     );
   });
   let income = $derived.by(() => {
     if (rangeMode === "all") return sortTransactions(incomeRows);
-    const description = incomeDescriptionFilter.trim().toLowerCase();
+    const filters = activeFilters("income");
     return sortTransactions(
-      transactions.filter(
-        (t) =>
-          t.amount_minor_units > 0 &&
-          (!incomeCategoryFilter || t.category_id === incomeCategoryFilter) &&
-          (!description || t.description.toLowerCase().includes(description)),
-      ),
+      transactions.filter((t) => t.amount_minor_units > 0 && matchesFilters(t, filters)),
     );
   });
 
@@ -941,11 +1040,45 @@
               >Date</button
             ></th
           >
-          <th
-            ><button type="button" onclick={() => toggleSort("amount")}
-              >Amount</button
-            ></th
-          >
+          <th>
+            <div class="column-header">
+              <button type="button" onclick={() => toggleSort("amount")}
+                >Amount</button
+              >
+              <FilterPopover
+                active={amountFilterActive(kind)}
+                ariaLabel="Filter by amount"
+              >
+                <div class="amount-filter">
+                  <label>
+                    Min
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={minAmountFilterFor(kind)}
+                      oninput={(e) =>
+                        setMinAmountFilter(kind, (e.currentTarget as HTMLInputElement).value)}
+                      use:autofocus
+                      placeholder="0.00"
+                    />
+                  </label>
+                  <label>
+                    Max
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={maxAmountFilterFor(kind)}
+                      oninput={(e) =>
+                        setMaxAmountFilter(kind, (e.currentTarget as HTMLInputElement).value)}
+                      placeholder="0.00"
+                    />
+                  </label>
+                </div>
+              </FilterPopover>
+            </div>
+          </th>
           <th>
             <div class="column-header">
               <button type="button" onclick={() => toggleSort("description")}
@@ -969,7 +1102,21 @@
               </FilterPopover>
             </div>
           </th>
-          <th class="kind-cell">Type</th>
+          <th class="kind-cell">
+            <div class="column-header">
+              <span>Type</span>
+              <SearchSelect
+                options={typeFilterOptions}
+                value={typeFilterFor(kind)}
+                onChange={(id) => setTypeFilter(kind, id)}
+                searchPlaceholder="Search type…"
+              >
+                {#snippet trigger()}
+                  <Search size={14} aria-label="Filter by type" />
+                {/snippet}
+              </SearchSelect>
+            </div>
+          </th>
           <th>
             <div class="column-header">
               <button type="button" onclick={() => toggleSort("category")}
@@ -987,7 +1134,21 @@
               </SearchSelect>
             </div>
           </th>
-          <th>Account</th>
+          <th>
+            <div class="column-header">
+              <span>Account</span>
+              <SearchSelect
+                options={accountFilterOptions}
+                value={accountFilterFor(kind)}
+                onChange={(id) => setAccountFilter(kind, id)}
+                searchPlaceholder="Search account…"
+              >
+                {#snippet trigger()}
+                  <Search size={14} aria-label="Filter by account" />
+                {/snippet}
+              </SearchSelect>
+            </div>
+          </th>
           <th></th>
         </tr>
       </thead>
@@ -1477,6 +1638,41 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
+  }
+
+  /* Plain (non-sortable) column labels — Type and Account — read the same
+     weight and size as the sort buttons next to them so the header row
+     looks uniform even though only some columns are clickable. */
+  .column-header span {
+    font-weight: 600;
+    font-size: 0.85rem;
+  }
+
+  .amount-filter {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0.5rem 0.6rem;
+  }
+
+  .amount-filter label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    font-size: 0.75rem;
+    opacity: 0.75;
+  }
+
+  .amount-filter input {
+    width: 100%;
+    box-sizing: border-box;
+    border: 1px solid var(--color-shade-3);
+    border-radius: 4px;
+    background: var(--color-shade-2);
+    color: inherit;
+    padding: 0.35rem 0.5rem;
+    font-size: 0.85rem;
+    font-family: inherit;
   }
 
   td {

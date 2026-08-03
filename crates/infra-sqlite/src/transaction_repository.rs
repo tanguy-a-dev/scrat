@@ -3,7 +3,7 @@ use rusqlite::{params, params_from_iter, Connection};
 use scrat_domain::account::AccountId;
 use scrat_domain::category::CategoryId;
 use scrat_domain::money::{Currency, Money};
-use scrat_domain::ports::{RepositoryError, TransactionRepository};
+use scrat_domain::ports::{RepositoryError, TransactionFilters, TransactionRepository};
 use scrat_domain::transaction::{
     Description, OperationKind, Transaction, TransactionId, TransactionRole, TransferGroupId,
 };
@@ -243,16 +243,14 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
         &self,
         offset: i64,
         limit: i64,
-        category_id: Option<CategoryId>,
-        description_contains: Option<&str>,
-        is_income: Option<bool>,
+        filters: &TransactionFilters,
     ) -> Result<Vec<Transaction>, RepositoryError> {
         // `id` breaks ties on same-day transactions — `ORDER BY date DESC`
         // alone isn't a stable order across separate LIMIT/OFFSET queries,
         // which would let a row be skipped or repeated as the caller pages
         // through.
         //
-        // The three filters use the same `?N IS NULL OR …` shape as
+        // The filters use the same `?N IS NULL OR …` shape as
         // `count_in_range`, so a page and the header count it sits under are
         // answering the identical question.
         let mut stmt = self
@@ -263,6 +261,10 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
                        AND (?4 IS NULL OR LOWER(description) LIKE '%' || LOWER(?4) || '%')
                        AND (?5 IS NULL OR (?5 = 1 AND amount_minor_units > 0)
                                         OR (?5 = 0 AND amount_minor_units < 0))
+                       AND (?6 IS NULL OR account_id = ?6)
+                       AND (?7 IS NULL OR operation_kind = ?7)
+                       AND (?8 IS NULL OR ABS(amount_minor_units) >= ?8)
+                       AND (?9 IS NULL OR ABS(amount_minor_units) <= ?9)
                      ORDER BY date DESC, id DESC LIMIT ?1 OFFSET ?2"
             ))
             .map_err(sql_err)?;
@@ -271,9 +273,13 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
                 params![
                     limit,
                     offset,
-                    category_id.map(|id| id.as_string()),
-                    description_contains,
-                    is_income,
+                    filters.category_id.map(|id| id.as_string()),
+                    filters.description_contains,
+                    filters.is_income,
+                    filters.account_id.map(|id| id.as_string()),
+                    filters.operation_kind.map(|k| k.as_str()),
+                    filters.min_amount_minor_units,
+                    filters.max_amount_minor_units,
                 ],
                 |row| self.row_to_transaction(row),
             )
@@ -287,9 +293,7 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
         &self,
         start: NaiveDate,
         end: NaiveDate,
-        category_id: Option<CategoryId>,
-        description_contains: Option<&str>,
-        is_income: Option<bool>,
+        filters: &TransactionFilters,
     ) -> Result<i64, RepositoryError> {
         let count = self
             .conn
@@ -299,13 +303,21 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
                        AND (?3 IS NULL OR category_id = ?3)
                        AND (?4 IS NULL OR LOWER(description) LIKE '%' || LOWER(?4) || '%')
                        AND (?5 IS NULL OR (?5 = 1 AND amount_minor_units > 0)
-                                        OR (?5 = 0 AND amount_minor_units < 0))",
+                                        OR (?5 = 0 AND amount_minor_units < 0))
+                       AND (?6 IS NULL OR account_id = ?6)
+                       AND (?7 IS NULL OR operation_kind = ?7)
+                       AND (?8 IS NULL OR ABS(amount_minor_units) >= ?8)
+                       AND (?9 IS NULL OR ABS(amount_minor_units) <= ?9)",
                 params![
                     start.format("%Y-%m-%d").to_string(),
                     end.format("%Y-%m-%d").to_string(),
-                    category_id.map(|id| id.as_string()),
-                    description_contains,
-                    is_income,
+                    filters.category_id.map(|id| id.as_string()),
+                    filters.description_contains,
+                    filters.is_income,
+                    filters.account_id.map(|id| id.as_string()),
+                    filters.operation_kind.map(|k| k.as_str()),
+                    filters.min_amount_minor_units,
+                    filters.max_amount_minor_units,
                 ],
                 |row| row.get(0),
             )
@@ -320,6 +332,22 @@ mod tests {
     use scrat_domain::account::{Account, AccountName};
     use scrat_domain::category::{Category, CategoryName};
     use scrat_domain::ports::{AccountRepository as _, CategoryRepository as _};
+
+    /// Builds a `TransactionFilters` for the three filters most tests in
+    /// this module exercise, leaving the newer account/type/amount fields at
+    /// their "no filter" default — dedicated tests below set those instead.
+    fn filters(
+        category_id: Option<CategoryId>,
+        description_contains: Option<&str>,
+        is_income: Option<bool>,
+    ) -> TransactionFilters {
+        TransactionFilters {
+            category_id,
+            description_contains: description_contains.map(str::to_string),
+            is_income,
+            ..Default::default()
+        }
+    }
 
     fn test_conn() -> Connection {
         let dir = tempfile::tempdir().unwrap();
@@ -487,7 +515,9 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         let mut offset = 0i64;
         loop {
-            let page = repo.list_page(offset, 10, None, None, None).unwrap();
+            let page = repo
+                .list_page(offset, 10, &filters(None, None, None))
+                .unwrap();
             if page.is_empty() {
                 break;
             }
@@ -530,7 +560,7 @@ mod tests {
         )
         .unwrap();
 
-        let page = repo.list_page(0, 10, None, None, None).unwrap();
+        let page = repo.list_page(0, 10, &filters(None, None, None)).unwrap();
 
         assert_eq!(
             page.iter()
@@ -595,7 +625,7 @@ mod tests {
         }
 
         let first_page = repo
-            .list_page(0, 10, Some(salary.id()), None, None)
+            .list_page(0, 10, &filters(Some(salary.id()), None, None))
             .unwrap();
 
         assert_eq!(first_page.len(), 3);
@@ -649,7 +679,7 @@ mod tests {
         let mut offset = 0i64;
         loop {
             let page = repo
-                .list_page(offset, 5, Some(salary.id()), None, None)
+                .list_page(offset, 5, &filters(Some(salary.id()), None, None))
                 .unwrap();
             if page.is_empty() {
                 break;
@@ -685,7 +715,7 @@ mod tests {
         }
 
         let page = repo
-            .list_page(0, 10, None, Some("Whole Foods"), None)
+            .list_page(0, 10, &filters(None, Some("Whole Foods"), None))
             .unwrap();
 
         assert_eq!(page.len(), 2);
@@ -731,7 +761,7 @@ mod tests {
         }
 
         let page = repo
-            .list_page(0, 10, Some(salary.id()), Some("employer"), None)
+            .list_page(0, 10, &filters(Some(salary.id()), Some("employer"), None))
             .unwrap();
 
         assert_eq!(
@@ -778,15 +808,13 @@ mod tests {
         }
 
         let page = repo
-            .list_page(0, 100, Some(salary.id()), None, None)
+            .list_page(0, 100, &filters(Some(salary.id()), None, None))
             .unwrap();
         let count = repo
             .count_in_range(
                 NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
                 NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
-                Some(salary.id()),
-                None,
-                None,
+                &filters(Some(salary.id()), None, None),
             )
             .unwrap();
 
@@ -827,9 +855,7 @@ mod tests {
             .count_in_range(
                 NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
                 NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
-                None,
-                None,
-                None,
+                &filters(None, None, None),
             )
             .unwrap();
 
@@ -874,9 +900,7 @@ mod tests {
             .count_in_range(
                 NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
                 NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
-                Some(groceries_id),
-                None,
-                None,
+                &filters(Some(groceries_id), None, None),
             )
             .unwrap();
 
@@ -917,9 +941,7 @@ mod tests {
             .count_in_range(
                 NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
                 NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
-                None,
-                Some("whole foods"),
-                None,
+                &filters(None, Some("whole foods"), None),
             )
             .unwrap();
 
@@ -954,8 +976,12 @@ mod tests {
             .unwrap();
         }
 
-        let income = repo.list_page(0, 10, None, None, Some(true)).unwrap();
-        let expenses = repo.list_page(0, 10, None, None, Some(false)).unwrap();
+        let income = repo
+            .list_page(0, 10, &filters(None, None, Some(true)))
+            .unwrap();
+        let expenses = repo
+            .list_page(0, 10, &filters(None, None, Some(false)))
+            .unwrap();
 
         assert_eq!(
             income
@@ -997,23 +1023,153 @@ mod tests {
             .count_in_range(
                 NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
                 NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
-                None,
-                None,
-                Some(true),
+                &filters(None, None, Some(true)),
             )
             .unwrap();
         let expense_count = repo
             .count_in_range(
                 NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
                 NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
-                None,
-                None,
-                Some(false),
+                &filters(None, None, Some(false)),
             )
             .unwrap();
 
         assert_eq!(income_count, 1);
         assert_eq!(expense_count, 2);
+    }
+
+    #[test]
+    fn list_page_filters_by_account() {
+        let conn = test_conn();
+        let (checking_id, category_id) = seed_account_and_category(&conn);
+        let account_repo = crate::SqliteAccountRepository::new(&conn, usd());
+        let savings = Account::new(
+            AccountId::new(),
+            AccountName::new("Savings").unwrap(),
+            Money::zero(usd()),
+        );
+        account_repo.insert(&savings).unwrap();
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        for (description, account_id) in
+            [("Checking row", checking_id), ("Savings row", savings.id())]
+        {
+            repo.insert(
+                &Transaction::new(
+                    TransactionId::new(),
+                    NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                    Money::from_minor_units(-100, usd()),
+                    Description::new(description).unwrap(),
+                    category_id,
+                    account_id,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+
+        let page = repo
+            .list_page(
+                0,
+                10,
+                &TransactionFilters {
+                    account_id: Some(savings.id()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            page.iter()
+                .map(|t| t.description().as_str())
+                .collect::<Vec<_>>(),
+            vec!["Savings row"]
+        );
+    }
+
+    #[test]
+    fn list_page_filters_by_operation_kind() {
+        let conn = test_conn();
+        let (account_id, category_id) = seed_account_and_category(&conn);
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        for (description, kind) in [
+            ("Card swipe", OperationKind::Card),
+            ("Wire out", OperationKind::BankTransfer),
+        ] {
+            repo.insert(
+                &Transaction::new(
+                    TransactionId::new(),
+                    NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                    Money::from_minor_units(-100, usd()),
+                    Description::new(description).unwrap(),
+                    category_id,
+                    account_id,
+                )
+                .unwrap()
+                .with_operation_kind(kind),
+            )
+            .unwrap();
+        }
+
+        let page = repo
+            .list_page(
+                0,
+                10,
+                &TransactionFilters {
+                    operation_kind: Some(OperationKind::BankTransfer),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            page.iter()
+                .map(|t| t.description().as_str())
+                .collect::<Vec<_>>(),
+            vec!["Wire out"]
+        );
+    }
+
+    /// Bounds apply to the magnitude, not the signed minor units — expenses
+    /// are stored negative, so a naive signed comparison would silently
+    /// exclude every one of them from a "min amount" filter.
+    #[test]
+    fn list_page_filters_by_amount_range_using_magnitude() {
+        let conn = test_conn();
+        let (account_id, category_id) = seed_account_and_category(&conn);
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        for (description, amount) in [("Coffee", -350), ("Groceries", -4_500), ("Rent", -90_000)] {
+            repo.insert(
+                &Transaction::new(
+                    TransactionId::new(),
+                    NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                    Money::from_minor_units(amount, usd()),
+                    Description::new(description).unwrap(),
+                    category_id,
+                    account_id,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+
+        let page = repo
+            .list_page(
+                0,
+                10,
+                &TransactionFilters {
+                    min_amount_minor_units: Some(1_000),
+                    max_amount_minor_units: Some(50_000),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            page.iter()
+                .map(|t| t.description().as_str())
+                .collect::<Vec<_>>(),
+            vec!["Groceries"]
+        );
     }
 
     #[test]

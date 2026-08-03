@@ -3,7 +3,8 @@ use scrat_domain::account::AccountId;
 use scrat_domain::category::{Category, CategoryError, CategoryId, CategoryName};
 use scrat_domain::money::{Currency, Money};
 use scrat_domain::ports::{
-    AccountRepository, CategoryRepository, RepositoryError, TransactionRepository,
+    AccountRepository, CategoryRepository, RepositoryError, TransactionFilters,
+    TransactionRepository,
 };
 use scrat_domain::recurring::{self, RecurringCharge};
 use scrat_domain::transaction::{
@@ -232,34 +233,18 @@ impl<'a> TransactionService<'a> {
         &self,
         offset: i64,
         limit: i64,
-        category_id: Option<CategoryId>,
-        description_contains: Option<&str>,
-        is_income: Option<bool>,
+        filters: &TransactionFilters,
     ) -> Result<Vec<Transaction>, ApplicationError> {
-        Ok(self.transactions.list_page(
-            offset,
-            limit,
-            category_id,
-            description_contains,
-            is_income,
-        )?)
+        Ok(self.transactions.list_page(offset, limit, filters)?)
     }
 
     pub fn count_in_range(
         &self,
         start: NaiveDate,
         end: NaiveDate,
-        category_id: Option<CategoryId>,
-        description_contains: Option<&str>,
-        is_income: Option<bool>,
+        filters: &TransactionFilters,
     ) -> Result<i64, ApplicationError> {
-        Ok(self.transactions.count_in_range(
-            start,
-            end,
-            category_id,
-            description_contains,
-            is_income,
-        )?)
+        Ok(self.transactions.count_in_range(start, end, filters)?)
     }
 
     /// Scans `[start, today]` for recurring commitments — subscriptions, rent,
@@ -904,23 +889,14 @@ mod tests {
             &self,
             offset: i64,
             limit: i64,
-            category_id: Option<CategoryId>,
-            description_contains: Option<&str>,
-            is_income: Option<bool>,
+            filters: &TransactionFilters,
         ) -> Result<Vec<Transaction>, RepositoryError> {
-            let description_contains = description_contains.map(|s| s.to_lowercase());
             let mut sorted: Vec<Transaction> = self
                 .transactions
                 .lock()
                 .unwrap()
                 .iter()
-                .filter(|t| category_id.is_none_or(|id| t.category_id() == id))
-                .filter(|t| {
-                    description_contains
-                        .as_ref()
-                        .is_none_or(|s| t.description().as_str().to_lowercase().contains(s))
-                })
-                .filter(|t| is_income.is_none_or(|income| (t.amount().minor_units() > 0) == income))
+                .filter(|t| matches_filters(t, filters))
                 .cloned()
                 .collect();
             sorted.sort_by(|a, b| {
@@ -938,25 +914,58 @@ mod tests {
             &self,
             start: NaiveDate,
             end: NaiveDate,
-            category_id: Option<CategoryId>,
-            description_contains: Option<&str>,
-            is_income: Option<bool>,
+            filters: &TransactionFilters,
         ) -> Result<i64, RepositoryError> {
-            let description_contains = description_contains.map(|s| s.to_lowercase());
             Ok(self
                 .transactions
                 .lock()
                 .unwrap()
                 .iter()
                 .filter(|t| t.date() >= start && t.date() <= end)
-                .filter(|t| category_id.is_none_or(|id| t.category_id() == id))
-                .filter(|t| {
-                    description_contains
-                        .as_ref()
-                        .is_none_or(|s| t.description().as_str().to_lowercase().contains(s))
-                })
-                .filter(|t| is_income.is_none_or(|income| (t.amount().minor_units() > 0) == income))
+                .filter(|t| matches_filters(t, filters))
                 .count() as i64)
+        }
+    }
+
+    /// The predicate `list_page` and `count_in_range` both apply — kept as
+    /// one function so the fake can't let the two drift apart the way
+    /// separate inline filter chains once did.
+    fn matches_filters(t: &Transaction, filters: &TransactionFilters) -> bool {
+        filters.category_id.is_none_or(|id| t.category_id() == id)
+            && filters.description_contains.as_ref().is_none_or(|s| {
+                t.description()
+                    .as_str()
+                    .to_lowercase()
+                    .contains(&s.to_lowercase())
+            })
+            && filters
+                .is_income
+                .is_none_or(|income| (t.amount().minor_units() > 0) == income)
+            && filters.account_id.is_none_or(|id| t.account_id() == id)
+            && filters
+                .operation_kind
+                .is_none_or(|kind| t.operation_kind() == kind)
+            && filters
+                .min_amount_minor_units
+                .is_none_or(|min| t.amount().minor_units().unsigned_abs() as i64 >= min)
+            && filters
+                .max_amount_minor_units
+                .is_none_or(|max| t.amount().minor_units().unsigned_abs() as i64 <= max)
+    }
+
+    /// Builds a `TransactionFilters` for the three filters most tests below
+    /// exercise, leaving the newer account/type/amount fields at their
+    /// "no filter" default.
+    fn filters(
+        category_id: Option<CategoryId>,
+        description_contains: Option<&str>,
+        is_income: Option<bool>,
+    ) -> TransactionFilters {
+        TransactionFilters {
+            category_id,
+            description_contains: description_contains.map(str::to_string),
+            is_income,
+            ..Default::default()
         }
     }
 
@@ -1231,9 +1240,7 @@ mod tests {
             .count_in_range(
                 NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
                 NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
-                None,
-                Some("whole foods"),
-                None,
+                &filters(None, Some("whole foods"), None),
             )
             .unwrap();
 
@@ -1276,9 +1283,9 @@ mod tests {
             )
             .unwrap();
 
-        let unfiltered = service.list_page(0, 3, None, None, None).unwrap();
+        let unfiltered = service.list_page(0, 3, &filters(None, None, None)).unwrap();
         let filtered = service
-            .list_page(0, 3, Some(salary.id()), None, None)
+            .list_page(0, 3, &filters(Some(salary.id()), None, None))
             .unwrap();
 
         assert!(
@@ -1319,7 +1326,7 @@ mod tests {
             .unwrap();
 
         let page = service
-            .list_page(0, 10, None, Some("whole foods"), None)
+            .list_page(0, 10, &filters(None, Some("whole foods"), None))
             .unwrap();
 
         assert_eq!(page.len(), 1);
@@ -1352,8 +1359,12 @@ mod tests {
             )
             .unwrap();
 
-        let income = service.list_page(0, 10, None, None, Some(true)).unwrap();
-        let expenses = service.list_page(0, 10, None, None, Some(false)).unwrap();
+        let income = service
+            .list_page(0, 10, &filters(None, None, Some(true)))
+            .unwrap();
+        let expenses = service
+            .list_page(0, 10, &filters(None, None, Some(false)))
+            .unwrap();
 
         assert_eq!(
             income

@@ -4,7 +4,7 @@ use chrono::{Local, Months, NaiveDate};
 use scrat_application::transaction_service::{TransactionService, RECONCILIATION_DESCRIPTION};
 use scrat_domain::account::{Account, AccountId};
 use scrat_domain::category::{Category, CategoryId};
-use scrat_domain::ports::{AccountRepository, CategoryRepository};
+use scrat_domain::ports::{AccountRepository, CategoryRepository, TransactionFilters};
 use scrat_domain::recurring::RecurringCharge;
 use scrat_domain::transaction::{OperationKind, Transaction, TransactionId};
 use scrat_infra_sqlite::{
@@ -91,16 +91,53 @@ pub fn list_transactions(
         .map(|txs| txs.into_iter().map(TransactionDto::from).collect())
 }
 
+/// Builds the shared filter set from the Tauri command's raw (string/i64)
+/// arguments, parsing each id/enum field once so `list_transactions_page` and
+/// `count_transactions` can't drift apart in how they interpret the same
+/// inputs.
+fn parse_transaction_filters(
+    category_id: Option<String>,
+    description_contains: Option<String>,
+    is_income: Option<bool>,
+    account_id: Option<String>,
+    operation_kind: Option<String>,
+    min_amount_minor_units: Option<i64>,
+    max_amount_minor_units: Option<i64>,
+) -> Result<TransactionFilters, String> {
+    let category_id = category_id
+        .map(|id| CategoryId::parse(&id))
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    let account_id = account_id
+        .map(|id| AccountId::parse(&id))
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    let operation_kind = operation_kind
+        .map(|k| OperationKind::parse(&k))
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    Ok(TransactionFilters {
+        category_id,
+        description_contains,
+        is_income,
+        account_id,
+        operation_kind,
+        min_amount_minor_units,
+        max_amount_minor_units,
+    })
+}
+
 /// Paginated counterpart to `list_transactions`, for the "All Time" view —
 /// walking the whole ledger in fixed-size batches instead of one query that
 /// scans every row up front.
 ///
-/// Takes the view's category/description filters so each batch is a page of the
-/// *matching* rows: filtering client-side, over only the pages fetched so
-/// far, made a filter look like it had found nothing until the user had
-/// scrolled the whole ledger in. `is_income` additionally narrows to just
-/// one sign — the Expenses and Income lists page independently, each with
-/// its own filters, so this lets each ask for only its own rows.
+/// Takes the view's filters so each batch is a page of the *matching* rows:
+/// filtering client-side, over only the pages fetched so far, made a filter
+/// look like it had found nothing until the user had scrolled the whole
+/// ledger in. `is_income` additionally narrows to just one sign — the
+/// Expenses and Income lists page independently, each with its own filters,
+/// so this lets each ask for only its own rows.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn list_transactions_page(
     state: State<DbState>,
@@ -109,27 +146,29 @@ pub fn list_transactions_page(
     category_id: Option<String>,
     description_contains: Option<String>,
     is_income: Option<bool>,
+    account_id: Option<String>,
+    operation_kind: Option<String>,
+    min_amount_minor_units: Option<i64>,
+    max_amount_minor_units: Option<i64>,
 ) -> Result<Vec<TransactionDto>, String> {
-    let category_id = category_id
-        .map(|id| CategoryId::parse(&id))
-        .transpose()
-        .map_err(|e| e.to_string())?;
-    with_service(&state, |s| {
-        s.list_page(
-            offset,
-            limit,
-            category_id,
-            description_contains.as_deref(),
-            is_income,
-        )
-    })
-    .map(|txs| txs.into_iter().map(TransactionDto::from).collect())
+    let filters = parse_transaction_filters(
+        category_id,
+        description_contains,
+        is_income,
+        account_id,
+        operation_kind,
+        min_amount_minor_units,
+        max_amount_minor_units,
+    )?;
+    with_service(&state, |s| s.list_page(offset, limit, &filters))
+        .map(|txs| txs.into_iter().map(TransactionDto::from).collect())
 }
 
-/// Counts transactions in `[start, end]` matching the same category/description/
-/// sign filters the transactions view applies, so the header can report an
-/// accurate total for the current view even when only part of it — e.g. one
-/// page of "All Time" — has actually been loaded into the frontend.
+/// Counts transactions in `[start, end]` matching the same filters the
+/// transactions view applies, so the header can report an accurate total for
+/// the current view even when only part of it — e.g. one page of "All
+/// Time" — has actually been loaded into the frontend.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn count_transactions(
     state: State<DbState>,
@@ -138,22 +177,23 @@ pub fn count_transactions(
     category_id: Option<String>,
     description_contains: Option<String>,
     is_income: Option<bool>,
+    account_id: Option<String>,
+    operation_kind: Option<String>,
+    min_amount_minor_units: Option<i64>,
+    max_amount_minor_units: Option<i64>,
 ) -> Result<i64, String> {
     let start = parse_date(&start)?;
     let end = parse_date(&end)?;
-    let category_id = category_id
-        .map(|id| CategoryId::parse(&id))
-        .transpose()
-        .map_err(|e| e.to_string())?;
-    with_service(&state, |s| {
-        s.count_in_range(
-            start,
-            end,
-            category_id,
-            description_contains.as_deref(),
-            is_income,
-        )
-    })
+    let filters = parse_transaction_filters(
+        category_id,
+        description_contains,
+        is_income,
+        account_id,
+        operation_kind,
+        min_amount_minor_units,
+        max_amount_minor_units,
+    )?;
+    with_service(&state, |s| s.count_in_range(start, end, &filters))
 }
 
 #[tauri::command]

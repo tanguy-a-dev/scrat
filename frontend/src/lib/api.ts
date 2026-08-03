@@ -88,6 +88,25 @@ export interface TransactionDto {
   operation_kind: OperationKind;
 }
 
+/** The filters `listTransactionsPage` and `countTransactions` both take —
+ * bundled rather than passed as an ever-growing list of positional
+ * arguments, mirroring `TransactionFilters` on the Rust side. Every field
+ * `null` means "no filter", not "match nothing". */
+export interface TransactionFilters {
+  categoryId: string | null;
+  descriptionContains: string | null;
+  /** `true` narrows to positive amounts, `false` to negative, `null` to
+   * both. */
+  isIncome: boolean | null;
+  accountId: string | null;
+  operationKind: OperationKind | null;
+  /** Inclusive bounds on the transaction's unsigned amount — expenses and
+   * income are already split by `isIncome`, so "amount between X and Y"
+   * means magnitude, not the signed minor units. */
+  minAmountMinorUnits: number | null;
+  maxAmountMinorUnits: number | null;
+}
+
 /** Recognizes an imported row as money moving to another of the user's own
  * accounts. Matched as a case-insensitive substring of the row's description
  * text. */
@@ -265,34 +284,34 @@ export const api = {
    * then has to be filtered down to almost nothing on this side. `isIncome`
    * (`true` for positive amounts, `false` for negative, `null` for both)
    * lets the Expenses and Income lists page through the ledger
-   * independently, each with its own category/description filters. */
+   * independently, each with its own filters. */
   listTransactionsPage: (
     offset: number,
     limit: number,
-    categoryId: string | null,
-    descriptionContains: string | null,
-    isIncome: boolean | null,
+    filters: TransactionFilters,
   ) =>
     invoke<TransactionDto[]>("list_transactions_page", {
       offset,
       limit,
-      categoryId,
-      descriptionContains,
-      isIncome,
+      categoryId: filters.categoryId,
+      descriptionContains: filters.descriptionContains,
+      isIncome: filters.isIncome,
+      accountId: filters.accountId,
+      operationKind: filters.operationKind,
+      minAmountMinorUnits: filters.minAmountMinorUnits,
+      maxAmountMinorUnits: filters.maxAmountMinorUnits,
     }),
-  countTransactions: (
-    start: string,
-    end: string,
-    categoryId: string | null,
-    descriptionContains: string | null,
-    isIncome: boolean | null,
-  ) =>
+  countTransactions: (start: string, end: string, filters: TransactionFilters) =>
     invoke<number>("count_transactions", {
       start,
       end,
-      categoryId,
-      descriptionContains,
-      isIncome,
+      categoryId: filters.categoryId,
+      descriptionContains: filters.descriptionContains,
+      isIncome: filters.isIncome,
+      accountId: filters.accountId,
+      operationKind: filters.operationKind,
+      minAmountMinorUnits: filters.minAmountMinorUnits,
+      maxAmountMinorUnits: filters.maxAmountMinorUnits,
     }),
   createTransaction: (
     date: string,

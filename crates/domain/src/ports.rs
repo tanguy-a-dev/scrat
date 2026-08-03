@@ -3,7 +3,7 @@ use thiserror::Error;
 
 use crate::account::{Account, AccountId};
 use crate::category::{Category, CategoryId};
-use crate::transaction::{Transaction, TransactionId, TransferGroupId};
+use crate::transaction::{OperationKind, Transaction, TransactionId, TransferGroupId};
 use crate::transfer_rule::{TransferRule, TransferRuleId};
 
 #[derive(Debug, Error)]
@@ -52,6 +52,29 @@ pub trait CategoryRepository {
     /// Count of transactions referencing this category — used to decide
     /// whether a delete requires an explicit reassignment target.
     fn transaction_count(&self, id: CategoryId) -> Result<u64, RepositoryError>;
+}
+
+/// The filters `list_page` and `count_in_range` both take — bundled rather
+/// than passed as an ever-growing list of positional `Option`s, since a page
+/// and the header count over it must apply exactly the same predicate to
+/// agree on what "matching" means. All fields are `None`/empty by default,
+/// meaning "no filter", not "match nothing".
+#[derive(Debug, Clone, Default)]
+pub struct TransactionFilters {
+    pub category_id: Option<CategoryId>,
+    /// Case-insensitive substring match.
+    pub description_contains: Option<String>,
+    /// `true` narrows to positive amounts, `false` to negative, `None` to
+    /// both — lets the Expenses and Income lists page through the ledger
+    /// independently, each with its own filters.
+    pub is_income: Option<bool>,
+    pub account_id: Option<AccountId>,
+    pub operation_kind: Option<OperationKind>,
+    /// Inclusive bounds on the transaction's *unsigned* amount. Expenses and
+    /// income are already split by `is_income`, so "amount between X and Y"
+    /// means magnitude, not the signed minor units.
+    pub min_amount_minor_units: Option<i64>,
+    pub max_amount_minor_units: Option<i64>,
 }
 
 /// Port for persisting transactions (the ledger).
@@ -106,40 +129,28 @@ pub trait TransactionRepository {
     /// hundred thousand depending on the user, so only a row count keeps
     /// each batch cheap.
     ///
-    /// The optional category / case-insensitive description filters are the same
-    /// ones `count_in_range` takes, and they are pushed down here for the
-    /// same reason: a filtered paginated view must page through *matching*
-    /// rows. Filtering the returned batch in the caller instead would only
-    /// ever surface the matches that happen to fall inside the pages
-    /// already fetched, so a filter would appear to find almost nothing
-    /// until the user scrolled the entire ledger in.
-    ///
-    /// `is_income`, when set, additionally narrows to positive (`true`) or
-    /// negative (`false`) amounts — the Expenses and Income lists page
-    /// through the ledger independently, each with its own category/description
-    /// filters, so the sign has to be pushed down alongside them rather than
-    /// split out of a single mixed-sign batch after the fact.
+    /// `filters` are the same ones `count_in_range` takes, and they are
+    /// pushed down here for the same reason: a filtered paginated view must
+    /// page through *matching* rows. Filtering the returned batch in the
+    /// caller instead would only ever surface the matches that happen to
+    /// fall inside the pages already fetched, so a filter would appear to
+    /// find almost nothing until the user scrolled the entire ledger in.
     fn list_page(
         &self,
         offset: i64,
         limit: i64,
-        category_id: Option<CategoryId>,
-        description_contains: Option<&str>,
-        is_income: Option<bool>,
+        filters: &TransactionFilters,
     ) -> Result<Vec<Transaction>, RepositoryError>;
-    /// Counts transactions in `[start, end]`, optionally narrowed to a
-    /// category, a case-insensitive description substring, and/or a sign via
-    /// `is_income` — the same filters `list_page` takes. Pushed down to the
-    /// query (rather than counting a `list_in_range` result in the caller)
-    /// so a paginated view can show an accurate total for the current
-    /// filters without first pulling every matching row across the wire.
+    /// Counts transactions in `[start, end]`, narrowed by `filters` — the
+    /// same ones `list_page` takes. Pushed down to the query (rather than
+    /// counting a `list_in_range` result in the caller) so a paginated view
+    /// can show an accurate total for the current filters without first
+    /// pulling every matching row across the wire.
     fn count_in_range(
         &self,
         start: NaiveDate,
         end: NaiveDate,
-        category_id: Option<CategoryId>,
-        description_contains: Option<&str>,
-        is_income: Option<bool>,
+        filters: &TransactionFilters,
     ) -> Result<i64, RepositoryError>;
 }
 
