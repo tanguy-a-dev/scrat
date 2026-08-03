@@ -371,6 +371,11 @@ export const api = {
      * layout. Omitting them imports without remembering anything. */
     signature?: string,
     mapping?: ColumnMappingDto,
+    /** When true, a row is categorized from the most recent past transaction
+     * with the same description first — falling back to the CSV's own
+     * category (or the default) only when no such history exists. Reverses
+     * the normal precedence, which trusts the CSV's category column first. */
+    prioritizeHistoricalCategory = false,
   ) =>
     invoke<ImportSummaryDto>("commit_csv_import", {
       rows,
@@ -378,6 +383,7 @@ export const api = {
       accountId,
       signature: signature ?? null,
       mapping: mapping ?? null,
+      prioritizeHistoricalCategory,
     }),
 
   getCurrency: () => invoke<string>("get_currency"),

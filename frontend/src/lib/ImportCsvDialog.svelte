@@ -37,6 +37,7 @@
   let included = $state<boolean[]>([]);
   let selectedCategoryId = $state("");
   let selectedAccountId = $state("");
+  let prioritizeHistoricalCategory = $state(false);
   let importing = $state(false);
   let dragOver = $state(false);
   let mappingOpen = $state(false);
@@ -301,6 +302,7 @@
         selectedAccountId || null,
         preview.signature,
         preview.mapping,
+        prioritizeHistoricalCategory,
       );
       onImported();
       onClose();
@@ -560,6 +562,16 @@
           searchPlaceholder="Search account…"
         />
       </div>
+
+      <span class="inline">
+        <Checkbox
+          size="sm"
+          checked={prioritizeHistoricalCategory}
+          ariaLabel="Prefer a category already used for this description over the CSV's own category"
+          onpress={() => (prioritizeHistoricalCategory = !prioritizeHistoricalCategory)}
+        />
+        Prefer a category already used for this description over the CSV's own category
+      </span>
 
       <div class="rows">
         <table>

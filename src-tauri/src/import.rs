@@ -317,6 +317,13 @@ pub fn commit_csv_import(
     account_id: Option<String>,
     signature: Option<String>,
     mapping: Option<ColumnMappingDto>,
+    // When true, reverses the usual precedence: a row is first categorized
+    // from the most recent past transaction with the same description text
+    // (as long as that past transaction is itself categorized, not just
+    // sitting in "Uncategorized"), and only falls back to the CSV's own
+    // category — or the default — when no such history exists. Off by
+    // default so existing imports keep trusting the file's own column.
+    prioritize_historical_category: bool,
 ) -> Result<ImportSummaryDto, String> {
     let category_id = category_id
         .map(|id| CategoryId::parse(&id).map_err(|e| e.to_string()))
@@ -374,24 +381,41 @@ pub fn commit_csv_import(
                     .as_deref()
                     .map(str::trim)
                     .filter(|s| !s.is_empty());
-                let category_id = match row
+                let csv_category = row
                     .category
                     .as_deref()
                     .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                {
-                    Some(name) => match subcategory {
-                        Some(sub) => s.get_or_create_category_path(name, Some(sub))?,
-                        None => match s
-                            .find_category_for_description_in_category(&row.description, name)?
-                        {
-                            Some(historical_id) => historical_id,
-                            None => s.get_or_create_category_path(name, None)?,
-                        },
-                    },
-                    None => s
+                    .filter(|s| !s.is_empty());
+                let category_id = if prioritize_historical_category {
+                    // A match that resolved to the default category isn't a
+                    // real historical categorization — it's just what every
+                    // uncategorized transaction falls back to — so it
+                    // shouldn't out-rank a category the CSV actually names.
+                    let historical = s
                         .find_category_for_description(&row.description)?
-                        .unwrap_or(default_category_id),
+                        .filter(|id| *id != default_category_id);
+                    match historical {
+                        Some(historical_id) => historical_id,
+                        None => match csv_category {
+                            Some(name) => s.get_or_create_category_path(name, subcategory)?,
+                            None => default_category_id,
+                        },
+                    }
+                } else {
+                    match csv_category {
+                        Some(name) => match subcategory {
+                            Some(sub) => s.get_or_create_category_path(name, Some(sub))?,
+                            None => match s
+                                .find_category_for_description_in_category(&row.description, name)?
+                            {
+                                Some(historical_id) => historical_id,
+                                None => s.get_or_create_category_path(name, None)?,
+                            },
+                        },
+                        None => s
+                            .find_category_for_description(&row.description)?
+                            .unwrap_or(default_category_id),
+                    }
                 };
                 Ok(ImportRow {
                     date: row.date,
