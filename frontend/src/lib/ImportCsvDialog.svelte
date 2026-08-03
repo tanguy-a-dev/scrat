@@ -3,6 +3,8 @@
   import { message } from "@tauri-apps/plugin-dialog";
   import { toast } from "$lib/toasts.svelte";
   import Checkbox from "$lib/Checkbox.svelte";
+  import CategorySelect from "$lib/CategorySelect.svelte";
+  import { Pencil } from "@lucide/svelte";
   import {
     api,
     buildCategoryOptions,
@@ -41,6 +43,13 @@
   let remapping = $state(false);
 
   let categoryOptions = $derived(buildCategoryOptions(categories));
+  /** An explicit "unset" entry, the same pattern the transactions list uses
+   * for its category filter — without one, there'd be no way to navigate
+   * the searchable dropdown back to "no fallback" once something is picked. */
+  let fallbackCategoryOptions = $derived([
+    { id: "", label: "Uncategorized (default)" },
+    ...categoryOptions,
+  ]);
 
   let includableCount = $derived(
     preview?.rows.filter((r, i) => included[i] && r.date && r.amount_minor_units).length ?? 0,
@@ -188,13 +197,58 @@
     updateMapping({ has_header: !preview.mapping.has_header });
   }
 
+  /** Every column a specific field has claimed — the complement of what
+   * "everything unused" actually resolves to. Mirrors
+   * `ColumnMapping::claimed_columns` on the Rust side. */
+  function claimedColumns(mapping: ColumnMappingDto): Set<number> {
+    const claimed = new Set<number>();
+    for (const c of [
+      mapping.date_column,
+      mapping.category_column,
+      mapping.subcategory_column,
+      mapping.currency_column,
+      mapping.account_column,
+      mapping.operation_kind_column,
+    ]) {
+      if (c !== null) claimed.add(c);
+    }
+    if (mapping.amount?.kind === "single") claimed.add(mapping.amount.column);
+    else if (mapping.amount?.kind === "debit_credit") {
+      claimed.add(mapping.amount.debit);
+      claimed.add(mapping.amount.credit);
+    }
+    return claimed;
+  }
+
+  /** What "everything unused" resolves to right now — computed here rather
+   * than only on the backend, because the mapping editor shows it as ticked
+   * boxes so a description built from several columns doesn't read as if
+   * only one were in play. */
+  let remainingColumns = $derived.by(() => {
+    if (!preview) return [] as number[];
+    const claimed = claimedColumns(preview.mapping);
+    return preview.columns.map((c) => c.index).filter((i) => !claimed.has(i));
+  });
+
+  /** The columns actually feeding the description right now, whichever mode
+   * is active — what the checkbox grid renders as checked. */
+  let descriptionColumns = $derived(
+    preview?.mapping.description.kind === "columns"
+      ? preview.mapping.description.columns
+      : remainingColumns,
+  );
+
+  /** Ticking any box switches to explicit picking, seeded from whatever was
+   * actually included a moment ago (not from empty) — so correcting one
+   * column doesn't throw away the rest of what "everything unused" had
+   * right. */
   function toggleDescriptionColumn(index: number, checked: boolean) {
     if (!preview) return;
-    const current =
-      preview.mapping.description.kind === "columns" ? preview.mapping.description.columns : [];
-    const next = checked
-      ? [...current, index].sort((a, b) => a - b)
-      : current.filter((c) => c !== index);
+    const base =
+      preview.mapping.description.kind === "columns"
+        ? preview.mapping.description.columns
+        : remainingColumns;
+    const next = checked ? [...base, index].sort((a, b) => a - b) : base.filter((c) => c !== index);
     updateMapping({ description: { kind: "columns", columns: next } });
   }
 
@@ -340,7 +394,8 @@
 
       <details class="mapping" bind:open={mappingOpen}>
         <summary>
-          <span>Columns</span>
+          <Pencil size={13} aria-hidden="true" />
+          <span>Edit columns</span>
           {#if preview.remembered}
             <span class="badge" title="Reused from the last import of this file layout"
               >Saved</span
@@ -507,27 +562,32 @@
               type="radio"
               name="description-mode"
               checked={preview.mapping.description.kind === "columns"}
-              onchange={() => updateMapping({ description: { kind: "columns", columns: [] } })}
+              onchange={() =>
+                updateMapping({ description: { kind: "columns", columns: remainingColumns } })}
             />
             Pick columns
           </label>
-          {#if preview.mapping.description.kind === "columns"}
-            {@const chosen = preview.mapping.description.columns}
-            <div class="description-columns">
-              {#each preview.columns as c (c.index)}
-                <span class="inline">
-                  <Checkbox
-                    size="sm"
-                    checked={chosen.includes(c.index)}
-                    ariaLabel={`Use ${columnLabel(c)} in the description`}
-                    onpress={() =>
-                      toggleDescriptionColumn(c.index, !chosen.includes(c.index))}
-                  />
-                  {columnLabel(c)}
-                </span>
-              {/each}
-            </div>
-          {/if}
+          <p class="description-hint">
+            {#if preview.mapping.description.kind === "remaining"}
+              Currently these — every column not used by a field above:
+            {:else}
+              Joined in this order:
+            {/if}
+          </p>
+          <div class="description-columns">
+            {#each preview.columns as c (c.index)}
+              <span class="inline">
+                <Checkbox
+                  size="sm"
+                  checked={descriptionColumns.includes(c.index)}
+                  ariaLabel={`Use ${columnLabel(c)} in the description`}
+                  onpress={() =>
+                    toggleDescriptionColumn(c.index, !descriptionColumns.includes(c.index))}
+                />
+                {columnLabel(c)}
+              </span>
+            {/each}
+          </div>
         </fieldset>
 
         <span class="inline">
@@ -542,12 +602,12 @@
       </details>
 
       <div class="targets">
-        <select bind:value={selectedCategoryId}>
-          <option value="">Fallback category (optional)…</option>
-          {#each categoryOptions as c (c.id)}
-            <option value={c.id}>{c.label}</option>
-          {/each}
-        </select>
+        <CategorySelect
+          options={fallbackCategoryOptions}
+          value={selectedCategoryId}
+          onChange={(id) => (selectedCategoryId = id)}
+          placeholder="Fallback category (optional)…"
+        />
         <select bind:value={selectedAccountId}>
           <option value="">Destination account (optional)…</option>
           {#each accounts as a (a.id)}
@@ -687,6 +747,21 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
+    /* Reads as a clickable control, not just a disclosure label — a plain
+       "Columns" heading with a browser-default triangle was easy to miss. */
+    border-radius: 6px;
+    padding: 0.2rem 0.35rem;
+    margin: -0.2rem -0.35rem;
+    transition: background-color 0.1s;
+  }
+
+  .mapping summary:hover {
+    background-color: var(--color-shade-3);
+  }
+
+  .mapping summary :global(svg) {
+    color: var(--color-accent);
+    flex: none;
   }
 
   /* Says "this came from your last import" in the space a sentence would
@@ -740,11 +815,25 @@
     padding: 0 0.3rem;
   }
 
+  .description-hint {
+    margin: 0.5rem 0 0;
+    font-size: 0.75rem;
+    opacity: 0.65;
+  }
+
   .description-columns {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
     gap: 0.15rem 0.6rem;
     margin-top: 0.3rem;
+  }
+
+  /* CategorySelect's own root class — reached with :global since it renders
+     inside a child component, outside this file's scoped styles. Widened
+     past its 11rem default so a longer category path doesn't truncate. */
+  .targets :global(.category-select) {
+    max-width: 16rem;
+    flex: 1;
   }
 
   .inline {
