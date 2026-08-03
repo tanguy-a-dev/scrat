@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { message } from "@tauri-apps/plugin-dialog";
   import { toast } from "$lib/toasts.svelte";
+  import Checkbox from "$lib/Checkbox.svelte";
   import {
     api,
     buildCategoryOptions,
@@ -44,6 +45,55 @@
   let includableCount = $derived(
     preview?.rows.filter((r, i) => included[i] && r.date && r.amount_minor_units).length ?? 0,
   );
+
+  /** Rows that can't be imported at all can't be ticked either, so they're
+   * excluded from every count the header checkbox reasons about — otherwise
+   * "select all" could never reach "all". */
+  let selectableIndexes = $derived(
+    (preview?.rows ?? [])
+      .map((r, i) => (r.date !== null && r.amount_minor_units !== null ? i : -1))
+      .filter((i) => i >= 0),
+  );
+  let allSelected = $derived(
+    selectableIndexes.length > 0 && selectableIndexes.every((i) => included[i]),
+  );
+  let anySelected = $derived(selectableIndexes.some((i) => included[i]));
+
+  function toggleSelectAll() {
+    const next = !allSelected;
+    for (const i of selectableIndexes) included[i] = next;
+  }
+
+  /** Shift-click extends from the last row clicked, matching the
+   * transactions list. */
+  let lastClickedIndex = $state<number | null>(null);
+
+  function handleRowPress(index: number, event: MouseEvent) {
+    if (event.shiftKey && lastClickedIndex !== null) {
+      const [from, to] = [lastClickedIndex, index].sort((a, b) => a - b);
+      const value = !included[index];
+      for (let i = from; i <= to; i++) {
+        if (selectableIndexes.includes(i)) included[i] = value;
+      }
+    } else {
+      included[index] = !included[index];
+    }
+    lastClickedIndex = index;
+    if (event.shiftKey) return; // a discrete range-select, not a drag
+    dragging = true;
+    dragPaintValue = included[index];
+  }
+
+  // Click-and-drag multi-select, same as the transactions list: press on a
+  // checkbox and sweep across rows while the button stays down.
+  let dragging = $state(false);
+  let dragPaintValue = $state(false);
+
+  function continueDrag(index: number) {
+    if (!dragging || !selectableIndexes.includes(index)) return;
+    included[index] = dragPaintValue;
+    lastClickedIndex = index;
+  }
 
   /** A mapping that can't read most of the file is the case the editor
    * exists for, so say so rather than leaving the user to infer it from a
@@ -131,6 +181,11 @@
           : Math.min(debit + 1, preview.mapping.column_count - 1);
       updateMapping({ amount: { kind: "debit_credit", debit, credit } });
     }
+  }
+
+  function toggleHasHeader() {
+    if (!preview) return;
+    updateMapping({ has_header: !preview.mapping.has_header });
   }
 
   function toggleDescriptionColumn(index: number, checked: boolean) {
@@ -250,16 +305,14 @@
   }
 </script>
 
+<!-- Catches the drag's mouseup wherever it lands, including outside any row. -->
+<svelte:window onmouseup={() => (dragging = false)} />
+
 <div class="backdrop">
   <div class="dialog">
     <h2>Import transactions from CSV</h2>
 
     {#if !preview}
-      <p class="hint">
-        Pick a bank export file, drag one in, or paste CSV content (⌘V /
-        Ctrl+V) — the format is detected automatically, no header row
-        required.
-      </p>
       <div
         class="dropzone"
         class:drag-over={dragOver}
@@ -270,45 +323,31 @@
         ondrop={handleDrop}
       >
         <input type="file" accept=".csv,text/csv" onchange={handleFileChange} />
-        <p class="dropzone-hint">or drop a .csv file here</p>
+        <p class="dropzone-hint">or drop a file here, or paste ⌘V</p>
       </div>
-      <button type="button" onclick={onClose}>Cancel</button>
+      <div class="actions">
+        <button type="button" onclick={onClose}>Cancel</button>
+      </div>
     {:else}
-      <p class="hint">
-        Read {Math.round(preview.date_confidence * 100)}% of dates and {Math.round(
-          preview.amount_confidence * 100,
-        )}% of amounts. Check the rows to import — anything that looks like an
-        opening/closing balance line starts unchecked. "Type" and "Category"
-        come from the file itself where it has those columns; a category it
-        names is created if you don't have it yet, and rows without one fall
-        back to the category chosen below ("Uncategorized" if you leave it
-        unset). Leave the account unset to use your default.
-      </p>
-
       {#if mappingLooksWrong}
         <p class="warning">
-          Most rows didn't come out with a usable date or amount. The columns
-          were probably guessed wrong — check the mapping below.
+          Only {Math.round(preview.date_confidence * 100)}% of dates and {Math.round(
+            preview.amount_confidence * 100,
+          )}% of amounts could be read — the columns were probably guessed
+          wrong.
         </p>
       {/if}
 
       <details class="mapping" bind:open={mappingOpen}>
         <summary>
-          Columns{preview.remembered ? " — saved from your last import" : ""}{remapping
-            ? " — re-reading…"
-            : ""}
-        </summary>
-
-        <p class="mapping-hint">
+          <span>Columns</span>
           {#if preview.remembered}
-            These are the columns you imported this bank's export with last
-            time. Change any of them and the preview below re-reads the file —
-            whatever you import with is what gets remembered next.
-          {:else}
-            Each row of the file was read using these columns. Change any of
-            them and the preview below re-reads the file.
+            <span class="badge" title="Reused from the last import of this file layout"
+              >Saved</span
+            >
           {/if}
-        </p>
+          {#if remapping}<span class="badge muted">Re-reading…</span>{/if}
+        </summary>
 
         <div class="mapping-grid">
           <label>
@@ -461,7 +500,7 @@
               checked={preview.mapping.description.kind === "remaining"}
               onchange={() => updateMapping({ description: { kind: "remaining" } })}
             />
-            Every column not used above
+            Everything unused
           </label>
           <label class="inline">
             <input
@@ -470,34 +509,36 @@
               checked={preview.mapping.description.kind === "columns"}
               onchange={() => updateMapping({ description: { kind: "columns", columns: [] } })}
             />
-            Only these columns
+            Pick columns
           </label>
           {#if preview.mapping.description.kind === "columns"}
             {@const chosen = preview.mapping.description.columns}
             <div class="description-columns">
               {#each preview.columns as c (c.index)}
-                <label class="inline">
-                  <input
-                    type="checkbox"
+                <span class="inline">
+                  <Checkbox
+                    size="sm"
                     checked={chosen.includes(c.index)}
-                    onchange={(e) =>
-                      toggleDescriptionColumn(c.index, e.currentTarget.checked)}
+                    ariaLabel={`Use ${columnLabel(c)} in the description`}
+                    onpress={() =>
+                      toggleDescriptionColumn(c.index, !chosen.includes(c.index))}
                   />
                   {columnLabel(c)}
-                </label>
+                </span>
               {/each}
             </div>
           {/if}
         </fieldset>
 
-        <label class="inline">
-          <input
-            type="checkbox"
+        <span class="inline">
+          <Checkbox
+            size="sm"
             checked={preview.mapping.has_header}
-            onchange={(e) => updateMapping({ has_header: e.currentTarget.checked })}
+            ariaLabel="First row is a header"
+            onpress={toggleHasHeader}
           />
-          The first row is a header, not a transaction
-        </label>
+          First row is a header
+        </span>
       </details>
 
       <div class="targets">
@@ -519,27 +560,40 @@
         <table>
           <thead>
             <tr>
-              <th></th>
+              <th class="select-header">
+                <Checkbox
+                  checked={allSelected}
+                  indeterminate={anySelected && !allSelected}
+                  ariaLabel="Select all rows"
+                  onpress={toggleSelectAll}
+                />
+              </th>
               <th>Date</th>
-              <th>Amount</th>
+              <th class="amount">Amount</th>
               <th>Description</th>
               <th>Type</th>
               <th>Category</th>
+              <th>Subcategory</th>
             </tr>
           </thead>
           <tbody>
             {#each preview.rows as row, i (i)}
               {@const invalid = row.date === null || row.amount_minor_units === null}
-              <tr class:invalid class:likely-balance={row.is_likely_balance_row}>
-                <td>
-                  <input
-                    type="checkbox"
-                    bind:checked={included[i]}
+              <tr
+                class:invalid
+                class:likely-balance={row.is_likely_balance_row}
+                onmouseenter={() => continueDrag(i)}
+              >
+                <td class="select-cell">
+                  <Checkbox
+                    checked={included[i]}
                     disabled={invalid}
+                    ariaLabel={`Import row ${i + 1}${row.description ? `: ${row.description}` : ""}`}
+                    onpress={(event) => handleRowPress(i, event)}
                   />
                 </td>
                 <td class="date">{row.date ?? "—"}</td>
-                <td
+                <td class="amount" class:income={(row.amount_minor_units ?? 0) > 0}
                   >{row.amount_minor_units !== null
                     ? formatSignedAmount(row.amount_minor_units)
                     : "—"}</td
@@ -547,15 +601,12 @@
                 <td>
                   {row.description || "—"}
                   {#if row.is_likely_balance_row}
-                    <span class="balance-hint">(likely a balance line)</span>
+                    <span class="balance-hint">balance line?</span>
                   {/if}
                 </td>
                 <td class="suggestion">{operationKindLabel(row.operation_kind)}</td>
-                <td class="suggestion"
-                  >{row.csv_subcategory
-                    ? `${row.csv_category} / ${row.csv_subcategory}`
-                    : row.csv_category ?? "—"}</td
-                >
+                <td class="suggestion">{row.csv_category ?? "—"}</td>
+                <td class="suggestion">{row.csv_subcategory ?? "—"}</td>
               </tr>
             {/each}
           </tbody>
@@ -563,6 +614,9 @@
       </div>
 
       <div class="actions">
+        <span class="actions-note">
+          {includableCount} of {preview.rows.length} rows selected
+        </span>
         <button type="button" onclick={onClose}>Cancel</button>
         <button
           type="button"
@@ -592,7 +646,9 @@
     color: inherit;
     border-radius: 12px;
     padding: 1.5rem;
-    width: min(40rem, 90vw);
+    /* Wider than a plain form dialog because the preview table now carries
+       Category and Subcategory as separate columns. */
+    width: min(54rem, 92vw);
     max-height: 85vh;
     overflow-y: auto;
     display: flex;
@@ -602,11 +658,6 @@
 
   h2 {
     margin: 0;
-  }
-
-  .hint {
-    opacity: 0.8;
-    font-size: 0.9rem;
   }
 
   .targets {
@@ -633,12 +684,26 @@
     cursor: pointer;
     font-size: 0.9rem;
     font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
   }
 
-  .mapping-hint {
-    margin: 0.6rem 0 0;
-    font-size: 0.8rem;
-    opacity: 0.75;
+  /* Says "this came from your last import" in the space a sentence would
+     have taken, with the explanation on the tooltip for whoever wants it. */
+  .badge {
+    font-size: 0.7rem;
+    font-weight: 500;
+    padding: 0.05rem 0.4rem;
+    border-radius: 999px;
+    background-color: color-mix(in srgb, var(--color-accent) 22%, transparent);
+    border: 1px solid color-mix(in srgb, var(--color-accent) 40%, transparent);
+  }
+
+  .badge.muted {
+    background: none;
+    border-color: var(--color-shade-4);
+    opacity: 0.7;
   }
 
   .mapping-grid {
@@ -682,7 +747,7 @@
     margin-top: 0.3rem;
   }
 
-  label.inline {
+  .inline {
     display: flex;
     align-items: center;
     gap: 0.4rem;
@@ -691,7 +756,7 @@
     min-width: 0;
   }
 
-  label.inline input {
+  .inline input {
     flex: none;
   }
 
@@ -730,6 +795,9 @@
   .rows {
     max-height: 20rem;
     overflow-y: auto;
+    /* Seven columns can outgrow a narrow window; the table scrolls inside
+       its own box rather than making the dialog scroll sideways. */
+    overflow-x: auto;
     border: 1px solid var(--color-shade-3);
     border-radius: 8px;
     /* The dialog is a flex column, and a scrollable child is free to shrink
@@ -750,8 +818,34 @@
     padding: 0.35rem 0.5rem;
   }
 
+  th {
+    font-size: 0.8rem;
+    white-space: nowrap;
+  }
+
+  /* Unlike the transactions list, ticking rows is the whole point of this
+     dialog, so the boxes stay visible instead of appearing on hover. */
+  .select-header,
+  .select-cell {
+    width: 1.35rem;
+    padding-right: 0.25rem;
+  }
+
   td.date {
     white-space: nowrap;
+  }
+
+  td.amount,
+  th.amount {
+    text-align: right;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Money in and money out are the one distinction worth colour here: a
+     debit/credit file mapped the wrong way round shows up instantly. */
+  td.amount.income {
+    color: var(--color-accent);
   }
 
   tr.invalid {
@@ -765,7 +859,8 @@
   .balance-hint {
     font-style: italic;
     opacity: 0.7;
-    font-size: 0.8rem;
+    font-size: 0.75rem;
+    white-space: nowrap;
   }
 
   .suggestion {
@@ -780,7 +875,14 @@
   .actions {
     display: flex;
     justify-content: flex-end;
+    align-items: center;
     gap: 0.5rem;
+  }
+
+  .actions-note {
+    margin-right: auto;
+    font-size: 0.8rem;
+    opacity: 0.7;
   }
 
   button {

@@ -18,29 +18,17 @@
     type RangeMode,
   } from "$lib/api";
   import ImportCsvDialog from "$lib/ImportCsvDialog.svelte";
+  import Checkbox from "$lib/Checkbox.svelte";
   import DeleteButton from "$lib/DeleteButton.svelte";
   import CategorySelect from "$lib/CategorySelect.svelte";
   import FilterPopover from "$lib/FilterPopover.svelte";
   import DateRangePicker from "$lib/DateRangePicker.svelte";
   import { pageViewState } from "$lib/pageCache";
   import { toast } from "$lib/toasts.svelte";
-  import { ArrowUp, Check, FileUp, Minus, Pencil, Plus, Search } from "@lucide/svelte";
+  import { ArrowUp, FileUp, Pencil, Plus, Search } from "@lucide/svelte";
 
   function autofocus(node: HTMLElement) {
     node.focus();
-  }
-
-  /** Keeps a checkbox's native `indeterminate` visual state in sync — there
-   * is no HTML attribute for it, only the DOM property. Applied to the real
-   * (visually hidden) input so screen readers still get it; the visible box
-   * is drawn separately in the `checkbox` snippet below. */
-  function setIndeterminate(node: HTMLInputElement, value: boolean) {
-    node.indeterminate = value;
-    return {
-      update(value: boolean) {
-        node.indeterminate = value;
-      },
-    };
   }
 
   type SelectionKind = "expense" | "income";
@@ -933,49 +921,6 @@
      the table, anywhere. -->
 <svelte:window onmouseup={endRowDrag} />
 
-{#snippet checkbox(props: {
-  checked: boolean;
-  indeterminate?: boolean;
-  ariaLabel: string;
-  onpress: (event: MouseEvent) => void;
-})}
-  <label class="checkbox" class:checked={props.checked} class:indeterminate={props.indeterminate}>
-    <input
-      type="checkbox"
-      checked={props.checked}
-      use:setIndeterminate={!!props.indeterminate}
-      aria-label={props.ariaLabel}
-      onmousedown={(event) => {
-        // Fires on mousedown, not click, for two reasons: a browser starts
-        // extending its own text selection right here, before any click
-        // handler would even run, so preventing default is what stops a
-        // shift-click (or a drag) from also sweeping up the row text as a
-        // selection — and a following drag needs the state already applied
-        // by the time the cursor reaches the next row, not a beat later.
-        event.preventDefault();
-        props.onpress(event);
-      }}
-      onclick={(event) => {
-        // A checkbox's own checked-state flip is tied to the `click` event
-        // specifically (browsers pre-toggle it before dispatch, then revert
-        // if the click is prevented) — preventing mousedown's default above
-        // doesn't touch that. Without this, the native toggle fires right
-        // alongside our own, fighting `checked={props.checked}` for which
-        // one wins. All the actual logic already ran on mousedown; this is
-        // just here to keep the native behavior out of the way.
-        event.preventDefault();
-      }}
-    />
-    <span class="box">
-      {#if props.indeterminate}
-        <Minus size={13} strokeWidth={3} />
-      {:else if props.checked}
-        <Check size={13} strokeWidth={3} />
-      {/if}
-    </span>
-  </label>
-{/snippet}
-
 {#snippet list(items: TransactionDto[], kind: SelectionKind)}
     {@const selected = selectionSet(kind)}
     {@const anySelected = items.some((t) => selected.has(t.id))}
@@ -984,12 +929,12 @@
       <thead>
         <tr>
           <th class="select-header">
-            {@render checkbox({
-              checked: allSelected,
-              indeterminate: anySelected && !allSelected,
-              ariaLabel: `Select all ${kind === "expense" ? "expenses" : "income"}`,
-              onpress: () => toggleSelectAll(kind),
-            })}
+            <Checkbox
+              checked={allSelected}
+              indeterminate={anySelected && !allSelected}
+              ariaLabel={`Select all ${kind === "expense" ? "expenses" : "income"}`}
+              onpress={() => toggleSelectAll(kind)}
+            />
           </th>
           <th class="date-cell"
             ><button type="button" onclick={() => toggleSort("date")}
@@ -1052,11 +997,11 @@
           {#each items as t (t.id)}
             <tr onmouseenter={() => continueRowDrag(kind, t.id)}>
               <td class="select-cell">
-                {@render checkbox({
-                  checked: selected.has(t.id),
-                  ariaLabel: `Select transaction ${t.date} ${t.description}`,
-                  onpress: (event: MouseEvent) => beginRowDrag(kind, t.id, event),
-                })}
+                <Checkbox
+                  checked={selected.has(t.id)}
+                  ariaLabel={`Select transaction ${t.date} ${t.description}`}
+                  onpress={(event: MouseEvent) => beginRowDrag(kind, t.id, event)}
+                />
               </td>
               <td class="date-cell">{t.date}</td>
               <td>{formatCurrency(t.amount_minor_units, t.currency)}</td>
@@ -1487,55 +1432,19 @@
      checkmark recolored independently of the box fill, and this one needs
      to read as cyan-box / background-colored glyph, like every other icon
      control in the app (see .icon-button in app.css). */
-  .checkbox {
-    display: inline-flex;
-    position: relative;
-    cursor: pointer;
-    opacity: 0;
-    transition: opacity 0.1s;
+  /* Hidden until its row/header is hovered — a bare checkbox column would
+     otherwise clutter every row for a feature most visits never use. A box
+     that is checked or focused overrides this from inside Checkbox.svelte,
+     so nothing can end up selected but invisible. Driven by a custom
+     property because scoped styles here can't reach into that component. */
+  .select-cell,
+  .select-header {
+    --checkbox-opacity: 0;
   }
 
-  .checkbox input {
-    /* Without this, some engines keep hit-testing against the native
-       checkbox widget's own default-sized hotspot instead of the CSS box
-       `inset: 0` stretches it to — the visible part is all drawn by `.box`
-       below anyway, so the input has no native look left to preserve. */
-    appearance: none;
-    -webkit-appearance: none;
-    position: absolute;
-    inset: 0;
-    margin: 0;
-    opacity: 0;
-    cursor: pointer;
-  }
-
-  .box {
-    width: 1.35rem;
-    height: 1.35rem;
-    border-radius: 5px;
-    border: 1.5px solid var(--color-shade-4);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--color-accent-contrast);
-    pointer-events: none;
-  }
-
-  .checkbox.checked .box,
-  .checkbox.indeterminate .box {
-    background-color: var(--color-accent);
-    border-color: var(--color-accent);
-  }
-
-  /* Hidden until its row/header is hovered, focused, or already checked —
-     a bare checkbox column would otherwise clutter every row for a feature
-     most visits never use. */
-  tr:hover .select-cell .checkbox,
-  thead tr:hover .select-header .checkbox,
-  .checkbox.checked,
-  .checkbox.indeterminate,
-  .checkbox:focus-within {
-    opacity: 1;
+  tr:hover .select-cell,
+  thead tr:hover .select-header {
+    --checkbox-opacity: 1;
   }
 
   table {
