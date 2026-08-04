@@ -8,8 +8,8 @@ use scrat_domain::ports::{
 };
 use scrat_domain::recurring::{self, RecurringCharge};
 use scrat_domain::transaction::{
-    Description, OperationKind, Transaction, TransactionError, TransactionId, TransactionRole,
-    TransferGroupId,
+    Description, OperationKind, Transaction, TransactionError, TransactionFingerprint,
+    TransactionId, TransactionRole, TransferGroupId,
 };
 use scrat_domain::transfer_rule::TransferRule;
 use thiserror::Error;
@@ -545,6 +545,36 @@ impl<'a> TransactionService<'a> {
         )?;
         self.categories.insert(&subcategory)?;
         Ok(subcategory.id())
+    }
+
+    /// Flags which of `rows` collide with a transaction already sitting in
+    /// `account_id` — same date, amount, and normalized description. Used by
+    /// CSV import to default those rows unticked, via
+    /// [`TransactionFingerprint`] — the candidate key it was built for. This
+    /// is a hint, not a constraint: nothing stops the caller from importing
+    /// a flagged row anyway, the same way [`TransactionRepository::insert`]
+    /// never rejects a duplicate fingerprint.
+    pub fn find_duplicate_rows(
+        &self,
+        account_id: AccountId,
+        rows: &[(NaiveDate, i64, String)],
+    ) -> Result<Vec<bool>, ApplicationError> {
+        let existing: std::collections::HashSet<String> = self
+            .transactions
+            .list_all()?
+            .into_iter()
+            .filter(|t| t.account_id() == account_id)
+            .map(|t| t.fingerprint().as_str().to_string())
+            .collect();
+
+        Ok(rows
+            .iter()
+            .map(|(date, amount_minor_units, description)| {
+                let fingerprint =
+                    TransactionFingerprint::of(account_id, *date, *amount_minor_units, description);
+                existing.contains(fingerprint.as_str())
+            })
+            .collect())
     }
 
     /// Finds past transactions whose description text matches `description` exactly
@@ -2427,6 +2457,92 @@ mod tests {
             .unwrap();
 
         assert_eq!(found, None);
+    }
+
+    #[test]
+    fn find_duplicate_rows_flags_a_row_matching_an_existing_transaction() {
+        let f = fixture();
+        let service = f.service();
+        let date = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+        service
+            .create_transaction(date, -1_500, "Whole Foods", f.category_id, f.account_id)
+            .unwrap();
+
+        let flags = service
+            .find_duplicate_rows(
+                f.account_id,
+                &[(date, -1_500, "Whole Foods".to_string())],
+            )
+            .unwrap();
+
+        assert_eq!(flags, vec![true]);
+    }
+
+    #[test]
+    fn find_duplicate_rows_ignores_a_match_on_a_different_account() {
+        let f = fixture();
+        let service = f.service();
+        let date = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+        service
+            .create_transaction(date, -1_500, "Whole Foods", f.category_id, f.account_id)
+            .unwrap();
+
+        // Same date/amount/description, but checked against a different
+        // account than the one the existing transaction lives on.
+        let flags = service
+            .find_duplicate_rows(
+                f.counterpart_account_id,
+                &[(date, -1_500, "Whole Foods".to_string())],
+            )
+            .unwrap();
+
+        assert_eq!(flags, vec![false]);
+    }
+
+    #[test]
+    fn find_duplicate_rows_does_not_flag_rows_that_differ() {
+        let f = fixture();
+        let service = f.service();
+        let date = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+        service
+            .create_transaction(date, -1_500, "Whole Foods", f.category_id, f.account_id)
+            .unwrap();
+
+        let flags = service
+            .find_duplicate_rows(
+                f.account_id,
+                &[
+                    // Different amount.
+                    (date, -1_600, "Whole Foods".to_string()),
+                    // Different date.
+                    (
+                        NaiveDate::from_ymd_opt(2026, 3, 2).unwrap(),
+                        -1_500,
+                        "Whole Foods".to_string(),
+                    ),
+                    // Different description.
+                    (date, -1_500, "Trader Joe's".to_string()),
+                ],
+            )
+            .unwrap();
+
+        assert_eq!(flags, vec![false, false, false]);
+    }
+
+    #[test]
+    fn find_duplicate_rows_normalizes_description_case_and_whitespace() {
+        let f = fixture();
+        let service = f.service();
+        let date = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+        service
+            .create_transaction(date, -1_500, "Whole   Foods", f.category_id, f.account_id)
+            .unwrap();
+
+        let flags = service
+            .find_duplicate_rows(f.account_id, &[(date, -1_500, "  whole foods  ".to_string())])
+            .unwrap();
+
+        assert_eq!(flags, vec![true]);
     }
 
     #[test]

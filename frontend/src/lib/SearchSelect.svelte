@@ -167,6 +167,14 @@
     position: relative;
     display: inline-block;
     max-width: 11rem;
+    /* Its own explicit stacking context, ranked above ordinary sibling
+       content by a real z-index rather than the ambiguous "auto" level —
+       a scrollable sibling (a checkbox column with overflow: auto, as the
+       CSV import preview table has) can otherwise end up painted on top of
+       this dropdown in WebKit, the engine Tauri uses on macOS, even though
+       the dropdown's own z-index is higher. */
+    isolation: isolate;
+    z-index: 1;
   }
 
   .search-select.icon-mode {

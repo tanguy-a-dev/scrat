@@ -35,6 +35,12 @@
    * asking the user to pick it again. */
   let fileBytes = $state<number[] | null>(null);
   let included = $state<boolean[]>([]);
+  /** Parallel to `preview.rows` — true when a row has the same date, amount,
+   * and description as a transaction already sitting in the destination
+   * account. A hint, not a constraint: nothing stops a flagged row from
+   * being ticked back on, the same way the ledger itself never rejects a
+   * duplicate write (see `TransactionFingerprint`). */
+  let duplicateFlags = $state<boolean[]>([]);
   let selectedCategoryId = $state("");
   let selectedAccountId = $state("");
   let prioritizeHistoricalCategory = $state(false);
@@ -145,6 +151,54 @@
    * only caller someday. */
   const MAX_CSV_FILE_BYTES = 20 * 1024 * 1024;
 
+  /** Bumped on every call so a slow response from a superseded check (an
+   * account switched again, or a new file/mapping loaded, before the first
+   * one returned) can't clobber a newer result that already landed. */
+  let duplicateCheckToken = 0;
+
+  /** Re-flags which rows collide with a transaction already on the
+   * destination account, and re-applies the "uncheck duplicates by default"
+   * rule on top of whatever `include_by_default` already decided. Run after
+   * every (re)parse of the file and whenever the destination account
+   * changes, since a duplicate is only a duplicate on the account it
+   * collides with. */
+  async function refreshDuplicateFlags() {
+    if (!preview) return;
+    const rows = preview.rows;
+    const token = ++duplicateCheckToken;
+    const candidates = rows
+      .map((r, i) => ({ i, r }))
+      .filter(({ r }) => r.date !== null && r.amount_minor_units !== null);
+    if (candidates.length === 0) {
+      duplicateFlags = rows.map(() => false);
+      return;
+    }
+    try {
+      const flags = await api.checkDuplicateTransactions(
+        selectedAccountId || null,
+        candidates.map(({ r }) => ({
+          date: r.date as string,
+          amount_minor_units: r.amount_minor_units as number,
+          description: r.description,
+        })),
+      );
+      if (token !== duplicateCheckToken) return;
+      const next = rows.map(() => false);
+      candidates.forEach(({ i }, idx) => {
+        next[i] = flags[idx] ?? false;
+      });
+      duplicateFlags = next;
+      included = rows.map((r, i) => r.include_by_default && !next[i]);
+    } catch {
+      // Best-effort: the row selection detection already set stands.
+    }
+  }
+
+  function handleAccountChange(id: string) {
+    selectedAccountId = id;
+    refreshDuplicateFlags();
+  }
+
   async function loadBytes(bytes: number[]) {
     if (bytes.length > MAX_CSV_FILE_BYTES) {
       await message(
@@ -169,6 +223,7 @@
           .catch(() => null);
         if (suggested) selectedAccountId = suggested;
       }
+      await refreshDuplicateFlags();
     } catch (e) {
       await message(String(e), { title: "Import CSV", kind: "error" });
     }
@@ -184,6 +239,7 @@
       const result = await api.previewCsvImport(fileBytes, mapping);
       preview = result;
       included = result.rows.map((r) => r.include_by_default);
+      await refreshDuplicateFlags();
     } catch (e) {
       await message(String(e), { title: "Import CSV", kind: "error" });
     } finally {
@@ -574,17 +630,16 @@
             placeholder="Uncategorized (default)…"
             searchPlaceholder="Search category…"
           />
-          <span class="field-hint">Category set if none found.</span>
         </label>
 
         <span class="inline">
           <Checkbox
             size="sm"
             checked={detectCategoryFromHistory}
-            ariaLabel="Use previous transactions' categories to detect new transactions' categories if none is set"
+            ariaLabel="Reuse categories from similar past transactions"
             onpress={() => (detectCategoryFromHistory = !detectCategoryFromHistory)}
           />
-          Use previous transactions' categories to detect new transactions' categories
+          Reuse categories from similar past transactions
         </span>
 
         <span class="inline">
@@ -592,10 +647,10 @@
             size="sm"
             checked={prioritizeHistoricalCategory}
             disabled={!detectCategoryFromHistory}
-            ariaLabel="Prefer a category already used for this description over the CSV's own category"
+            ariaLabel="Let past categories override the file's category column"
             onpress={() => (prioritizeHistoricalCategory = !prioritizeHistoricalCategory)}
           />
-          Prefer a category already used for this description over the CSV's own category
+          Let past categories override the file's category column
         </span>
       </details>
 
@@ -603,7 +658,7 @@
         <SearchSelect
           options={accountOptions}
           value={selectedAccountId}
-          onChange={(id) => (selectedAccountId = id)}
+          onChange={handleAccountChange}
           placeholder="Destination account (optional)…"
           searchPlaceholder="Search account…"
         />
@@ -636,6 +691,7 @@
               <tr
                 class:invalid
                 class:likely-balance={row.is_likely_balance_row}
+                class:likely-duplicate={duplicateFlags[i] && !row.is_likely_balance_row}
                 onmouseenter={() => continueDrag(i)}
               >
                 <td class="select-cell">
@@ -656,6 +712,11 @@
                   {row.description || "—"}
                   {#if row.is_likely_balance_row}
                     <span class="balance-hint">balance line?</span>
+                  {/if}
+                  {#if duplicateFlags[i]}
+                    <span class="balance-hint"
+                      >already in this account — unticked</span
+                    >
                   {/if}
                 </td>
                 <td class="suggestion">{operationKindLabel(row.operation_kind)}</td>
@@ -954,6 +1015,10 @@
 
   tr.likely-balance:not(.invalid) {
     background-color: color-mix(in srgb, var(--color-accent) 8%, transparent);
+  }
+
+  tr.likely-duplicate:not(.invalid) {
+    background-color: color-mix(in srgb, var(--color-shade-4) 25%, transparent);
   }
 
   .balance-hint {

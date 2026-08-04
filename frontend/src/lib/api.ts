@@ -375,6 +375,15 @@ export const api = {
    * re-read the same file through a user-corrected mapping. */
   previewCsvImport: (bytes: number[], mapping?: ColumnMappingDto) =>
     invoke<ImportPreviewDto>("preview_csv_import", { bytes, mapping: mapping ?? null }),
+  /** Flags which of `rows` already sit in `accountId`'s ledger under the
+   * same date, amount, and description — a hint the CSV import dialog uses
+   * to default those rows unticked, not a constraint the ledger enforces.
+   * `accountId` null falls back to the app default, same as
+   * `commitCsvImport`. */
+  checkDuplicateTransactions: (
+    accountId: string | null,
+    rows: { date: string; amount_minor_units: number; description: string }[],
+  ) => invoke<boolean[]>("check_duplicate_transactions", { accountId, rows }),
   commitCsvImport: (
     rows: {
       date: string;

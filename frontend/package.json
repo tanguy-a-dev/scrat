@@ -10,7 +10,7 @@
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
   },
-  "license": "MIT",
+  "license": "SEE LICENSE IN ../LICENSE.md",
   "dependencies": {
     "@lucide/svelte": "^1.27.0",
     "@tauri-apps/api": "^2",

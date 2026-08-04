@@ -252,6 +252,56 @@ pub fn preview_csv_import(
 }
 
 #[derive(Debug, Deserialize)]
+pub struct DuplicateCheckRowDto {
+    pub date: String,
+    pub amount_minor_units: i64,
+    pub description: String,
+}
+
+/// Flags which of `rows` already sit in `account_id`'s ledger under the same
+/// date, amount, and description, so the import dialog can default those
+/// rows unticked. Checked against whichever account the import is currently
+/// targeting — `account_id` absent falls back to the app default, same as
+/// `commit_csv_import` — and re-run whenever that target changes, since a
+/// duplicate is only a duplicate on the account it collides with.
+///
+/// This is a hint, not a constraint: nothing here stops a flagged row from
+/// being imported anyway, and the ledger itself enforces no such uniqueness
+/// (see [`scrat_domain::transaction::TransactionFingerprint`]).
+#[tauri::command]
+pub fn check_duplicate_transactions(
+    state: State<DbState>,
+    account_id: Option<String>,
+    rows: Vec<DuplicateCheckRowDto>,
+) -> Result<Vec<bool>, String> {
+    let account_id = account_id
+        .map(|id| AccountId::parse(&id).map_err(|e| e.to_string()))
+        .transpose()?;
+    let parsed_rows = rows
+        .into_iter()
+        .map(|r| Ok((parse_date(&r.date)?, r.amount_minor_units, r.description)))
+        .collect::<Result<Vec<_>, String>>()?;
+
+    let account_id = match account_id {
+        Some(id) => id,
+        None => {
+            let guard = state.0.lock().unwrap();
+            let conn = guard
+                .as_ref()
+                .ok_or_else(|| "database is locked".to_string())?;
+            match crate::accounts::resolve_default_account_id(conn)? {
+                Some(id) => id,
+                // No destination account resolved yet — nothing to compare
+                // against, so nothing is a duplicate.
+                None => return Ok(vec![false; parsed_rows.len()]),
+            }
+        }
+    };
+
+    with_service(&state, |s| s.find_duplicate_rows(account_id, &parsed_rows))
+}
+
+#[derive(Debug, Deserialize)]
 pub struct ImportCommitRowDto {
     pub date: String,
     pub amount_minor_units: i64,

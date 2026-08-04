@@ -51,6 +51,7 @@ pub fn run() {
             transfer_rules::delete_transfer_rule,
             transfer_rules::apply_transfer_rules,
             import::preview_csv_import,
+            import::check_duplicate_transactions,
             import::commit_csv_import,
             settings::get_currency,
             settings::set_currency,
