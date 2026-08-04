@@ -37,8 +37,13 @@
 
   onMount(load);
 
-  async function load() {
-    loading = true;
+  /** `silent` skips the `loading` flag, so the account list isn't unmounted
+   * and remounted on every refresh after a mutation — that used to destroy
+   * the focused input (and jump the scroll position to the top) whenever an
+   * account further down the list was being edited. Only the very first
+   * load, before there's anything on screen yet, needs the loading state. */
+  async function load(silent = false) {
+    if (!silent) loading = true;
     error = "";
     try {
       const [a, r] = await Promise.all([
@@ -50,7 +55,7 @@
     } catch (e) {
       error = String(e);
     } finally {
-      loading = false;
+      if (!silent) loading = false;
     }
   }
 
@@ -63,7 +68,7 @@
   async function withErrorHandling(action: () => Promise<unknown>) {
     try {
       await action();
-      await load();
+      await load(true);
     } catch (e) {
       toast.error(String(e));
     }
@@ -75,7 +80,7 @@
   ) {
     try {
       await action();
-      await load();
+      await load(true);
       toast.success(successMessage);
     } catch (e) {
       toast.error(String(e));
@@ -125,7 +130,7 @@
     try {
       await api.establishOpeningBalance(account.id, minorUnits);
       cancelAnchor();
-      await load();
+      await load(true);
       toast.success(`Starting point set for "${account.name}".`);
     } catch (e) {
       toast.error(String(e));
@@ -181,7 +186,7 @@
     try {
       const summary = await api.applyTransferRules(account.id);
       applyingRulesAccountId = null;
-      await load();
+      await load(true);
       toast.success(
         summary.converted > 0
           ? `${summary.converted} existing transaction(s) converted to transfers.`
@@ -219,7 +224,7 @@
         todayIsoDate(),
       );
       cancelReconcile();
-      await load();
+      await load(true);
       toast.success(
         adjustment
           ? `Adjusted by ${formatCurrency(adjustment.amount_minor_units, account.currency)}.`
