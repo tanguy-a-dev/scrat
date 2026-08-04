@@ -622,7 +622,7 @@
         </summary>
 
         <label class="default-category">
-          Default category
+          <span class="caption">Default category</span>
           <SearchSelect
             options={fallbackCategoryOptions}
             value={selectedCategoryId}
@@ -863,8 +863,17 @@
     align-items: flex-start;
     gap: 0.2rem;
     font-size: 0.8rem;
-    opacity: 0.9;
     margin-top: 0.6rem;
+  }
+
+  /* The dimming sits on the caption, never on the label itself: `opacity`
+     below 1 makes the label a stacking context, which traps the open
+     SearchSelect dropdown inside it no matter how high the dropdown's own
+     z-index is. The checkbox rows below are `position: relative`, so they
+     painted on top of the open dropdown — and the label's 0.9 alpha let
+     their text bleed through it as well. */
+  .default-category .caption {
+    opacity: 0.9;
   }
 
   .default-category :global(.search-select) {

@@ -113,7 +113,12 @@
 
 <svelte:window onclick={handleWindowClick} />
 
-<div class="search-select" class:icon-mode={!!trigger} bind:this={containerEl}>
+<div
+  class="search-select"
+  class:icon-mode={!!trigger}
+  class:open
+  bind:this={containerEl}
+>
   <button
     type="button"
     class="trigger"
@@ -175,6 +180,15 @@
        the dropdown's own z-index is higher. */
     isolation: isolate;
     z-index: 1;
+  }
+
+  /* The dropdown's own z-index only orders it *within* this root, so the root
+     is what has to outrank the rest of the page while it's open — every other
+     SearchSelect sits at z-index 1 too, and a later one in document order
+     (the CSV dialog's destination-account picker, the next row's category
+     picker) would otherwise paint straight over the open list. */
+  .search-select.open {
+    z-index: 5;
   }
 
   .search-select.icon-mode {
