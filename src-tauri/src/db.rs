@@ -100,6 +100,17 @@ pub fn change_passphrase(
     scrat_infra_sqlite::rekey(conn, &new_passphrase).map_err(describe)
 }
 
+/// Locks the database by dropping the live connection — the same state as
+/// before the passphrase was ever entered. Nothing is persisted; unlocking
+/// again re-keys the file exactly like [`unlock_db`] does on a fresh launch.
+/// Called by the frontend's idle timer; there is currently no manual "lock
+/// now" affordance.
+#[tauri::command]
+pub fn lock_db(state: State<DbState>) -> Result<(), String> {
+    *state.0.lock().unwrap() = None;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

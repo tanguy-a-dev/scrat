@@ -10,6 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Runs before the slow steps: this decides the version that a green main
+      # gets released as, so a break here should surface immediately.
+      - name: Release version-bump logic
+        run: bash scripts/next-version-test.sh
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt

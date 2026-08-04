@@ -2,6 +2,7 @@
   import { goto } from "$app/navigation";
   import { onMount } from "svelte";
   import { api } from "$lib/api";
+  import { session } from "$lib/session.svelte";
 
   type Screen = "loading" | "create" | "unlock" | "fatal";
 
@@ -35,6 +36,7 @@
     submitting = true;
     try {
       await api.createDb(passphrase);
+      await session.markUnlocked();
       await goto("/overview");
     } catch (e) {
       error = String(e);
@@ -53,6 +55,7 @@
     submitting = true;
     try {
       await api.unlockDb(passphrase);
+      await session.markUnlocked();
       await goto("/overview");
     } catch (e) {
       error = String(e);

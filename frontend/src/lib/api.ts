@@ -241,6 +241,7 @@ export const api = {
   createDb: (passphrase: string) =>
     invoke<void>("create_db_with_passphrase", { passphrase }),
   unlockDb: (passphrase: string) => invoke<void>("unlock_db", { passphrase }),
+  lockDb: () => invoke<void>("lock_db"),
   changePassphrase: (currentPassphrase: string, newPassphrase: string) =>
     invoke<void>("change_passphrase", {
       currentPassphrase,
@@ -421,6 +422,9 @@ export const api = {
 
   getCurrency: () => invoke<string>("get_currency"),
   setCurrency: (code: string) => invoke<void>("set_currency", { code }),
+  getAutoLockMinutes: () => invoke<number>("get_auto_lock_minutes"),
+  setAutoLockMinutes: (minutes: number) =>
+    invoke<void>("set_auto_lock_minutes", { minutes }),
   exportDatabase: (destination: string) =>
     invoke<void>("export_database", { destination }),
   importDatabase: (source: string, passphrase: string) =>

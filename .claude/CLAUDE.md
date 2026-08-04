@@ -232,6 +232,37 @@ test for whatever broke, the same way the existing tests do.
 - Never commit with `-A`/broad adds without reviewing `git status` first,
   especially given the real-financial-data risk above.
 
+## Versioning and releases
+
+Commit messages are now load-bearing: `.github/workflows/release.yml` decides
+the next version by parsing them, so a mistyped prefix silently changes what
+ships. See the table in README.md for the type → bump mapping.
+
+- **The version lives in exactly one place**: `[workspace.package] version` in
+  the root `Cargo.toml`. `src-tauri/Cargo.toml` inherits it with
+  `version.workspace = true`, and `src-tauri/tauri.conf.json` has **no**
+  `version` key at all so Tauri falls back to the Cargo one (verified in
+  `tauri-codegen`'s `context.rs`: absent config version → `CARGO_PKG_VERSION`).
+  Don't add it back "for clarity" — it's the same drift trap as a cached
+  balance field. `scripts/set-version.sh` rewrites the two `package.json`s and
+  refreshes `Cargo.lock` from that one value.
+- **`scripts/next-version.sh` maps commit type → bump, and anything it doesn't
+  recognise releases nothing.** That's deliberate: a typo'd prefix must never
+  guess a version. Scrat's vocabulary is wider than the Conventional Commits
+  spec (`ux:`, `ops:`, `refacto:`, `clean:`, `tests:`), so **adding a new
+  commit prefix to the repo's vocabulary means adding it to that script's
+  `bump_for_type` too**, or commits using it will never trigger a release.
+- **Below 1.0.0 a breaking change bumps the minor, not the major.** Reaching
+  1.0.0 should be a deliberate statement about stability, not a side effect of
+  a `!` in a commit subject.
+- The release ordering is: decide version → build every platform → *then*
+  commit the bump and push the tag. Nothing is tagged that didn't build
+  everywhere first, so don't "simplify" it by tagging up front.
+- The workflow pushes a `chore(release): vX.Y.Z` commit back to main. It's
+  filtered out of both the bump classification and the release notes — without
+  that filter every release would beget another. `scripts/next-version-test.sh`
+  covers this case; run it with `make release-test` (part of `make check`).
+
 ## What "done" means for a change here
 
 1. It compiles across the whole workspace (`cargo build`), not just the crate

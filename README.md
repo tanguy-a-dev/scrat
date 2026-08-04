@@ -86,14 +86,57 @@ launches the desktop app in development mode with hot reload.
 ### Other useful commands
 
 ```bash
-make check     # fmt-check + lint + test, same as CI
-make build     # build the desktop app for release
-make coverage  # generate a Rust test coverage report
-make kill      # stop any running dev/app processes
-make reset-db  # permanently delete the local database (careful!)
+make check           # fmt-check + lint + test, same as CI
+make build           # build the desktop app for release
+make coverage        # generate a Rust test coverage report
+make release-preview # show the version bump the next release would use
+make kill            # stop any running dev/app processes
+make reset-db        # permanently delete the local database (careful!)
 ```
 
 Run `make help` to see the full list of targets.
+
+## Releases
+
+Releases are cut automatically. Push to `main`, and once CI is green the
+release workflow reads the commit messages written since the last tag, decides
+the next [semantic version](https://semver.org/), builds installers for macOS,
+Linux, and Windows, and publishes them as a GitHub release whose notes are
+those commits.
+
+The version bump follows the commit type:
+
+| Commit type | Bump |
+| --- | --- |
+| `feat:` | minor — `0.1.4` → `0.2.0` |
+| `fix:`, `ux:`, `perf:`, `revert:` | patch — `0.1.4` → `0.1.5` |
+| `docs:`, `tests:`, `ops:`, `chore:`, `style:`, `clean:`, `refacto:` | none — no release |
+| `feat!:` or a `BREAKING CHANGE:` footer | major, but see below |
+
+Below `1.0.0` a breaking change takes the *minor* slot rather than the major
+one — `0.x` is the range where anything may still change, and reaching `1.0.0`
+should be a deliberate statement about stability, not something a commit
+message does by accident.
+
+If nothing releasable landed — a batch of `docs:` and `chore:` commits, say —
+no tag and no release are created. Run `make release-preview` to see what the
+next push would produce before you make it.
+
+The version lives in exactly one place, `[workspace.package] version` in the
+root `Cargo.toml`. Every other manifest either inherits it
+(`src-tauri/Cargo.toml`) or is rewritten from it by `scripts/set-version.sh`.
+`src-tauri/tauri.conf.json` deliberately has no `version` key so that Tauri
+falls back to the Cargo one; don't add it back, or the two will drift.
+
+To release something the commit types wouldn't (or to force a specific bump),
+run the **Release** workflow manually from the Actions tab and pick the bump.
+
+### Released binaries are unsigned
+
+The published installers are not code-signed, because signing certificates are
+per-developer and cost money. macOS refuses the first launch of an unsigned
+app — right-click it and choose *Open* to get the "open anyway" prompt. Windows
+SmartScreen warns for the same reason. Building from source avoids both.
 
 ## Privacy
 

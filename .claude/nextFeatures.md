@@ -1,7 +1,10 @@
 # Features
 
-## Security Log Out
+## CSV import
 
-The app should lock if there is no activity for 10 mins.
-Can be set in the settings to switch from 1min, 10mins, 1 hour, never.
+My Bank Account decided to add CB in the description at the begining of all transactions made with a card. 
+I'd like for the categories to be checked without CB.
 
+## Rust version
+
+We are using rust edition = "2021", why not 2024?

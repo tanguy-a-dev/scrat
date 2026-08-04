@@ -37,6 +37,16 @@ pub fn set_default_account_id(conn: &Connection, id: &str) -> Result<(), Reposit
     set_setting(conn, "default_account_id", id)
 }
 
+/// Stored as the decimal string form of the minutes value (`"0"` for
+/// "never"). `None` means nobody has changed it from the app default yet.
+pub fn get_auto_lock_minutes(conn: &Connection) -> Result<Option<String>, RepositoryError> {
+    get_setting(conn, "auto_lock_minutes")
+}
+
+pub fn set_auto_lock_minutes(conn: &Connection, minutes: &str) -> Result<(), RepositoryError> {
+    set_setting(conn, "auto_lock_minutes", minutes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,5 +103,29 @@ mod tests {
             get_default_account_id(&conn).unwrap(),
             Some("acc-2".to_string())
         );
+    }
+
+    #[test]
+    fn get_auto_lock_minutes_returns_none_when_unset() {
+        let conn = test_conn();
+        assert_eq!(get_auto_lock_minutes(&conn).unwrap(), None);
+    }
+
+    #[test]
+    fn set_then_get_auto_lock_minutes_roundtrips() {
+        let conn = test_conn();
+        set_auto_lock_minutes(&conn, "60").unwrap();
+        assert_eq!(
+            get_auto_lock_minutes(&conn).unwrap(),
+            Some("60".to_string())
+        );
+    }
+
+    #[test]
+    fn set_auto_lock_minutes_overwrites_previous_value() {
+        let conn = test_conn();
+        set_auto_lock_minutes(&conn, "10").unwrap();
+        set_auto_lock_minutes(&conn, "0").unwrap();
+        assert_eq!(get_auto_lock_minutes(&conn).unwrap(), Some("0".to_string()));
     }
 }

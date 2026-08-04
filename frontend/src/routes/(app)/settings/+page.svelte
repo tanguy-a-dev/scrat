@@ -5,6 +5,7 @@
   import { api } from "$lib/api";
   import { clearPageCache } from "$lib/pageCache";
   import { toast } from "$lib/toasts.svelte";
+  import { session } from "$lib/session.svelte";
 
   const COMMON_CURRENCIES = ["USD", "EUR", "GBP", "CAD", "AUD", "CHF", "JPY"];
 
@@ -22,6 +23,18 @@
   let selectedCurrency = $state("");
   let loadError = $state("");
   let loadingCurrency = $state(true);
+
+  const AUTO_LOCK_OPTIONS = [
+    { minutes: 1, label: "1 minute" },
+    { minutes: 10, label: "10 minutes" },
+    { minutes: 60, label: "1 hour" },
+    { minutes: 0, label: "Never" },
+  ];
+
+  let currentAutoLockMinutes = $state(10);
+  let selectedAutoLockMinutes = $state(10);
+  let autoLockLoadError = $state("");
+  let loadingAutoLock = $state(true);
 
   /** The offered codes, plus whatever is actually stored if it isn't one of
    * them. The backend accepts any ISO-shaped code (`Currency::new` takes
@@ -53,6 +66,15 @@
     } finally {
       loadingCurrency = false;
     }
+
+    try {
+      currentAutoLockMinutes = await api.getAutoLockMinutes();
+      selectedAutoLockMinutes = currentAutoLockMinutes;
+    } catch (e) {
+      autoLockLoadError = String(e);
+    } finally {
+      loadingAutoLock = false;
+    }
   });
 
   async function handleSaveCurrency(event: Event) {
@@ -61,6 +83,23 @@
       await api.setCurrency(selectedCurrency);
       currentCurrency = selectedCurrency;
       toast.success(`Currency set to ${selectedCurrency}.`);
+    } catch (e) {
+      toast.error(String(e));
+    }
+  }
+
+  async function handleSaveAutoLock(event: Event) {
+    event.preventDefault();
+    try {
+      await api.setAutoLockMinutes(selectedAutoLockMinutes);
+      currentAutoLockMinutes = selectedAutoLockMinutes;
+      // Applies immediately to the running idle timer, not just future app
+      // launches.
+      session.autoLockMinutes = selectedAutoLockMinutes;
+      const label =
+        AUTO_LOCK_OPTIONS.find((o) => o.minutes === selectedAutoLockMinutes)
+          ?.label ?? `${selectedAutoLockMinutes} minutes`;
+      toast.success(`Auto-lock set to ${label.toLowerCase()}.`);
     } catch (e) {
       toast.error(String(e));
     }
@@ -139,6 +178,9 @@
       // Every page's remembered filters belong to the database that was just
       // replaced — see clearPageCache.
       clearPageCache();
+      // The imported database has its own auto-lock setting, potentially
+      // different from the one just replaced.
+      await session.markUnlocked();
       toast.success("Database imported.");
       await goto("/overview");
     } catch (e) {
@@ -214,6 +256,7 @@
       // The deleted database's filters must not outlive it — see
       // clearPageCache.
       clearPageCache();
+      session.markLocked();
       toast.success("Your data has been deleted.");
       await goto("/");
     } catch (e) {
@@ -243,6 +286,34 @@
       <button type="submit" disabled={selectedCurrency === currentCurrency}
         >Save</button
       >
+    </form>
+  {/if}
+</section>
+
+<section>
+  <h2>Auto-lock</h2>
+  <p class="hint">
+    Locks the app and asks for your passphrase again after this much time
+    without mouse or keyboard activity.
+  </p>
+  {#if loadingAutoLock}
+    <p>Loading…</p>
+  {:else if autoLockLoadError}
+    <p class="error" role="alert">{autoLockLoadError}</p>
+  {:else}
+    <form onsubmit={handleSaveAutoLock}>
+      <label class="visually-hidden" for="auto-lock">Auto-lock</label>
+      <select id="auto-lock" bind:value={selectedAutoLockMinutes}>
+        {#each AUTO_LOCK_OPTIONS as option (option.minutes)}
+          <option value={option.minutes}>{option.label}</option>
+        {/each}
+      </select>
+      <button
+        type="submit"
+        disabled={selectedAutoLockMinutes === currentAutoLockMinutes}
+      >
+        Save
+      </button>
     </form>
   {/if}
 </section>

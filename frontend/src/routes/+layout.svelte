@@ -2,6 +2,7 @@
   import "../app.css";
   import type { Snippet } from "svelte";
   import { onMount } from "svelte";
+  import { session } from "$lib/session.svelte";
 
   let { children }: { children: Snippet } = $props();
 
@@ -21,6 +22,17 @@
       window.removeEventListener("dragover", suppressDefaultFileDrop);
       window.removeEventListener("drop", suppressDefaultFileDrop);
     };
+  });
+
+  // The idle timer only ever needs to run while the database is actually
+  // open — it wraps the whole app (both `/` and `(app)/*`) so it can react to
+  // unlock/lock from either side.
+  $effect(() => {
+    if (session.unlocked) {
+      session.startIdleWatch();
+    } else {
+      session.stopIdleWatch();
+    }
   });
 </script>
 

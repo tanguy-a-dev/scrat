@@ -1,4 +1,5 @@
-.PHONY: install dev build test fmt fmt-check lint check audit coverage clean kill reset-db
+.PHONY: install dev build test fmt fmt-check lint check audit coverage clean kill reset-db \
+        release-test release-preview sample-db
 
 HELP_TARGET_COLUMN_WIDTH = 40
 
@@ -33,7 +34,17 @@ fmt-check: ## Check Rust formatting without modifying files
 lint: ## Run clippy with warnings denied
 	cargo clippy --workspace --all-targets -- -D warnings
 
-check: fmt-check lint test ## Run the same checks as CI
+release-test: ## Test the release version-bump logic
+	@bash scripts/next-version-test.sh
+
+# Answers "what would happen if I pushed this to main right now?" — the release
+# workflow runs exactly these two scripts.
+release-preview: ## Preview the version bump and release notes for the next release
+	@bash scripts/next-version.sh
+	@echo
+	@bash scripts/release-notes.sh
+
+check: fmt-check lint test release-test ## Run the same checks as CI
 
 # cargo-audit and cargo-llvm-cov are standalone dev tools installed via
 # `cargo install cargo-audit cargo-llvm-cov` (or the taiki-e/install-action
@@ -92,3 +103,6 @@ reset-db: ## Permanently delete the local encrypted database (all data is lost)
 			*) echo "Aborted." ;; \
 		esac; \
 	fi
+
+sample-db:
+	cargo run -p scrat --example seed_sample_db

@@ -1,9 +1,12 @@
 [package]
 name = "scrat"
-version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
-edition = "2021"
+# Inherited from the workspace so the version lives in exactly one file.
+# src-tauri/tauri.conf.json deliberately has no `version` key either — Tauri
+# falls back to this one. See scripts/set-version.sh.
+version.workspace = true
+description = "A privacy-first, local-only personal finance desktop app."
+authors = ["Kaonashi"]
+edition.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

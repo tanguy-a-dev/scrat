@@ -158,24 +158,12 @@ fn main() {
         }
         if day == 2 {
             transaction_service
-                .create_transaction(
-                    date,
-                    -75_00,
-                    "Navigo Mensuel",
-                    transit_cat,
-                    checking.id(),
-                )
+                .create_transaction(date, -75_00, "Navigo Mensuel", transit_cat, checking.id())
                 .expect("create transit pass transaction");
         }
         if day == 3 {
             transaction_service
-                .create_transaction(
-                    date,
-                    -29_99,
-                    "Basic-Fit Abonnement",
-                    gym_cat,
-                    checking.id(),
-                )
+                .create_transaction(date, -29_99, "Basic-Fit Abonnement", gym_cat, checking.id())
                 .expect("create gym transaction");
         }
         if day == 5 {
@@ -206,7 +194,13 @@ fn main() {
         if day == 10 {
             let amount = -rng.range(55_00, 85_00);
             transaction_service
-                .create_transaction(date, amount, "EDF Electricite", electricity_cat, checking.id())
+                .create_transaction(
+                    date,
+                    amount,
+                    "EDF Electricite",
+                    electricity_cat,
+                    checking.id(),
+                )
                 .expect("create electricity transaction");
         }
         if day == 12 {
@@ -222,19 +216,31 @@ fn main() {
         }
         if day == 14 {
             transaction_service
-                .create_transaction(date, -10_99, "Spotify Premium", streaming_cat, checking.id())
+                .create_transaction(
+                    date,
+                    -10_99,
+                    "Spotify Premium",
+                    streaming_cat,
+                    checking.id(),
+                )
                 .expect("create spotify transaction");
         }
         if day == 25 {
             let amount = rng.range(6_00, 12_00);
             transaction_service
-                .create_transaction(date, amount, "Interets Livret A", interest_cat, savings.id())
+                .create_transaction(
+                    date,
+                    amount,
+                    "Interets Livret A",
+                    interest_cat,
+                    savings.id(),
+                )
                 .expect("create interest transaction");
         }
         if day == 27 {
             transfer_rows.push(ImportRow {
                 date,
-                amount_minor_units: -300_00,
+                amount_minor_units: -300_000,
                 description: "Virement vers Epargne".to_string(),
                 category_id: investment_transfer_cat,
                 operation_kind: OperationKind::BankTransfer,
@@ -255,24 +261,30 @@ fn main() {
         // --- One-off events ---
         if date.year() == 2026 && date.month() == 6 && day == 28 {
             transaction_service
-                .create_transaction(date, 500_00, "Prime Performance", bonus_cat, checking.id())
+                .create_transaction(date, 500_000, "Prime Performance", bonus_cat, checking.id())
                 .expect("create bonus transaction");
         }
         if date.year() == 2026 && date.month() == 4 && day == 15 {
             transaction_service
-                .create_transaction(date, 45_00, "Remboursement Zalando", refund_cat, checking.id())
+                .create_transaction(
+                    date,
+                    45_000,
+                    "Remboursement Zalando",
+                    refund_cat,
+                    checking.id(),
+                )
                 .expect("create refund transaction");
         }
         if date.year() == 2026 && date.month() == 3 && day == 20 {
             transaction_service
-                .create_transaction(date, -320_00, "IKEA", furniture_cat, credit_card.id())
+                .create_transaction(date, -32_000, "IKEA", furniture_cat, credit_card.id())
                 .expect("create furniture transaction");
         }
 
         // --- Weekday-driven spending ---
         let weekday = date.weekday();
         if matches!(weekday, Weekday::Mon | Weekday::Thu) {
-            let amount = -rng.range(25_00, 90_00);
+            let amount = -rng.range(25_00, 90_000);
             let merchant: &str = rng.pick(&["Carrefour City", "Monoprix", "Franprix", "Lidl"]);
             transaction_service
                 .create_transaction(date, amount, merchant, groceries_cat, checking.id())
@@ -313,12 +325,18 @@ fn main() {
         }
         if date >= last_haircut + Duration::days(42) && rng.chance(70) {
             transaction_service
-                .create_transaction(date, -35_00, "Jean Louis David", haircuts_cat, checking.id())
+                .create_transaction(
+                    date,
+                    -35_00,
+                    "Jean Louis David",
+                    haircuts_cat,
+                    checking.id(),
+                )
                 .expect("create haircut transaction");
             last_haircut = date;
         }
         if weekday == Weekday::Sun && day <= 7 && rng.chance(60) {
-            let amount = -rng.range(40_00, 120_00);
+            let amount = -rng.range(40_00, 12_000);
             let merchant: &str = rng.pick(&["Zara", "H&M", "Uniqlo"]);
             transaction_service
                 .create_transaction(date, amount, merchant, clothes_cat, credit_card.id())
@@ -326,23 +344,47 @@ fn main() {
         }
         if day == 18 && rng.chance(50) {
             transaction_service
-                .create_transaction(date, -80_00, "Retrait DAB", cash_withdrawal_cat, checking.id())
+                .create_transaction(
+                    date,
+                    -80_00,
+                    "Retrait DAB",
+                    cash_withdrawal_cat,
+                    checking.id(),
+                )
                 .expect("create cash withdrawal transaction");
         }
         if day == 22 && rng.chance(35) {
             transaction_service
-                .create_transaction(date, -22_00, "Pharmacie du Centre", pharmacy_cat, checking.id())
+                .create_transaction(
+                    date,
+                    -22_00,
+                    "Pharmacie du Centre",
+                    pharmacy_cat,
+                    checking.id(),
+                )
                 .expect("create pharmacy transaction");
         }
         if day == 9 && rng.chance(20) {
             transaction_service
-                .create_transaction(date, -25_00, "Dr. Martin Generaliste", doctor_cat, checking.id())
+                .create_transaction(
+                    date,
+                    -25_00,
+                    "Dr. Martin Generaliste",
+                    doctor_cat,
+                    checking.id(),
+                )
                 .expect("create doctor transaction");
         }
         if day == 6 && rng.chance(25) {
             let amount = -rng.range(25_00, 50_00);
             transaction_service
-                .create_transaction(date, amount, "Fleuriste du Marche", gifts_cat, credit_card.id())
+                .create_transaction(
+                    date,
+                    amount,
+                    "Fleuriste du Marche",
+                    gifts_cat,
+                    credit_card.id(),
+                )
                 .expect("create gift transaction");
         }
 

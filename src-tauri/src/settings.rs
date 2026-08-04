@@ -27,6 +27,39 @@ pub fn set_currency(state: State<DbState>, code: String) -> Result<(), String> {
     scrat_infra_sqlite::set_currency_code(conn, currency.code()).map_err(|e| e.to_string())
 }
 
+/// The only intervals the settings UI offers. `0` means "never" — the
+/// frontend idle timer treats it as disabled. Validated here too so a stray
+/// value (a bug, a hand-edited settings row) can't arm a lock interval
+/// nobody chose.
+const AUTO_LOCK_OPTIONS_MINUTES: [u32; 4] = [0, 1, 10, 60];
+const DEFAULT_AUTO_LOCK_MINUTES: u32 = 10;
+
+#[tauri::command]
+pub fn get_auto_lock_minutes(state: State<DbState>) -> Result<u32, String> {
+    let guard = state.0.lock().unwrap();
+    let conn = guard
+        .as_ref()
+        .ok_or_else(|| "database is locked".to_string())?;
+    match scrat_infra_sqlite::get_auto_lock_minutes(conn).map_err(|e| e.to_string())? {
+        Some(value) => value
+            .parse::<u32>()
+            .map_err(|_| "stored auto-lock setting is invalid".to_string()),
+        None => Ok(DEFAULT_AUTO_LOCK_MINUTES),
+    }
+}
+
+#[tauri::command]
+pub fn set_auto_lock_minutes(state: State<DbState>, minutes: u32) -> Result<(), String> {
+    if !AUTO_LOCK_OPTIONS_MINUTES.contains(&minutes) {
+        return Err("auto-lock must be 0 (never), 1, 10, or 60 minutes".to_string());
+    }
+    let guard = state.0.lock().unwrap();
+    let conn = guard
+        .as_ref()
+        .ok_or_else(|| "database is locked".to_string())?;
+    scrat_infra_sqlite::set_auto_lock_minutes(conn, &minutes.to_string()).map_err(|e| e.to_string())
+}
+
 /// Copies the already-encrypted SQLCipher file as-is — the exported copy
 /// stays encrypted, so exporting never weakens the data's protection.
 #[tauri::command]

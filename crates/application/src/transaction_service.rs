@@ -2469,10 +2469,7 @@ mod tests {
             .unwrap();
 
         let flags = service
-            .find_duplicate_rows(
-                f.account_id,
-                &[(date, -1_500, "Whole Foods".to_string())],
-            )
+            .find_duplicate_rows(f.account_id, &[(date, -1_500, "Whole Foods".to_string())])
             .unwrap();
 
         assert_eq!(flags, vec![true]);
@@ -2539,7 +2536,10 @@ mod tests {
             .unwrap();
 
         let flags = service
-            .find_duplicate_rows(f.account_id, &[(date, -1_500, "  whole foods  ".to_string())])
+            .find_duplicate_rows(
+                f.account_id,
+                &[(date, -1_500, "  whole foods  ".to_string())],
+            )
             .unwrap();
 
         assert_eq!(flags, vec![true]);
