@@ -1,6 +1,7 @@
 # Rust
 /target
 **/target
+lcov.info
 
 # Node / frontend build
 node_modules

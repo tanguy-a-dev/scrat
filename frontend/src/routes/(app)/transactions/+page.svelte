@@ -1529,7 +1529,7 @@
   .lists {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 2rem;
+    gap: 1rem;
     /* Breathing room above "Expenses"/"Income", separate from the range
        bar's own margin-bottom. */
     margin-top: 1.5rem;
@@ -1763,7 +1763,7 @@
   }
 
   td {
-    padding: 0.4rem 0.5rem;
+    padding: 0.3rem 0.4rem;
     border-bottom: 1px solid var(--color-shade-2);
   }
 

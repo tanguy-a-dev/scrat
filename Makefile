@@ -1,4 +1,4 @@
-.PHONY: install dev build test fmt fmt-check lint check clean kill reset-db
+.PHONY: install dev build test fmt fmt-check lint check audit coverage clean kill reset-db
 
 HELP_TARGET_COLUMN_WIDTH = 40
 
@@ -34,6 +34,18 @@ lint: ## Run clippy with warnings denied
 	cargo clippy --workspace --all-targets -- -D warnings
 
 check: fmt-check lint test ## Run the same checks as CI
+
+# cargo-audit and cargo-llvm-cov are standalone dev tools installed via
+# `cargo install cargo-audit cargo-llvm-cov` (or the taiki-e/install-action
+# in CI) — neither is a workspace Cargo.toml dependency, so neither is ever
+# compiled into the prod app binary.
+audit: ## Check dependencies for known vulnerabilities (RustSec advisory-db + npm audit)
+	cargo audit
+	npm audit --audit-level=moderate
+	npm --prefix frontend audit --audit-level=moderate
+
+coverage: ## Generate a Rust workspace test coverage report (HTML in target/llvm-cov/html)
+	cargo llvm-cov --workspace --html
 
 clean: ## Remove Rust and frontend build artifacts
 	cargo clean
