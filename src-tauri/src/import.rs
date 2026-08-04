@@ -164,6 +164,12 @@ pub struct ImportPreviewDto {
     pub amount_confidence: f64,
 }
 
+/// Above this, a file is almost certainly not a bank's CSV export — a
+/// genuine one is a few thousand rows at most. Rejecting early avoids
+/// shipping an enormous byte array over the Tauri IPC bridge and parsing it
+/// just to find that out.
+const MAX_CSV_FILE_BYTES: usize = 20 * 1024 * 1024;
+
 /// Previews `bytes`. With an explicit `mapping` it is applied verbatim — the
 /// path the dialog takes after the user corrects a column. Without one, a
 /// mapping remembered from a previous import of the same layout wins over
@@ -173,7 +179,14 @@ pub fn preview_csv_import(
     state: State<DbState>,
     bytes: Vec<u8>,
     mapping: Option<ColumnMappingDto>,
-) -> ImportPreviewDto {
+) -> Result<ImportPreviewDto, String> {
+    if bytes.len() > MAX_CSV_FILE_BYTES {
+        return Err(format!(
+            "This file is {:.1} MB — too large to be a CSV export (limit is {} MB).",
+            bytes.len() as f64 / (1024.0 * 1024.0),
+            MAX_CSV_FILE_BYTES / (1024 * 1024),
+        ));
+    }
     let mut file = parse_file(&bytes);
     let signature = file_signature(&file);
 
@@ -198,7 +211,7 @@ pub fn preview_csv_import(
     };
     let preview = apply_mapping(&file, &mapping);
 
-    ImportPreviewDto {
+    Ok(ImportPreviewDto {
         rows: preview
             .rows
             .into_iter()
@@ -235,7 +248,7 @@ pub fn preview_csv_import(
         remembered,
         date_confidence: preview.date_confidence,
         amount_confidence: preview.amount_confidence,
-    }
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -310,6 +323,7 @@ fn remember_mapping(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn commit_csv_import(
     state: State<DbState>,
     rows: Vec<ImportCommitRowDto>,
@@ -324,6 +338,12 @@ pub fn commit_csv_import(
     // category — or the default — when no such history exists. Off by
     // default so existing imports keep trusting the file's own column.
     prioritize_historical_category: bool,
+    // Whether past transactions are consulted at all to categorize a row
+    // that the CSV itself leaves uncategorized (or, under
+    // `prioritize_historical_category`, to override the CSV's own column).
+    // On by default; turning it off makes every row fall back to the CSV's
+    // category or the chosen default, ignoring history entirely.
+    detect_category_from_history: bool,
 ) -> Result<ImportSummaryDto, String> {
     let category_id = category_id
         .map(|id| CategoryId::parse(&id).map_err(|e| e.to_string()))
@@ -391,9 +411,12 @@ pub fn commit_csv_import(
                     // real historical categorization — it's just what every
                     // uncategorized transaction falls back to — so it
                     // shouldn't out-rank a category the CSV actually names.
-                    let historical = s
-                        .find_category_for_description(&row.description)?
-                        .filter(|id| *id != default_category_id);
+                    let historical = if detect_category_from_history {
+                        s.find_category_for_description(&row.description)?
+                            .filter(|id| *id != default_category_id)
+                    } else {
+                        None
+                    };
                     match historical {
                         Some(historical_id) => historical_id,
                         None => match csv_category {
@@ -405,16 +428,29 @@ pub fn commit_csv_import(
                     match csv_category {
                         Some(name) => match subcategory {
                             Some(sub) => s.get_or_create_category_path(name, Some(sub))?,
-                            None => match s
-                                .find_category_for_description_in_category(&row.description, name)?
-                            {
-                                Some(historical_id) => historical_id,
-                                None => s.get_or_create_category_path(name, None)?,
-                            },
+                            None => {
+                                let historical = if detect_category_from_history {
+                                    s.find_category_for_description_in_category(
+                                        &row.description,
+                                        name,
+                                    )?
+                                } else {
+                                    None
+                                };
+                                match historical {
+                                    Some(historical_id) => historical_id,
+                                    None => s.get_or_create_category_path(name, None)?,
+                                }
+                            }
                         },
-                        None => s
-                            .find_category_for_description(&row.description)?
-                            .unwrap_or(default_category_id),
+                        None => {
+                            let historical = if detect_category_from_history {
+                                s.find_category_for_description(&row.description)?
+                            } else {
+                                None
+                            };
+                            historical.unwrap_or(default_category_id)
+                        }
                     }
                 };
                 Ok(ImportRow {

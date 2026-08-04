@@ -1,29 +1,6 @@
 # Features
 
-## Transactions page
-
-like date, amount, descriptions, category. I want Type and Account to be clickable to sort transactions.
-
-
 ## import CSV
-
-### File size
-
-Add safety: check for file size and reject if too big for a csv.
-
-### Edit columns
-
-- Amount layout: this option is not needed for the user since we can select Debit and Credit columns
-- After the columns were guessed properly, if the user changes an amount column (debit/credit) the error message is 
-"Only 100% of dates and 32% of amounts could be read — the columns were probably guessed wrong."
-this makes no sense if the user sets this so maybe replace by something like "... - the columns seem wrongly set"
-
-### Settings
-
-Like we have a "Edit Columns" I do want a "Categories settings" spoiler panel.
-We'll add "Prefer a category already used for this description over the CSV's own category".
-We'll also add the option to use previous transactions categories to detect new transactions categories, which defaults to true.
-We'll also move the Default category here, adding a description such as "Category set if none found"
 
 ### Category detection
 

@@ -171,7 +171,7 @@
     return kind === "expense" ? expenseToken : incomeToken;
   }
 
-  type SortField = "date" | "amount" | "description" | "category";
+  type SortField = "date" | "amount" | "description" | "type" | "category" | "account";
   let sortField = $state<SortField>(view.sortField);
   let sortDir = $state<"asc" | "desc">(view.sortDir);
   let expenseCategoryFilter = $state(view.expenseCategoryFilter);
@@ -788,6 +788,12 @@
       else if (sortField === "amount")
         cmp = a.amount_minor_units - b.amount_minor_units;
       else if (sortField === "description") cmp = a.description.localeCompare(b.description);
+      else if (sortField === "type")
+        cmp = operationKindLabel(a.operation_kind).localeCompare(
+          operationKindLabel(b.operation_kind),
+        );
+      else if (sortField === "account")
+        cmp = accountName(a.account_id).localeCompare(accountName(b.account_id));
       else
         cmp = categoryName(a.category_id).localeCompare(
           categoryName(b.category_id),
@@ -1107,7 +1113,7 @@
           </th>
           <th class="kind-cell">
             <div class="column-header" class:filtered={typeFilterFor(kind) !== ""}>
-              <span>Type</span>
+              <button type="button" onclick={() => toggleSort("type")}>Type</button>
               <SearchSelect
                 options={typeFilterOptions}
                 value={typeFilterFor(kind)}
@@ -1145,7 +1151,7 @@
               class="column-header align-right"
               class:filtered={accountFilterFor(kind) !== ""}
             >
-              <span>Account</span>
+              <button type="button" onclick={() => toggleSort("account")}>Account</button>
               <SearchSelect
                 options={accountFilterOptions}
                 value={accountFilterFor(kind)}
@@ -1698,8 +1704,7 @@
      silently reports the filtered total, a user can read a filtered ledger
      without noticing. Tinting the label puts that signal on the widest,
      most-looked-at thing in the cell. */
-  .column-header.filtered > button,
-  .column-header.filtered > span {
+  .column-header.filtered > button {
     color: var(--color-accent);
   }
 
@@ -1728,14 +1733,6 @@
   .column-header.align-right :global(.dropdown) {
     left: auto;
     right: 0;
-  }
-
-  /* Plain (non-sortable) column labels — Type and Account — read the same
-     weight and size as the sort buttons next to them so the header row
-     looks uniform even though only some columns are clickable. */
-  .column-header span {
-    font-weight: 600;
-    font-size: 0.85rem;
   }
 
   .amount-filter {

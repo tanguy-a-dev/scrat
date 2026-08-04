@@ -4,7 +4,7 @@
   import { toast } from "$lib/toasts.svelte";
   import Checkbox from "$lib/Checkbox.svelte";
   import SearchSelect from "$lib/SearchSelect.svelte";
-  import { Pencil } from "@lucide/svelte";
+  import { Pencil, Tags } from "@lucide/svelte";
   import {
     api,
     buildCategoryOptions,
@@ -38,9 +38,11 @@
   let selectedCategoryId = $state("");
   let selectedAccountId = $state("");
   let prioritizeHistoricalCategory = $state(false);
+  let detectCategoryFromHistory = $state(true);
   let importing = $state(false);
   let dragOver = $state(false);
   let mappingOpen = $state(false);
+  let categoriesOpen = $state(false);
   let remapping = $state(false);
 
   let categoryOptions = $derived(buildCategoryOptions(categories));
@@ -135,7 +137,22 @@
     return samples ? `${column.index + 1} · ${name} — ${samples}` : `${column.index + 1} · ${name}`;
   }
 
+  /** Above this, a file is almost certainly not a bank's CSV export — a
+   * genuine one is a few thousand rows at most. Checked here, before the
+   * bytes ever cross the IPC bridge, so a huge file doesn't get serialized
+   * into a giant number array just to be rejected on the other side. The
+   * Rust command re-checks the same limit in case this dialog isn't the
+   * only caller someday. */
+  const MAX_CSV_FILE_BYTES = 20 * 1024 * 1024;
+
   async function loadBytes(bytes: number[]) {
+    if (bytes.length > MAX_CSV_FILE_BYTES) {
+      await message(
+        `This file is ${(bytes.length / (1024 * 1024)).toFixed(1)} MB — too large to be a CSV export (limit is ${MAX_CSV_FILE_BYTES / (1024 * 1024)} MB).`,
+        { title: "Import CSV", kind: "error" },
+      );
+      return;
+    }
     preview = null;
     fileBytes = bytes;
     try {
@@ -245,6 +262,15 @@
   }
 
   async function loadFile(file: File) {
+    // Checked against `file.size` before reading, so an oversized file never
+    // gets pulled into memory as an array buffer just to be rejected below.
+    if (file.size > MAX_CSV_FILE_BYTES) {
+      await message(
+        `This file is ${(file.size / (1024 * 1024)).toFixed(1)} MB — too large to be a CSV export (limit is ${MAX_CSV_FILE_BYTES / (1024 * 1024)} MB).`,
+        { title: "Import CSV", kind: "error" },
+      );
+      return;
+    }
     const buffer = await file.arrayBuffer();
     await loadBytes(Array.from(new Uint8Array(buffer)));
   }
@@ -333,6 +359,7 @@
         preview.signature,
         preview.mapping,
         prioritizeHistoricalCategory,
+        detectCategoryFromHistory,
       );
       onImported();
       onClose();
@@ -532,14 +559,47 @@
         </span>
       </details>
 
+      <details class="mapping" bind:open={categoriesOpen}>
+        <summary>
+          <Tags size={13} aria-hidden="true" />
+          <span>Categories settings</span>
+        </summary>
+
+        <label class="default-category">
+          Default category
+          <SearchSelect
+            options={fallbackCategoryOptions}
+            value={selectedCategoryId}
+            onChange={(id) => (selectedCategoryId = id)}
+            placeholder="Uncategorized (default)…"
+            searchPlaceholder="Search category…"
+          />
+          <span class="field-hint">Category set if none found.</span>
+        </label>
+
+        <span class="inline">
+          <Checkbox
+            size="sm"
+            checked={detectCategoryFromHistory}
+            ariaLabel="Use previous transactions' categories to detect new transactions' categories if none is set"
+            onpress={() => (detectCategoryFromHistory = !detectCategoryFromHistory)}
+          />
+          Use previous transactions' categories to detect new transactions' categories
+        </span>
+
+        <span class="inline">
+          <Checkbox
+            size="sm"
+            checked={prioritizeHistoricalCategory}
+            disabled={!detectCategoryFromHistory}
+            ariaLabel="Prefer a category already used for this description over the CSV's own category"
+            onpress={() => (prioritizeHistoricalCategory = !prioritizeHistoricalCategory)}
+          />
+          Prefer a category already used for this description over the CSV's own category
+        </span>
+      </details>
+
       <div class="targets">
-        <SearchSelect
-          options={fallbackCategoryOptions}
-          value={selectedCategoryId}
-          onChange={(id) => (selectedCategoryId = id)}
-          placeholder="Fallback category (optional)…"
-          searchPlaceholder="Search category…"
-        />
         <SearchSelect
           options={accountOptions}
           value={selectedAccountId}
@@ -549,15 +609,6 @@
         />
       </div>
 
-      <span class="inline">
-        <Checkbox
-          size="sm"
-          checked={prioritizeHistoricalCategory}
-          ariaLabel="Prefer a category already used for this description over the CSV's own category"
-          onpress={() => (prioritizeHistoricalCategory = !prioritizeHistoricalCategory)}
-        />
-        Prefer a category already used for this description over the CSV's own category
-      </span>
 
       <div class="rows">
         <table>
@@ -743,6 +794,21 @@
   .mapping-grid select {
     max-width: 100%;
     font-size: 0.8rem;
+  }
+
+  .default-category {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.2rem;
+    font-size: 0.8rem;
+    opacity: 0.9;
+    margin-top: 0.6rem;
+  }
+
+  .default-category :global(.search-select) {
+    max-width: 20rem;
+    width: 100%;
   }
 
   .field-hint {
