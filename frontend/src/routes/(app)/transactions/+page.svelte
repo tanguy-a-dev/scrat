@@ -1635,7 +1635,7 @@
 
   th {
     text-align: left;
-    padding: 0.4rem 0.5rem;
+    padding: 0.3rem 0.4rem;
     border-bottom: 1px solid var(--color-shade-3);
   }
 
@@ -1763,7 +1763,7 @@
   }
 
   td {
-    padding: 0.3rem 0.4rem;
+    padding: 0.2rem 0.35rem;
     border-bottom: 1px solid var(--color-shade-2);
   }
 

@@ -1,9 +1,5 @@
 # Features
 
-## Transactions page UX
-
-When there is data, the two tables are too big for the page, reduce the paddings.
-
 ## Security Log Out
 
 The app should lock if there is no activity for 10 mins.
