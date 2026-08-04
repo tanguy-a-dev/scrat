@@ -102,8 +102,12 @@
     rangeMode: "month" as RangeMode,
     customStart: oneMonthAgoIsoDate(),
     customEnd: todayIsoDate(),
-    sortField: "date" as SortField,
-    sortDir: "desc" as "asc" | "desc",
+    // Expenses and Income keep independent sort state — sorting one list by
+    // a column must never reorder the other.
+    expenseSortField: "date" as SortField,
+    expenseSortDir: "desc" as "asc" | "desc",
+    incomeSortField: "date" as SortField,
+    incomeSortDir: "desc" as "asc" | "desc",
     // Expenses and Income keep independent filters — a search or filter set
     // on one list must never narrow the other.
     expenseCategoryFilter: "",
@@ -172,8 +176,10 @@
   }
 
   type SortField = "date" | "amount" | "description" | "type" | "category" | "account";
-  let sortField = $state<SortField>(view.sortField);
-  let sortDir = $state<"asc" | "desc">(view.sortDir);
+  let expenseSortField = $state<SortField>(view.expenseSortField);
+  let expenseSortDir = $state<"asc" | "desc">(view.expenseSortDir);
+  let incomeSortField = $state<SortField>(view.incomeSortField);
+  let incomeSortDir = $state<"asc" | "desc">(view.incomeSortDir);
   let expenseCategoryFilter = $state(view.expenseCategoryFilter);
   let expenseDescriptionFilter = $state(view.expenseDescriptionFilter);
   let expenseAccountFilter = $state(view.expenseAccountFilter);
@@ -198,8 +204,10 @@
     view.rangeMode = rangeMode;
     view.customStart = customStart;
     view.customEnd = customEnd;
-    view.sortField = sortField;
-    view.sortDir = sortDir;
+    view.expenseSortField = expenseSortField;
+    view.expenseSortDir = expenseSortDir;
+    view.incomeSortField = incomeSortField;
+    view.incomeSortDir = incomeSortDir;
     view.expenseCategoryFilter = expenseCategoryFilter;
     view.expenseDescriptionFilter = expenseDescriptionFilter;
     view.expenseAccountFilter = expenseAccountFilter;
@@ -772,16 +780,27 @@
     }
   }
 
-  function toggleSort(field: SortField) {
-    if (sortField === field) {
-      sortDir = sortDir === "asc" ? "desc" : "asc";
+  function toggleSort(kind: SelectionKind, field: SortField) {
+    if (kind === "expense") {
+      if (expenseSortField === field) {
+        expenseSortDir = expenseSortDir === "asc" ? "desc" : "asc";
+      } else {
+        expenseSortField = field;
+        expenseSortDir = "desc";
+      }
     } else {
-      sortField = field;
-      sortDir = "desc";
+      if (incomeSortField === field) {
+        incomeSortDir = incomeSortDir === "asc" ? "desc" : "asc";
+      } else {
+        incomeSortField = field;
+        incomeSortDir = "desc";
+      }
     }
   }
 
-  function sortTransactions(list: TransactionDto[]): TransactionDto[] {
+  function sortTransactions(list: TransactionDto[], kind: SelectionKind): TransactionDto[] {
+    const sortField = kind === "expense" ? expenseSortField : incomeSortField;
+    const sortDir = kind === "expense" ? expenseSortDir : incomeSortDir;
     return [...list].sort((a, b) => {
       let cmp = 0;
       if (sortField === "date") cmp = a.date.localeCompare(b.date);
@@ -831,17 +850,19 @@
   // other range fetches the whole (unfiltered, mixed-sign) range in one
   // shot, so this list applies its own filter and sign split client-side.
   let expenses = $derived.by(() => {
-    if (rangeMode === "all") return sortTransactions(expenseRows);
+    if (rangeMode === "all") return sortTransactions(expenseRows, "expense");
     const filters = activeFilters("expense");
     return sortTransactions(
       transactions.filter((t) => t.amount_minor_units < 0 && matchesFilters(t, filters)),
+      "expense",
     );
   });
   let income = $derived.by(() => {
-    if (rangeMode === "all") return sortTransactions(incomeRows);
+    if (rangeMode === "all") return sortTransactions(incomeRows, "income");
     const filters = activeFilters("income");
     return sortTransactions(
       transactions.filter((t) => t.amount_minor_units > 0 && matchesFilters(t, filters)),
+      "income",
     );
   });
 
@@ -1042,13 +1063,13 @@
             />
           </th>
           <th class="date-cell"
-            ><button type="button" onclick={() => toggleSort("date")}
+            ><button type="button" onclick={() => toggleSort(kind, "date")}
               >Date</button
             ></th
           >
           <th>
             <div class="column-header" class:filtered={amountFilterActive(kind)}>
-              <button type="button" onclick={() => toggleSort("amount")}
+              <button type="button" onclick={() => toggleSort(kind, "amount")}
                 >Amount</button
               >
               <FilterPopover
@@ -1090,7 +1111,7 @@
               class="column-header"
               class:filtered={descriptionFilterFor(kind).trim() !== ""}
             >
-              <button type="button" onclick={() => toggleSort("description")}
+              <button type="button" onclick={() => toggleSort(kind, "description")}
                 >Description</button
               >
               <FilterPopover
@@ -1113,7 +1134,7 @@
           </th>
           <th class="kind-cell">
             <div class="column-header" class:filtered={typeFilterFor(kind) !== ""}>
-              <button type="button" onclick={() => toggleSort("type")}>Type</button>
+              <button type="button" onclick={() => toggleSort(kind, "type")}>Type</button>
               <SearchSelect
                 options={typeFilterOptions}
                 value={typeFilterFor(kind)}
@@ -1131,7 +1152,7 @@
               class="column-header align-right"
               class:filtered={categoryFilterFor(kind) !== ""}
             >
-              <button type="button" onclick={() => toggleSort("category")}
+              <button type="button" onclick={() => toggleSort(kind, "category")}
                 >Category</button
               >
               <SearchSelect
@@ -1151,7 +1172,7 @@
               class="column-header align-right"
               class:filtered={accountFilterFor(kind) !== ""}
             >
-              <button type="button" onclick={() => toggleSort("account")}>Account</button>
+              <button type="button" onclick={() => toggleSort(kind, "account")}>Account</button>
               <SearchSelect
                 options={accountFilterOptions}
                 value={accountFilterFor(kind)}
