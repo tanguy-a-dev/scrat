@@ -683,12 +683,21 @@ impl<'a> TransactionService<'a> {
 /// the normalization `TransactionFingerprint::compute` applies before hashing — the
 /// convention this repo already uses to decide whether two description texts
 /// "are the same" for comparison purposes.
+///
+/// Also drops a leading "cb" token: some banks prefix every card-payment
+/// description with "CB" (Carte Bancaire), which would otherwise make a
+/// transaction fail to match its own history the moment the bank starts (or
+/// stops) adding that marker. This is narrower than `merchant_key`'s noise
+/// filter in `recurring.rs`, which deliberately leaves bank prefixes alone —
+/// here we're matching a merchant against its own past self, not merging
+/// distinct merchants, so stripping a known, fixed marker is safe.
 fn normalize_description(s: &str) -> String {
-    s.trim()
-        .to_lowercase()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    let lower = s.trim().to_lowercase();
+    let mut words: Vec<&str> = lower.split_whitespace().collect();
+    if words.first() == Some(&"cb") {
+        words.remove(0);
+    }
+    words.join(" ")
 }
 
 /// Lowercases and splits on non-alphanumeric boundaries, dropping short
@@ -2440,6 +2449,34 @@ mod tests {
             .unwrap();
 
         assert_eq!(found, None);
+    }
+
+    #[test]
+    fn find_category_for_description_ignores_a_leading_cb_prefix() {
+        let f = fixture();
+        let service = TransactionService::new(
+            &f.transactions,
+            &f.accounts,
+            &f.categories,
+            Currency::new("USD").unwrap(),
+        );
+        service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                -1_000,
+                "Corner Bistro",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+
+        // The bank started prefixing card-payment descriptions with "CB" —
+        // history recorded before that change should still match.
+        let found = service
+            .find_category_for_description("CB Corner Bistro")
+            .unwrap();
+
+        assert_eq!(found, Some(f.category_id));
     }
 
     #[test]
