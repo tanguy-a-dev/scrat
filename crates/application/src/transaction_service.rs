@@ -229,6 +229,34 @@ impl<'a> TransactionService<'a> {
         Ok(self.transactions.list_all()?)
     }
 
+    /// Every transaction on one account, in `list_all`'s order.
+    ///
+    /// A use-case rather than a filter at the call site, because it verifies
+    /// the account exists first: naming an account that isn't there is a
+    /// programming error the caller should hear about, not something to
+    /// report as "this account has no transactions" by writing an empty
+    /// export file.
+    ///
+    /// Note this returns *every* role, including the mirrored leg of a
+    /// transfer whose origin was another account, and any `Adjustment` the
+    /// account has been reconciled with. Those rows are as much a part of
+    /// this account's ledger as any other — an account whose export omitted
+    /// them wouldn't sum to the balance the app shows for it.
+    pub fn list_for_account(
+        &self,
+        account_id: AccountId,
+    ) -> Result<Vec<Transaction>, ApplicationError> {
+        self.accounts
+            .find_by_id(account_id)?
+            .ok_or(ApplicationError::AccountNotFound)?;
+        Ok(self
+            .transactions
+            .list_all()?
+            .into_iter()
+            .filter(|t| t.account_id() == account_id)
+            .collect())
+    }
+
     pub fn list_page(
         &self,
         offset: i64,
@@ -2556,6 +2584,81 @@ mod tests {
             .unwrap();
 
         assert_eq!(found, None);
+    }
+
+    #[test]
+    fn list_for_account_returns_only_that_accounts_transactions() {
+        let f = fixture();
+        let service = f.service();
+        let date = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+        service
+            .create_transaction(date, -1_500, "Whole Foods", f.category_id, f.account_id)
+            .unwrap();
+        service
+            .create_transaction(
+                date,
+                -900,
+                "Corner Bistro",
+                f.category_id,
+                f.counterpart_account_id,
+            )
+            .unwrap();
+
+        let listed = service.list_for_account(f.account_id).unwrap();
+
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].description().as_str(), "Whole Foods");
+    }
+
+    /// The mirrored leg belongs to the counterpart account, so exporting that
+    /// account exports it. Scoping an export by account narrows *which*
+    /// transfer legs come out; it doesn't leave them out. Same for an
+    /// `Adjustment`, covered below — both are real rows on the account, and
+    /// dropping them would make the file disagree with the app's balance.
+    #[test]
+    fn list_for_account_includes_a_mirrored_transfer_leg_on_the_counterpart() {
+        let f = fixture();
+        let service = f.service();
+        let rules = vec![f.transfer_rule("neobank", f.counterpart_account_id)];
+
+        service
+            .import_transactions(
+                &[f.import_row("VIREMENT NEOBANK", -20_000)],
+                f.account_id,
+                &rules,
+            )
+            .unwrap();
+
+        let counterpart = service.list_for_account(f.counterpart_account_id).unwrap();
+
+        assert_eq!(counterpart.len(), 1);
+        assert_eq!(counterpart[0].role(), TransactionRole::Transfer);
+        assert_eq!(counterpart[0].amount().minor_units(), 20_000);
+    }
+
+    #[test]
+    fn list_for_account_includes_an_adjustment_posted_by_reconciling() {
+        let f = fixture();
+        let service = f.service();
+        let date = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+        service
+            .reconcile_account(f.counterpart_account_id, 12_345, f.category_id, date)
+            .unwrap()
+            .expect("a non-zero delta must post an adjustment");
+
+        let listed = service.list_for_account(f.counterpart_account_id).unwrap();
+
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].role(), TransactionRole::Adjustment);
+    }
+
+    #[test]
+    fn list_for_account_rejects_an_unknown_account() {
+        let f = fixture();
+
+        let result = f.service().list_for_account(AccountId::new());
+
+        assert!(matches!(result, Err(ApplicationError::AccountNotFound)));
     }
 
     #[test]

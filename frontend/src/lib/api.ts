@@ -341,8 +341,11 @@ export const api = {
     invoke<string | null>("suggest_account_for_description", { description }),
   suggestCategoryForDescription: (description: string) =>
     invoke<string | null>("suggest_category_for_description", { description }),
-  exportTransactionsCsv: (destination: string) =>
-    invoke<void>("export_transactions_csv", { destination }),
+  /** Writes one account's transactions to `destination`. Scoped to a single
+   * account because that's the only scope that round-trips: import commits a
+   * whole file to one account, and the duplicate check is per-account too. */
+  exportTransactionsCsv: (accountId: string, destination: string) =>
+    invoke<void>("export_transactions_csv", { accountId, destination }),
   listRecurringCharges: () => invoke<RecurringChargeDto[]>("list_recurring_charges"),
   /** Posts the difference between `observedBalanceMinorUnits` and what the
    * ledger says as a single adjustment. Resolves to null when the two

@@ -2,7 +2,8 @@
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
   import { save, open } from "@tauri-apps/plugin-dialog";
-  import { api } from "$lib/api";
+  import SearchSelect from "$lib/SearchSelect.svelte";
+  import { api, type AccountDto } from "$lib/api";
   import { clearPageCache } from "$lib/pageCache";
   import { toast } from "$lib/toasts.svelte";
   import { session } from "$lib/session.svelte";
@@ -52,6 +53,20 @@
   let exporting = $state(false);
   let exportingCsv = $state(false);
 
+  /** The CSV export is per-account, so the picker needs the account list.
+   * Failing to load it leaves the export disabled with a reason shown,
+   * rather than an empty picker that looks like "you have no accounts". */
+  let accounts = $state<AccountDto[]>([]);
+  let accountsLoadError = $state("");
+  let csvAccountId = $state("");
+
+  let csvAccountOptions = $derived(
+    accounts.map((a) => ({ id: a.id, label: a.name })),
+  );
+  let csvAccountName = $derived(
+    accounts.find((a) => a.id === csvAccountId)?.name ?? "",
+  );
+
   let importPath = $state<string | null>(null);
   let importPassword = $state("");
   let importing = $state(false);
@@ -74,6 +89,17 @@
       autoLockLoadError = String(e);
     } finally {
       loadingAutoLock = false;
+    }
+
+    try {
+      accounts = await api.listAccounts();
+      // Only preselect when there's no choice to make. With several accounts
+      // the file's scope is the whole point of the feature, so it should be
+      // something the user picked, not something they inherited from
+      // whichever account happened to sort first.
+      if (accounts.length === 1) csvAccountId = accounts[0].id;
+    } catch (e) {
+      accountsLoadError = String(e);
     }
   });
 
@@ -134,15 +160,34 @@
     return `${prefix}-${stamp}.${extension}`;
   }
 
+  /** Makes an account name safe to suggest as a filename. Account names are
+   * free text, so one can legitimately contain a path separator or a
+   * character the platform reserves — a name like "Joint / Savings" must not
+   * turn into a suggested path pointing at a directory that isn't there. */
+  function fileNameSlug(name: string): string {
+    return (
+      name
+        .replace(/[\\/:*?"<>|]/g, "-")
+        .replace(/\s+/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-|-$/g, "")
+        .slice(0, 40) || "account"
+    );
+  }
+
   async function handleExportCsv() {
+    if (!csvAccountId) return;
     try {
       const destination = await save({
-        defaultPath: timestampedFileName("scrat-transactions", "csv"),
+        defaultPath: timestampedFileName(
+          `scrat-${fileNameSlug(csvAccountName)}`,
+          "csv",
+        ),
         filters: [{ name: "CSV", extensions: ["csv"] }],
       });
       if (!destination) return;
       exportingCsv = true;
-      await api.exportTransactionsCsv(destination);
+      await api.exportTransactionsCsv(csvAccountId, destination);
       toast.success(`Exported to ${destination}`);
     } catch (e) {
       toast.error(String(e));
@@ -396,11 +441,36 @@
 <section>
   <h2>Export transaction CSV</h2>
   <p class="hint">
-    Saves every transaction as a CSV file, readable outside Scrat.
+    Saves one account's transactions as a CSV file, readable outside Scrat.
   </p>
-  <button type="button" onclick={handleExportCsv} disabled={exportingCsv}>
-    {exportingCsv ? "Exporting…" : "Export CSV"}
-  </button>
+  {#if accountsLoadError}
+    <p class="error">{accountsLoadError}</p>
+  {:else if accounts.length === 0}
+    <p class="hint">Add an account first — there's nothing to export yet.</p>
+  {:else}
+    <div class="csv-export">
+      <SearchSelect
+        options={csvAccountOptions}
+        value={csvAccountId}
+        onChange={(id) => (csvAccountId = id)}
+        placeholder="Choose an account…"
+        searchPlaceholder="Search account…"
+      />
+      <button
+        type="button"
+        onclick={handleExportCsv}
+        disabled={exportingCsv || !csvAccountId}
+      >
+        {exportingCsv ? "Exporting…" : "Export CSV"}
+      </button>
+    </div>
+    <p class="hint">
+      Includes transfers and reconciliation adjustments on this account — the
+      file wouldn't match the account's balance without them. Re-importing it
+      will re-run your transfer rules over rows that are already transfers, so
+      leave those rows unchecked in the import preview.
+    </p>
+  {/if}
 </section>
 
 <section>
@@ -514,6 +584,14 @@
 
   .error {
     color: var(--color-danger);
+  }
+
+  .csv-export {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.6rem;
   }
 
   form {

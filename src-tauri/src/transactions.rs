@@ -476,6 +476,12 @@ fn operation_kind_label(kind: OperationKind) -> &'static str {
 /// Renders the export file body. Kept separate from the Tauri command (which
 /// only wires up repositories) so the formatting and hierarchy-resolution
 /// rules are unit-testable without a database or a Tauri runtime.
+///
+/// Takes whichever transactions it is handed and does not care whether they
+/// share an account. The `Account` column therefore stays, even though the
+/// export now scopes to one account and repeats the same name on every row:
+/// dropping it would shift every later column and break the compatibility
+/// promise the header comment below spells out, for no gain.
 fn build_csv(
     transactions: &[Transaction],
     accounts: &[Account],
@@ -514,11 +520,36 @@ fn build_csv(
     csv
 }
 
-/// Exports every transaction in the app as a semicolon-separated CSV,
+/// Exports one account's transactions as a semicolon-separated CSV,
 /// resolving account/category ids to their display names since those (not
 /// raw ids) are what makes the file useful outside Scrat.
+///
+/// Scoped to a single account rather than the whole ledger, because the two
+/// things a user does with this file want the same scope for different
+/// reasons. Read in a spreadsheet, one account's rows sum to that account's
+/// balance; a whole-ledger file sums to nothing meaningful. Re-imported,
+/// the destination is a single account too ([`crate::import::commit_csv_import`]),
+/// so a whole-ledger file would land every row on one account — which also
+/// defeats the duplicate check, since `TransactionFingerprint` is scoped by
+/// account and only recognizes a row as already-present on the account it
+/// actually came from.
+///
+/// What this does *not* do is filter by role. Both legs of a transfer and
+/// any reconciliation `Adjustment` are ordinary rows on their account (see
+/// `TransactionService::list_for_account`), so they are exported like
+/// anything else. Re-importing such a file re-runs the transfer rules over
+/// rows that are already transfers, which writes a fresh pair — the import
+/// preview flags the origin-account row as a likely duplicate and unchecks
+/// it, but the mirrored leg it would create on the counterpart is not
+/// something the file can warn about. Avoiding that on re-import is the
+/// user's call.
 #[tauri::command]
-pub fn export_transactions_csv(state: State<DbState>, destination: String) -> Result<(), String> {
+pub fn export_transactions_csv(
+    state: State<DbState>,
+    account_id: String,
+    destination: String,
+) -> Result<(), String> {
+    let account_id = AccountId::parse(&account_id).map_err(|e| e.to_string())?;
     let guard = state.0.lock().unwrap();
     let conn = guard
         .as_ref()
@@ -529,11 +560,13 @@ pub fn export_transactions_csv(state: State<DbState>, destination: String) -> Re
     let categories = SqliteCategoryRepository::new(conn);
     let service = TransactionService::new(&transactions, &accounts, &categories, currency);
 
-    let all = service.list_all().map_err(|e| e.to_string())?;
+    let rows = service
+        .list_for_account(account_id)
+        .map_err(|e| e.to_string())?;
     let all_accounts = accounts.list_all().map_err(|e| e.to_string())?;
     let all_categories = categories.list_all().map_err(|e| e.to_string())?;
 
-    let csv = build_csv(&all, &all_accounts, &all_categories);
+    let csv = build_csv(&rows, &all_accounts, &all_categories);
 
     std::fs::write(&destination, csv).map_err(|e| e.to_string())
 }
