@@ -1,5 +1,5 @@
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use scrat_domain::category::{Category, CategoryIcon, CategoryId, CategoryName};
 use scrat_domain::ports::{CategoryRepository, RepositoryError};
 

@@ -20,8 +20,8 @@ use std::collections::HashSet;
 use scrat_domain::transaction::OperationKind;
 
 use crate::detection::{
-    self, column_values, detect_date_format, detect_header, fold, measure_columns,
-    parse_amount_cell, parse_date_cell_with, parse_rows, ColumnStats,
+    self, ColumnStats, column_values, detect_date_format, detect_header, fold, measure_columns,
+    parse_amount_cell, parse_date_cell_with, parse_rows,
 };
 use crate::operation_kind;
 

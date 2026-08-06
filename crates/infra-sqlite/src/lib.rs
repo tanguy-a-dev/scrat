@@ -13,7 +13,7 @@ mod transfer_rule_repository;
 
 pub use account_repository::SqliteAccountRepository;
 pub use category_repository::SqliteCategoryRepository;
-pub use connection::{create_new, database_exists, rekey, unlock_existing, DbError};
+pub use connection::{DbError, create_new, database_exists, rekey, unlock_existing};
 pub use csv_mapping_repository::{get_csv_mapping, save_csv_mapping};
 pub use rusqlite::Connection;
 pub use settings_repository::{

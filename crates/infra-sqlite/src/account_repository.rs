@@ -1,5 +1,5 @@
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use scrat_domain::account::{Account, AccountId, AccountName, DescriptionPattern};
 use scrat_domain::money::{Currency, Money};
 use scrat_domain::ports::{AccountRepository, RepositoryError};
@@ -265,11 +265,12 @@ mod tests {
         let reloaded = repo.find_by_id(unanchored.id()).unwrap().unwrap();
         assert!(!reloaded.is_opening_balance_set());
         assert_eq!(reloaded.opening_balance(), None);
-        assert!(repo
-            .find_by_id(anchored_at_zero.id())
-            .unwrap()
-            .unwrap()
-            .is_opening_balance_set());
+        assert!(
+            repo.find_by_id(anchored_at_zero.id())
+                .unwrap()
+                .unwrap()
+                .is_opening_balance_set()
+        );
 
         // And establishing it later has to stick through `update`, not just
         // `insert` — that's the path the UI actually takes.

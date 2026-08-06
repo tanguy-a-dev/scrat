@@ -1522,9 +1522,11 @@ mod tests {
         assert_eq!(outcome.mirrored, 1);
         let stored = service.list_all().unwrap();
         assert_eq!(stored.len(), 2);
-        assert!(stored
-            .iter()
-            .all(|t| t.operation_kind() == OperationKind::BankTransfer));
+        assert!(
+            stored
+                .iter()
+                .all(|t| t.operation_kind() == OperationKind::BankTransfer)
+        );
     }
 
     #[test]

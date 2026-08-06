@@ -4,7 +4,7 @@ use scrat_domain::money::Currency;
 use tauri::{AppHandle, State};
 
 use crate::accounts::app_currency;
-use crate::db::{db_path, describe, DbState};
+use crate::db::{DbState, db_path, describe};
 
 #[tauri::command]
 pub fn get_currency(state: State<DbState>) -> Result<String, String> {

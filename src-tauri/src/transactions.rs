@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use chrono::{Local, Months, NaiveDate};
-use scrat_application::transaction_service::{TransactionService, RECONCILIATION_DESCRIPTION};
+use scrat_application::transaction_service::{RECONCILIATION_DESCRIPTION, TransactionService};
 use scrat_domain::account::{Account, AccountId};
 use scrat_domain::category::{Category, CategoryId};
 use scrat_domain::ports::{AccountRepository, CategoryRepository, TransactionFilters};

@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use scrat_domain::account::{AccountId, DescriptionPattern};
 use scrat_domain::ports::{RepositoryError, TransferRuleRepository};
 use scrat_domain::transfer_rule::{TransferRule, TransferRuleId};

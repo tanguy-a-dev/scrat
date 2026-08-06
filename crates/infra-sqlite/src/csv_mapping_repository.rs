@@ -11,7 +11,7 @@
 //! The mapping is stored as an opaque string. This module deliberately does
 //! not know its structure; `src-tauri` owns the DTO and its serialization.
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use scrat_domain::ports::RepositoryError;
 
 /// The mapping last committed for this file layout, if any. See

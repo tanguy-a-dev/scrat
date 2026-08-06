@@ -16,8 +16,8 @@ use scrat_domain::money::Currency;
 use scrat_domain::ports::CategoryRepository;
 use scrat_domain::transaction::OperationKind;
 use scrat_infra_sqlite::{
-    create_new, set_currency_code, SqliteAccountRepository, SqliteCategoryRepository,
-    SqliteTransactionRepository, SqliteTransferRuleRepository,
+    SqliteAccountRepository, SqliteCategoryRepository, SqliteTransactionRepository,
+    SqliteTransferRuleRepository, create_new, set_currency_code,
 };
 use std::path::PathBuf;
 

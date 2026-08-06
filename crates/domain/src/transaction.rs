@@ -320,10 +320,10 @@ impl Transaction {
         }
         match (role, transfer_group_id) {
             (TransactionRole::Transfer, None) => {
-                return Err(TransactionError::TransferWithoutGroup)
+                return Err(TransactionError::TransferWithoutGroup);
             }
             (TransactionRole::Normal | TransactionRole::Adjustment, Some(_)) => {
-                return Err(TransactionError::GroupWithoutTransferRole)
+                return Err(TransactionError::GroupWithoutTransferRole);
             }
             _ => {}
         }

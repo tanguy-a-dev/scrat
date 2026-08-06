@@ -5,10 +5,10 @@ use scrat_domain::category::CategoryId;
 use scrat_domain::ports::TransferRuleRepository;
 use scrat_domain::transaction::OperationKind;
 use scrat_infra_csv::{
-    apply_mapping, detect_mapping, file_signature, parse_file, AmountSource, ColumnMapping,
-    DATE_FORMATS,
+    AmountSource, ColumnMapping, DATE_FORMATS, apply_mapping, detect_mapping, file_signature,
+    parse_file,
 };
-use scrat_infra_sqlite::{get_csv_mapping, save_csv_mapping, SqliteTransferRuleRepository};
+use scrat_infra_sqlite::{SqliteTransferRuleRepository, get_csv_mapping, save_csv_mapping};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -518,10 +518,10 @@ pub fn commit_csv_import(
     .map(|outcome| {
         // After `with_service` has released the mutex — it locks the same
         // one, and re-entering it here would deadlock.
-        if let Ok(guard) = state.0.lock() {
-            if let Some(conn) = guard.as_ref() {
-                remember_mapping(conn, signature.as_deref(), mapping.as_ref());
-            }
+        if let Ok(guard) = state.0.lock()
+            && let Some(conn) = guard.as_ref()
+        {
+            remember_mapping(conn, signature.as_deref(), mapping.as_ref());
         }
         ImportSummaryDto {
             imported: outcome.imported,

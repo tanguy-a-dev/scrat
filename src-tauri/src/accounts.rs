@@ -92,12 +92,10 @@ pub(crate) fn resolve_default_account_id(conn: &Connection) -> Result<Option<Acc
 
     if let Some(id_str) =
         scrat_infra_sqlite::get_default_account_id(conn).map_err(|e| e.to_string())?
+        && let Ok(id) = AccountId::parse(&id_str)
+        && accounts.iter().any(|a| a.id() == id)
     {
-        if let Ok(id) = AccountId::parse(&id_str) {
-            if accounts.iter().any(|a| a.id() == id) {
-                return Ok(Some(id));
-            }
-        }
+        return Ok(Some(id));
     }
 
     let mut all = accounts.iter();

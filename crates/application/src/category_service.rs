@@ -1,6 +1,6 @@
 use scrat_domain::category::{
-    has_subcategories, Category, CategoryError, CategoryIcon, CategoryId, CategoryName,
-    DEFAULT_CATEGORY_NAME, FALLBACK_ICON,
+    Category, CategoryError, CategoryIcon, CategoryId, CategoryName, DEFAULT_CATEGORY_NAME,
+    FALLBACK_ICON, has_subcategories,
 };
 use scrat_domain::ports::{CategoryRepository, RepositoryError};
 use thiserror::Error;

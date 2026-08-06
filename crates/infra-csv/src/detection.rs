@@ -159,11 +159,7 @@ pub fn detect_date_format(values: &[&str]) -> &'static str {
             (*fmt, hits)
         })
         .fold(("%Y-%m-%d", 0), |best, current| {
-            if current.1 > best.1 {
-                current
-            } else {
-                best
-            }
+            if current.1 > best.1 { current } else { best }
         })
         .0
 }

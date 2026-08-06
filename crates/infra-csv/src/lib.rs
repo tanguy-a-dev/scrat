@@ -15,11 +15,11 @@ mod mapping;
 mod operation_kind;
 
 pub use detection::{
-    decode_bytes, detect_date_format, detect_header, parse_amount_cell, parse_date_cell,
-    parse_date_cell_with, parse_rows, sniff_delimiter, DATE_FORMATS,
+    DATE_FORMATS, decode_bytes, detect_date_format, detect_header, parse_amount_cell,
+    parse_date_cell, parse_date_cell_with, parse_rows, sniff_delimiter,
 };
 pub use mapping::{
+    AmountSource, ColumnMapping, ColumnSummary, ImportPreview, ParsedFile, ParsedRow,
     apply_mapping, build_preview, detect_mapping, file_signature, parse_file, preview_with_mapping,
-    summarize_columns, AmountSource, ColumnMapping, ColumnSummary, ImportPreview, ParsedFile,
-    ParsedRow,
+    summarize_columns,
 };

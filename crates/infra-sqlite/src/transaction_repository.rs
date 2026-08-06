@@ -1,5 +1,5 @@
 use chrono::NaiveDate;
-use rusqlite::{params, params_from_iter, Connection};
+use rusqlite::{Connection, params, params_from_iter};
 use scrat_domain::account::AccountId;
 use scrat_domain::category::CategoryId;
 use scrat_domain::money::{Currency, Money};
@@ -719,11 +719,12 @@ mod tests {
             .unwrap();
 
         assert_eq!(page.len(), 2);
-        assert!(page.iter().all(|t| t
-            .description()
-            .as_str()
-            .to_lowercase()
-            .contains("whole foods")));
+        assert!(page.iter().all(|t| {
+            t.description()
+                .as_str()
+                .to_lowercase()
+                .contains("whole foods")
+        }));
     }
 
     /// Both filters at once narrow further, rather than one quietly

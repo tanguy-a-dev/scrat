@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use scrat_domain::ports::RepositoryError;
 
 fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>, RepositoryError> {
