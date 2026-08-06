@@ -464,12 +464,6 @@
         {exportingCsv ? "Exporting…" : "Export CSV"}
       </button>
     </div>
-    <p class="hint">
-      Includes transfers and reconciliation adjustments on this account — the
-      file wouldn't match the account's balance without them. Re-importing it
-      will re-run your transfer rules over rows that are already transfers, so
-      leave those rows unchecked in the import preview.
-    </p>
   {/if}
 </section>
 

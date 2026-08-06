@@ -25,6 +25,7 @@
   import SearchSelect from "$lib/SearchSelect.svelte";
   import FilterPopover from "$lib/FilterPopover.svelte";
   import DateRangePicker from "$lib/DateRangePicker.svelte";
+  import DatePicker from "$lib/DatePicker.svelte";
   import { pageViewState } from "$lib/pageCache";
   import { toast } from "$lib/toasts.svelte";
   import { ArrowUp, FileUp, Pencil, Plus, Search } from "@lucide/svelte";
@@ -645,9 +646,10 @@
     else incomeDescriptionFilter = value;
   }
 
+  let accountOptions = $derived(accounts.map((a) => ({ id: a.id, label: a.name })));
   let accountFilterOptions = $derived([
     { id: "", label: "All accounts" },
-    ...accounts.map((a) => ({ id: a.id, label: a.name })),
+    ...accountOptions,
   ]);
 
   function accountFilterFor(kind: SelectionKind): string {
@@ -1314,7 +1316,7 @@
 
 {#if showAddForm}
   <form class="create-form" onsubmit={handleCreate}>
-    <input type="date" bind:value={formDate} required />
+    <DatePicker value={formDate} onChange={(d) => (formDate = d)} />
     <input
       type="number"
       step="0.01"
@@ -1328,18 +1330,20 @@
       onblur={handleDescriptionBlur}
       required
     />
-    <select bind:value={formCategoryId} required>
-      <option value="" disabled selected>Category…</option>
-      {#each categoryOptions as c (c.id)}
-        <option value={c.id}>{c.label}</option>
-      {/each}
-    </select>
-    <select bind:value={formAccountId} required>
-      <option value="" disabled selected>Account…</option>
-      {#each accounts as a (a.id)}
-        <option value={a.id}>{a.name}</option>
-      {/each}
-    </select>
+    <SearchSelect
+      options={categoryOptions}
+      value={formCategoryId}
+      onChange={(id) => (formCategoryId = id)}
+      placeholder="Category…"
+      searchPlaceholder="Search category…"
+    />
+    <SearchSelect
+      options={accountOptions}
+      value={formAccountId}
+      onChange={(id) => (formAccountId = id)}
+      placeholder="Account…"
+      searchPlaceholder="Search account…"
+    />
     <button type="submit">Save transaction</button>
   </form>
 {/if}
@@ -1520,8 +1524,24 @@
     margin-bottom: 2rem;
   }
 
+  /* SearchSelect renders its own scoped trigger button (narrower padding,
+     smaller font, shrink-to-fit width) — sized fine for a table-header
+     filter icon, but next to the plain Amount/Description inputs here it
+     reads as a visibly smaller field. Matched to `input`'s own box below
+     rather than left to inherit it, since Svelte's scoped styles don't
+     cross into a child component's markup. */
+  .create-form :global(.search-select) {
+    width: 10.5rem;
+    max-width: none;
+  }
+
+  .create-form :global(.search-select .trigger) {
+    border-radius: 6px;
+    padding: 0.45rem 0.5rem;
+    font-size: 0.9rem;
+  }
+
   input,
-  select,
   button:not(.icon-button) {
     border-radius: 6px;
     border: 1px solid var(--color-shade-3);
@@ -1530,8 +1550,7 @@
     font-family: inherit;
   }
 
-  input,
-  select {
+  input {
     background-color: var(--color-shade-2);
     color: inherit;
   }
