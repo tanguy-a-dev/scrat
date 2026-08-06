@@ -1,96 +1,58 @@
-name: Release
+name: Build and Release
 
-# Releases are cut from main automatically, but only from a commit that has
-# already gone green: this runs *after* the CI workflow rather than on push, so
-# a red main can never produce a tag.
-#
-# The order is deliberate — decide the version, build every platform, and only
-# then write the version bump back to main and create the tag. Nothing is
-# tagged that did not build everywhere first.
+# Manual only, deliberately. tag.yml bumps the version and pushes a tag
+# automatically on every green push to main, but building installers for three
+# platforms and publishing them as a GitHub release is not something that
+# should happen unattended on every commit — this is run by hand, whenever
+# someone decides a tagged commit is actually ready to ship.
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-    branches: [main]
   workflow_dispatch:
     inputs:
-      bump:
-        description: "Version bump ('auto' reads it from the commit messages)"
-        type: choice
-        options: [auto, patch, minor, major]
-        default: auto
+      tag:
+        description: "Tag to build and release (e.g. v0.2.0). Defaults to the most recent tag."
+        type: string
+        required: false
 
-# Pushing the version-bump commit, the tag, and the release itself. Nothing
-# here needs any other scope.
 permissions:
   contents: write
 
-# Never cut two releases at once — the second would race the first's push to
-# main. Queue rather than cancel: cancelling mid-way could leave a pushed tag
-# with no release attached to it.
+# Never build/publish two releases at once — the second would race the
+# first's GitHub release creation.
 concurrency:
-  group: release
+  group: build-release
   cancel-in-progress: false
 
 jobs:
-  plan:
-    name: Decide version
+  resolve:
+    name: Resolve tag
     runs-on: ubuntu-latest
-    # `workflow_run` also fires when CI fails, and for CI runs triggered by
-    # pull requests. Both are filtered out here.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'push')
     outputs:
-      sha: ${{ steps.resolve.outputs.sha }}
-      bump: ${{ steps.version.outputs.bump }}
-      version: ${{ steps.version.outputs.next }}
-      tag: ${{ steps.version.outputs.tag }}
+      tag: ${{ steps.resolve.outputs.tag }}
     steps:
-      - name: Resolve the commit being released
-        id: resolve
-        env:
-          # For workflow_run, github.sha is the default branch tip, which is not
-          # necessarily the commit CI actually passed on.
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
-        run: echo "sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
-
       - uses: actions/checkout@v5
         with:
-          ref: ${{ steps.resolve.outputs.sha }}
-          # Full history and tags: the bump is derived from the commits written
-          # since the last release tag.
           fetch-depth: 0
 
-      - name: Classify the commits since the last release
-        id: version
+      - name: Resolve the tag to build
+        id: resolve
         env:
-          FORCED_BUMP: ${{ inputs.bump || 'auto' }}
-        # Deliberately not piped into `tee`: the default shell here is `bash -e`
-        # without `pipefail`, so a failure on the left of a pipe would be masked
-        # and the job would carry on with empty outputs.
+          REQUESTED_TAG: ${{ inputs.tag }}
         run: |
-          ./scripts/next-version.sh --force "$FORCED_BUMP" > version.txt
-          cat version.txt
-          cat version.txt >> "$GITHUB_OUTPUT"
-
-      - name: Summary
-        env:
-          BUMP: ${{ steps.version.outputs.bump }}
-          CURRENT: ${{ steps.version.outputs.current }}
-          TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          if [ "$BUMP" = "none" ]; then
-            echo "No releasable commits since the last tag — staying on $CURRENT." >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$REQUESTED_TAG" ]; then
+            tag="$REQUESTED_TAG"
           else
-            echo "Releasing **$TAG** (a \`$BUMP\` bump from $CURRENT)." >> "$GITHUB_STEP_SUMMARY"
+            tag=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*')
           fi
+          if ! git rev-parse "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "::error::Tag '$tag' does not exist."
+            exit 1
+          fi
+          echo "Building $tag" >> "$GITHUB_STEP_SUMMARY"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build ${{ matrix.name }}
-    needs: plan
-    if: needs.plan.outputs.bump != 'none'
+    needs: resolve
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
@@ -130,9 +92,11 @@ jobs:
             tauri_args: ""
             bundle_dir: target/release/bundle
     steps:
+      # Checked out at the tag itself, which already carries the bumped
+      # version committed by tag.yml — nothing here needs to stamp a version.
       - uses: actions/checkout@v5
         with:
-          ref: ${{ needs.plan.outputs.sha }}
+          ref: ${{ needs.resolve.outputs.tag }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -176,15 +140,6 @@ jobs:
           echo "C:\\Program Files\\NASM" >> "$GITHUB_PATH"
           echo "OPENSSL_SRC_PERL=C:/Strawberry/perl/bin/perl.exe" >> "$GITHUB_ENV"
 
-      # The version is written into the working tree but not committed. It is
-      # committed in the release job, only once every platform has built, so a
-      # failed build never leaves a version bump behind on main.
-      - name: Stamp the version
-        shell: bash
-        env:
-          VERSION: ${{ needs.plan.outputs.version }}
-        run: ./scripts/set-version.sh "$VERSION"
-
       - name: Install npm dependencies
         run: |
           npm ci
@@ -226,16 +181,14 @@ jobs:
           retention-days: 7
 
   release:
-    name: Tag and publish
-    needs: [plan, build]
+    name: Publish release
+    needs: [resolve, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ needs.plan.outputs.sha }}
+          ref: ${{ needs.resolve.outputs.tag }}
           fetch-depth: 0
-
-      - uses: dtolnay/rust-toolchain@stable
 
       - uses: actions/download-artifact@v4
         with:
@@ -243,13 +196,22 @@ jobs:
           pattern: bundles-*
           merge-multiple: true
 
-      # Generated before the tag exists, so `git describe` still resolves to the
-      # *previous* release and the range is the one being published.
+      # Unlike the old single-workflow pipeline, the tag being released already
+      # exists by the time this runs (tag.yml pushed it earlier). Plain
+      # `git describe` on the tagged commit would resolve to itself, not the
+      # previous release, so the previous tag is found from its parent commit
+      # instead and the range is built explicitly.
       - name: Write the release notes
         env:
-          TAG: ${{ needs.plan.outputs.tag }}
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
-          ./scripts/release-notes.sh "" "$TAG" > release-notes.md
+          previous_tag=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' "${TAG}^" 2>/dev/null || true)
+          if [ -n "$previous_tag" ]; then
+            range="$previous_tag..$TAG"
+          else
+            range="$TAG"
+          fi
+          ./scripts/release-notes.sh "$range" "$TAG" > release-notes.md
           cat >> release-notes.md <<'EOF'
 
           ### Installing
@@ -272,45 +234,10 @@ jobs:
           EOF
           cat release-notes.md >> "$GITHUB_STEP_SUMMARY"
 
-      # The build ran against a snapshot of main. If main moved on since, the
-      # artifacts no longer match what the tag would point at, so stop: the CI
-      # run for the newer commit will start a release that covers both.
-      - name: Check main has not moved
-        env:
-          PLANNED_SHA: ${{ needs.plan.outputs.sha }}
-        run: |
-          git fetch origin main
-          actual=$(git rev-parse origin/main)
-          if [ "$actual" != "$PLANNED_SHA" ]; then
-            echo "::error::main moved from $PLANNED_SHA to $actual during the build; the newer commit's CI run will release both."
-            exit 1
-          fi
-
-      - name: Commit the version bump and tag it
-        env:
-          VERSION: ${{ needs.plan.outputs.version }}
-          TAG: ${{ needs.plan.outputs.tag }}
-          PLANNED_SHA: ${{ needs.plan.outputs.sha }}
-        run: |
-          git checkout -B main "$PLANNED_SHA"
-          ./scripts/set-version.sh "$VERSION"
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml Cargo.lock package.json frontend/package.json
-          git commit -m "chore(release): $TAG [skip ci]"
-
-          # Annotated, so `git describe --tags` finds it when deciding the next
-          # version. Pushes made with GITHUB_TOKEN do not start a new workflow
-          # run, so this cannot loop back into another release.
-          git tag -a "$TAG" -m "Scrat $TAG"
-          git push origin main
-          git push origin "$TAG"
-
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.plan.outputs.tag }}
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           gh release create "$TAG" \
             --title "Scrat $TAG" \

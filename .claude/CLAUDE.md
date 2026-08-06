@@ -234,9 +234,20 @@ test for whatever broke, the same way the existing tests do.
 
 ## Versioning and releases
 
-Commit messages are now load-bearing: `.github/workflows/release.yml` decides
+Commit messages are now load-bearing: `.github/workflows/tag.yml` decides
 the next version by parsing them, so a mistyped prefix silently changes what
 ships. See the table in README.md for the type → bump mapping.
+
+Tagging and building/releasing are two separate workflows, deliberately:
+`tag.yml` runs automatically after every green CI run on `main` and, if
+anything releasable landed, bumps the version and pushes a tag — cheap and
+safe to do unconditionally. `build-release.yml` is `workflow_dispatch`-only:
+it builds installers for macOS (Apple Silicon + Intel), Linux, and Windows for
+a given tag (defaulting to the most recent one) and publishes the GitHub
+release. Building three platforms' worth of binaries is not something that
+should happen unattended on every commit, so it stays a manual, explicit
+action even though tagging isn't. Don't merge these back into one workflow —
+that was the previous design and it's what this split replaced.
 
 - **The version lives in exactly one place**: `[workspace.package] version` in
   the root `Cargo.toml`. `src-tauri/Cargo.toml` inherits it with
@@ -255,13 +266,19 @@ ships. See the table in README.md for the type → bump mapping.
 - **Below 1.0.0 a breaking change bumps the minor, not the major.** Reaching
   1.0.0 should be a deliberate statement about stability, not a side effect of
   a `!` in a commit subject.
-- The release ordering is: decide version → build every platform → *then*
-  commit the bump and push the tag. Nothing is tagged that didn't build
-  everywhere first, so don't "simplify" it by tagging up front.
-- The workflow pushes a `chore(release): vX.Y.Z` commit back to main. It's
-  filtered out of both the bump classification and the release notes — without
-  that filter every release would beget another. `scripts/next-version-test.sh`
-  covers this case; run it with `make release-test` (part of `make check`).
+- `tag.yml` pushes a `chore(release): vX.Y.Z` commit back to main as part of
+  tagging. It's filtered out of both the bump classification and the release
+  notes — without that filter every release would beget another.
+  `scripts/next-version-test.sh` covers this case; run it with
+  `make release-test` (part of `make check`).
+- `build-release.yml` checks out the tag itself (already carrying the bumped
+  version from `tag.yml`'s commit), so it never re-stamps a version. Its
+  release-notes step can't rely on plain `git describe` to find the previous
+  release — the tag it's building already exists by the time it runs, so
+  `git describe` on that commit resolves to itself. It walks to the tagged
+  commit's parent first to find the actual previous tag. If you touch that
+  logic, keep it working from an *existing* tag, not from a not-yet-tagged
+  commit the way the old single-workflow version could assume.
 
 ## What "done" means for a change here
 

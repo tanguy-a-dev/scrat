@@ -22,6 +22,8 @@ When importing a CSV, do not load all rows at once in the app, load 20 by 20 if 
 ## Export transfers bug
 
 If the user has account transfer rules, exports to .csv the transactions, and import them back, there will be duplicates.
+We should either not export them or let the user chose by adding 1. "do not export transfers/mirrored transactions" on export csv 2. "do not import mirrored transactions" on import.
+What do you think?
 
 ## Test Coverage
 

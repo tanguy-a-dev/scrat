@@ -1,0 +1,126 @@
+name: Tag
+
+# Tagging happens automatically on every green push to main: this runs *after*
+# the CI workflow rather than on push, so a red main can never produce a tag.
+# Building installers and publishing the GitHub release is a deliberately
+# separate, manually-triggered workflow (see build-release.yml) — tagging is
+# cheap and safe to do unconditionally, building three platforms' worth of
+# binaries is not something that should happen unattended on every commit.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump ('auto' reads it from the commit messages)"
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+
+# Pushing the version-bump commit and the tag. Nothing here needs any other
+# scope.
+permissions:
+  contents: write
+
+# Never decide two versions at once — the second would race the first's push
+# to main.
+concurrency:
+  group: tag
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Decide version and tag
+    runs-on: ubuntu-latest
+    # `workflow_run` also fires when CI fails, and for CI runs triggered by
+    # pull requests. Both are filtered out here.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      bump: ${{ steps.version.outputs.bump }}
+    steps:
+      - name: Resolve the commit being tagged
+        id: resolve
+        env:
+          # For workflow_run, github.sha is the default branch tip, which is not
+          # necessarily the commit CI actually passed on.
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: echo "sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.resolve.outputs.sha }}
+          # Full history and tags: the bump is derived from the commits written
+          # since the last release tag.
+          fetch-depth: 0
+
+      - name: Classify the commits since the last release
+        id: version
+        env:
+          FORCED_BUMP: ${{ inputs.bump || 'auto' }}
+        # Deliberately not piped into `tee`: the default shell here is `bash -e`
+        # without `pipefail`, so a failure on the left of a pipe would be masked
+        # and the job would carry on with empty outputs.
+        run: |
+          ./scripts/next-version.sh --force "$FORCED_BUMP" > version.txt
+          cat version.txt
+          cat version.txt >> "$GITHUB_OUTPUT"
+
+      # set-version.sh shells out to `cargo update`, so Cargo.lock stays in
+      # sync with the bumped version.
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.version.outputs.bump != 'none'
+
+      # The tag is what build-release.yml checks out later, so it must carry
+      # the bumped version already — there is no separate "stamp the version"
+      # step at build time.
+      - name: Check main has not moved
+        if: steps.version.outputs.bump != 'none'
+        env:
+          PLANNED_SHA: ${{ steps.resolve.outputs.sha }}
+        run: |
+          git fetch origin main
+          actual=$(git rev-parse origin/main)
+          if [ "$actual" != "$PLANNED_SHA" ]; then
+            echo "::error::main moved from $PLANNED_SHA to $actual while deciding the version; the newer commit's CI run will tag instead."
+            exit 1
+          fi
+
+      - name: Commit the version bump and tag it
+        if: steps.version.outputs.bump != 'none'
+        env:
+          VERSION: ${{ steps.version.outputs.next }}
+          TAG: ${{ steps.version.outputs.tag }}
+          PLANNED_SHA: ${{ steps.resolve.outputs.sha }}
+        run: |
+          git checkout -B main "$PLANNED_SHA"
+          ./scripts/set-version.sh "$VERSION"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock package.json frontend/package.json
+          git commit -m "chore(release): $TAG [skip ci]"
+
+          # Annotated, so `git describe --tags` finds it when deciding the next
+          # version. Pushes made with GITHUB_TOKEN do not start a new workflow
+          # run, so this cannot loop back into another tag.
+          git tag -a "$TAG" -m "Scrat $TAG"
+          git push origin main
+          git push origin "$TAG"
+
+      - name: Summary
+        env:
+          BUMP: ${{ steps.version.outputs.bump }}
+          CURRENT: ${{ steps.version.outputs.current }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if [ "$BUMP" = "none" ]; then
+            echo "No releasable commits since the last tag — staying on $CURRENT." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Tagged **$TAG** (a \`$BUMP\` bump from $CURRENT). Run the **Build and Release** workflow from the Actions tab to build and publish it." >> "$GITHUB_STEP_SUMMARY"
+          fi
