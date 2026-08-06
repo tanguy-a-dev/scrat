@@ -1,20 +1,12 @@
 # Features
 
-## CI
-
-### Build
-
-Don't build an universal version for mac, it will enlarge the app for no reason, instead build for both architectures.
-
-Also .rpm does not have doc contrary to the others
-
 ## Details: Compare vue
 
 ## Transaction: reset filters next to Amount
 
 ## Details -> go to
 
-## Transactions -> Plus 
+## Transactions -> New Transaction (Icon Plus) 
 - Category search: reuse the one when searching category in transactions list
 - Account search: Use the same as in transactions list, search for account
 - Date picker: Must use the theme adapted to the app, as with "Set Dates" instead of black/white

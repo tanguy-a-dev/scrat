@@ -25,6 +25,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "longDescription": "Scrat is a desktop app for tracking personal finances — accounts, transactions, categories, and spending over time — without sending a single byte of your financial data anywhere. There is no server, no account, no telemetry, and no analytics. Everything lives in one SQLCipher-encrypted SQLite file on your own disk.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

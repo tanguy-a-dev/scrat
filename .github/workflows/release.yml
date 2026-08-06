@@ -98,24 +98,34 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # A single universal binary rather than separate Intel/Apple Silicon
-          # downloads — one .dmg that runs on any Mac, and no dependency on the
-          # ageing Intel runner images.
-          - name: macOS (universal)
+          # Separate Apple Silicon / Intel builds rather than a universal
+          # binary — a universal binary embeds both architectures' code in
+          # every download, roughly doubling its size for no benefit to any
+          # single user, since each machine only ever runs one of them.
+          - name: macOS (Apple Silicon)
             os: macos-latest
-            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
-            tauri_args: --target universal-apple-darwin
-            bundle_dir: target/universal-apple-darwin/release/bundle
+            slug: macos-arm64
+            rust_targets: aarch64-apple-darwin
+            tauri_args: --target aarch64-apple-darwin
+            bundle_dir: target/aarch64-apple-darwin/release/bundle
+          - name: macOS (Intel)
+            os: macos-latest
+            slug: macos-x64
+            rust_targets: x86_64-apple-darwin
+            tauri_args: --target x86_64-apple-darwin
+            bundle_dir: target/x86_64-apple-darwin/release/bundle
           # Built on 22.04 rather than latest: the .deb and .AppImage link
           # against the build machine's glibc, so building on the oldest
           # supported image is what keeps them usable on older distros.
           - name: Linux (x86_64)
             os: ubuntu-22.04
+            slug: linux-x64
             rust_targets: ""
             tauri_args: ""
             bundle_dir: target/release/bundle
           - name: Windows (x86_64)
             os: windows-latest
+            slug: windows-x64
             rust_targets: ""
             tauri_args: ""
             bundle_dir: target/release/bundle
@@ -130,7 +140,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: release-${{ matrix.os }}
+          key: release-${{ matrix.slug }}
 
       - uses: actions/setup-node@v5
         with:
@@ -210,7 +220,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: bundles-${{ matrix.os }}
+          name: bundles-${{ matrix.slug }}
           path: dist/*
           if-no-files-found: error
           retention-days: 7
@@ -246,7 +256,8 @@ jobs:
 
           | Platform | Download |
           | --- | --- |
-          | macOS (Intel or Apple Silicon) | `.dmg` |
+          | macOS (Apple Silicon) | `.dmg` (`aarch64`) |
+          | macOS (Intel) | `.dmg` (`x64`) |
           | Linux | `.deb` or `.AppImage` |
           | Windows | `.msi` or `-setup.exe` |
 
