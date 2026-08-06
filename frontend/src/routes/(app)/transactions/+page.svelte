@@ -28,7 +28,7 @@
   import DatePicker from "$lib/DatePicker.svelte";
   import { pageViewState } from "$lib/pageCache";
   import { toast } from "$lib/toasts.svelte";
-  import { ArrowUp, FileUp, Pencil, Plus, Search } from "@lucide/svelte";
+  import { ArrowUp, FileUp, Pencil, Plus, RotateCcw, Search } from "@lucide/svelte";
 
   function autofocus(node: HTMLElement) {
     node.focus();
@@ -698,6 +698,55 @@
     return minAmountFilterFor(kind).trim() !== "" || maxAmountFilterFor(kind).trim() !== "";
   }
 
+  /** Whether this list is still showing the view it opens with: newest
+   * first, nothing narrowed. Drives whether the reset control is offered at
+   * all — an always-visible button next to a pristine list is a control that
+   * does nothing. The text boxes are compared raw rather than trimmed:
+   * a lone space filters nothing but is still text sitting in the box, and
+   * the user needs a way to clear it. */
+  function viewIsDefault(kind: SelectionKind): boolean {
+    const sortField = kind === "expense" ? expenseSortField : incomeSortField;
+    const sortDir = kind === "expense" ? expenseSortDir : incomeSortDir;
+    return (
+      sortField === "date" &&
+      sortDir === "desc" &&
+      categoryFilterFor(kind) === "" &&
+      descriptionFilterFor(kind) === "" &&
+      accountFilterFor(kind) === "" &&
+      typeFilterFor(kind) === "" &&
+      minAmountFilterFor(kind) === "" &&
+      maxAmountFilterFor(kind) === ""
+    );
+  }
+
+  /** Puts one list back to its default view. Only touches that list's state —
+   * Expenses and Income keep independent sort and filters, so resetting one
+   * must leave the other exactly as the user left it. No fetch is issued
+   * here: clearing the filters changes `filterKey`, which the debounced
+   * effect above already treats as a filter change (refreshing the count and,
+   * in "All Time", re-querying the rows), and sorting is client-side. */
+  function resetView(kind: SelectionKind) {
+    if (kind === "expense") {
+      expenseSortField = "date";
+      expenseSortDir = "desc";
+      expenseCategoryFilter = "";
+      expenseDescriptionFilter = "";
+      expenseAccountFilter = "";
+      expenseTypeFilter = "";
+      expenseMinAmount = "";
+      expenseMaxAmount = "";
+    } else {
+      incomeSortField = "date";
+      incomeSortDir = "desc";
+      incomeCategoryFilter = "";
+      incomeDescriptionFilter = "";
+      incomeAccountFilter = "";
+      incomeTypeFilter = "";
+      incomeMinAmount = "";
+      incomeMaxAmount = "";
+    }
+  }
+
   async function handleDescriptionBlur() {
     const description = formDescription.trim();
     if (!description) return;
@@ -1355,6 +1404,18 @@
     <section>
       <div class="section-header">
         <h2>Expenses</h2>
+        {#if !viewIsDefault("expense")}
+          <button
+            type="button"
+            class="reset-view"
+            aria-label="Reset expenses sort and filters"
+            title="Reset sort and filters"
+            onclick={() => resetView("expense")}
+          >
+            <RotateCcw size={13} aria-hidden="true" />
+            Reset
+          </button>
+        {/if}
         {#if visibleSelectedExpenseIds.length > 0}
           <div
             class="bulk-actions"
@@ -1386,6 +1447,18 @@
     <section>
       <div class="section-header">
         <h2>Income</h2>
+        {#if !viewIsDefault("income")}
+          <button
+            type="button"
+            class="reset-view"
+            aria-label="Reset income sort and filters"
+            title="Reset sort and filters"
+            onclick={() => resetView("income")}
+          >
+            <RotateCcw size={13} aria-hidden="true" />
+            Reset
+          </button>
+        {/if}
         {#if visibleSelectedIncomeIds.length > 0}
           <div
             class="bulk-actions"
@@ -1637,6 +1710,35 @@
     font-size: 0.8rem;
     opacity: 0.75;
     white-space: nowrap;
+  }
+
+  /* Sits in the section header rather than in a `<th>`: that row already
+     exists and already reserves 2rem of height for the bulk-actions pill, so
+     this costs the page no extra height — and, unlike a control inside a
+     header cell, nothing in the table's column widths either (see the
+     `.column-header :global(.trigger)` note below for what an in-flow header
+     control actually costs a column). It's per list because Expenses and
+     Income keep independent sort and filters.
+
+     Selector is `button.reset-view`, not `.reset-view`: the generic
+     `button:not(.icon-button)` rule above scores (0,1,1) — `:not()` takes its
+     argument's specificity — so a bare class would lose its padding and
+     font-size to it. */
+  button.reset-view {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.15rem 0.5rem;
+    border: 1px solid var(--color-accent);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--color-accent);
+    font-size: 0.75rem;
+    cursor: pointer;
+  }
+
+  button.reset-view:hover {
+    background-color: var(--color-shade-2);
   }
 
   .select-header,

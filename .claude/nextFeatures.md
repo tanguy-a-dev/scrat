@@ -1,12 +1,10 @@
 # Features
 
-## Details: Compare vue
 
 ## Transaction: reset filters next to Amount
 
 The user should be able to reset sorts and filters (account, ) by clicking on a button
 
-## Details -> go to
 
 ## Transactions -> Sort
 When I sort with filters: Date, Amount, Description, Type, Category, Account:
@@ -20,3 +18,7 @@ When importing a CSV, do not load all rows at once in the app, load 20 by 20 if 
 ## Test Coverage
 
 App coverage is rather low. generate and check the report. Check where to add relevant tests for the app and implement them.
+
+## Details: Compare vue
+
+## Details -> go to
