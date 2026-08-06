@@ -1,9 +1,5 @@
 # Features
 
-## CSV import stripping
-
-Transactions description with dates  
-
 ## Rust version
 
 We are using rust edition = "2021", why not 2024?
@@ -11,6 +7,9 @@ We are using rust edition = "2021", why not 2024?
 ## CI
 
 ### Coverage job:
+
+I found this warning in the github ci's jobs: 
+
 "Annotations
 4 warnings
 security

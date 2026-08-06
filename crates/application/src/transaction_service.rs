@@ -691,13 +691,45 @@ impl<'a> TransactionService<'a> {
 /// filter in `recurring.rs`, which deliberately leaves bank prefixes alone —
 /// here we're matching a merchant against its own past self, not merging
 /// distinct merchants, so stripping a known, fixed marker is safe.
+///
+/// Also drops any date-like token (`30/06/26`, `14/02/2026`) anywhere in the
+/// text: some banks embed the transaction date inside the description itself
+/// (`CB SOME STORE 30/06/26`), so the same merchant would otherwise never
+/// match its own history from a different day.
 fn normalize_description(s: &str) -> String {
     let lower = s.trim().to_lowercase();
     let mut words: Vec<&str> = lower.split_whitespace().collect();
     if words.first() == Some(&"cb") {
         words.remove(0);
     }
+    words.retain(|w| !is_date_like(w));
     words.join(" ")
+}
+
+/// Whether `word` looks like a `DD/MM/YY` or `DD/MM/YYYY` date (also
+/// accepting `-` or `.` as the separator) rather than some other embedded
+/// number, e.g. a reference number.
+fn is_date_like(word: &str) -> bool {
+    let parts: Vec<&str> = word.split(['/', '-', '.']).collect();
+    let [day, month, year] = parts.as_slice() else {
+        return false;
+    };
+    if day.is_empty() || day.len() > 2 || month.is_empty() || month.len() > 2 {
+        return false;
+    }
+    if year.len() != 2 && year.len() != 4 {
+        return false;
+    }
+    if !day.chars().all(|c| c.is_ascii_digit())
+        || !month.chars().all(|c| c.is_ascii_digit())
+        || !year.chars().all(|c| c.is_ascii_digit())
+    {
+        return false;
+    }
+    let (Ok(day), Ok(month)) = (day.parse::<u32>(), month.parse::<u32>()) else {
+        return false;
+    };
+    (1..=31).contains(&day) && (1..=12).contains(&month)
 }
 
 /// Lowercases and splits on non-alphanumeric boundaries, dropping short
@@ -2474,6 +2506,34 @@ mod tests {
         // history recorded before that change should still match.
         let found = service
             .find_category_for_description("CB Corner Bistro")
+            .unwrap();
+
+        assert_eq!(found, Some(f.category_id));
+    }
+
+    #[test]
+    fn find_category_for_description_ignores_an_embedded_date() {
+        let f = fixture();
+        let service = TransactionService::new(
+            &f.transactions,
+            &f.accounts,
+            &f.categories,
+            Currency::new("USD").unwrap(),
+        );
+        service
+            .create_transaction(
+                NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                -1_000,
+                "CB SOME STORE 30/06/26",
+                f.category_id,
+                f.account_id,
+            )
+            .unwrap();
+
+        // Same merchant, different day the bank stamped into the text — the
+        // date shouldn't stop history from matching.
+        let found = service
+            .find_category_for_description("CB SOME STORE 02/07/26")
             .unwrap();
 
         assert_eq!(found, Some(f.category_id));
