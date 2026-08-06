@@ -901,14 +901,14 @@
        graph: the donut track is the donut's own size, and the row's height is
        that same size, so a long legend scrolls rather than growing the row.
 
-       The legend track is minmax(0, 8.5rem) rather than a flat 8.5rem so it can
+       The legend track is minmax(0, 11rem) rather than a flat 11rem so it can
        give width back when the column is tight (the app's own default 1100px
        window is tight) instead of forcing the column wider and overflowing.
        Both columns are equal `1fr`, so the track resolves to the same width in
        each — the donuts stay aligned at every window size, just closer in. */
     --donut-size: min(260px, 60vw);
     display: grid;
-    grid-template-columns: var(--donut-size) minmax(0, 8.5rem);
+    grid-template-columns: var(--donut-size) minmax(0, 11rem);
     /* The panel title takes row 1 of the donut's column so it is centered on
        the donut, not on donut+legend. Row 2 stays exactly the donut's size —
        what used to be this grid's fixed `height` — so the legend still has a
