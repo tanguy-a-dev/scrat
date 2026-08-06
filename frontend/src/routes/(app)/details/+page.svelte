@@ -218,12 +218,20 @@
     return panel === "expense" ? (grew ? "bad" : "good") : grew ? "good" : "bad";
   }
 
-  /** The relative change as text, or the word for the cases a percentage
-   * cannot express: a category that had nothing to grow from, and one that
-   * has nothing left. */
-  function formatRatio(row: { amountMinorUnits: number; amountB: number; deltaRatio: number | null }): string {
-    if (row.deltaRatio === null) return row.amountMinorUnits === 0 ? "—" : "new";
-    if (row.amountMinorUnits === 0) return "gone";
+  /** The relative change as text, or empty when there is no honest percentage
+   * to give: a category with nothing in one of the two periods has no ratio,
+   * only a division by zero or by a number that leaves 100%.
+   *
+   * Empty rather than the words "new" and "gone". The row already says it and
+   * says it better — a €0,00 beside a €600,00, with a bar on one line and
+   * nothing on the other, is unmistakable. The label was restating the two
+   * figures either side of it. */
+  function formatRatio(row: {
+    amountMinorUnits: number;
+    amountB: number;
+    deltaRatio: number | null;
+  }): string {
+    if (row.deltaRatio === null || row.amountMinorUnits === 0) return "";
     const pct = row.deltaRatio * 100;
     const sign = pct > 0 ? "+" : pct < 0 ? "−" : "";
     return `${sign}${Math.abs(pct).toFixed(pct !== 0 && Math.abs(pct) < 10 ? 1 : 0)}%`;
@@ -1046,7 +1054,8 @@
            difference survives being printed, and being colour-blind. -->
       <span class="delta-arrow" aria-hidden="true">{row.deltaMinor > 0 ? "▲" : "▼"}</span>
       <span class="delta-amount">{formatDelta(row.deltaMinor, currency)}</span>
-      <span class="delta-ratio">{formatRatio(row)}</span>
+      {@const ratio = formatRatio(row)}
+      {#if ratio}<span class="delta-ratio">{ratio}</span>{/if}
     {/if}
   </span>
 {/snippet}
@@ -1075,37 +1084,51 @@
     deltaRatio: number | null;
   },
 )}
-  <div class="prior-row">
-    <span class="prior-label">{compareLabel}</span>
+  <div class="prior-row" title={`${compareLabel} — share of ${panelLabel.toLowerCase()}`}>
+    <!-- The period's name was printed on every row of both panels, which on a
+         page with a dozen categories meant reading "July 2026" twenty times to
+         learn it once. The range bar at the top already names both periods,
+         and the striped bar under this line pairs it to the right one. What
+         sighted users lose is repetition; what a screen reader would lose is
+         the only clue, so the name stays here for them. -->
+    <span class="visually-hidden">{compareLabel}</span>
+    <span class="prior-spacer"></span>
     <span class="amount">{formatCurrency(row.amountB, currency)}</span>
-    <span
-      class="percent"
-      title={`Share of ${panelLabel.toLowerCase()} in ${compareLabel.toLowerCase()}`}
-      >{row.percentB.toFixed(1)}%</span
-    >
+    <span class="percent">{row.percentB.toFixed(1)}%</span>
     {@render deltaChip(panel, row)}
   </div>
 {/snippet}
 
-<!-- The bar, with the comparison period's share marked on the same track as a
-     tick rather than drawn as a second bar or hatched over the first.
-     The track's length already encodes share-of-total; a hatch laid over it
-     would be a second, different quantity on the same pixels, which reads as
-     "part of this bar" rather than as "where this was before". A tick is a
-     reference mark on the scale that's already there: past it means grown,
-     short of it means shrunk, and it needs no legend to say so. -->
-{#snippet comparedBar(slice: { color: string; animatedPercent: number; percentB: number })}
+<!-- Two lanes on one scale: the current period solid on top, the comparison
+     period striped below it, both in the category's own colour.
+
+     This replaced a white tick marking where the comparison period's share
+     fell on the single bar. The tick was accurate but had to be decoded — it
+     was a mark in a colour belonging to nothing, and which of the two periods
+     it stood for was not on screen anywhere. Two bars need no decoding: the
+     longer one is bigger, and they share a left edge and a scale, so the
+     difference is the overhang. Striping rather than a second hue keeps the
+     category's identity intact — the pair still reads as one category — while
+     saying plainly which of the two is the one being measured against.
+
+     The stripes are a gradient over the colour rather than a lighter tint of
+     it: a tint of a dark palette slot on a black page can land close to the
+     track itself, whereas the texture survives at any slot's lightness. -->
+{#snippet comparedBar(bar: { color: string; solidPercent: number; priorPercent: number })}
   <div class="bar-track">
-    <div
-      class="bar-fill"
-      style={`width:${slice.animatedPercent}%;background-color:${slice.color}`}
-    ></div>
-    {#if compareActive && slice.percentB > 0}
+    <div class="bar-lane">
       <div
-        class="bar-tick"
-        style={`left:${Math.min(slice.percentB, 100) * fillProgress}%`}
-        title={`${slice.percentB.toFixed(1)}% in ${compareLabel.toLowerCase()}`}
+        class="bar-fill"
+        style={`width:${bar.solidPercent}%;background-color:${bar.color}`}
       ></div>
+    </div>
+    {#if compareActive}
+      <div class="bar-lane">
+        <div
+          class="bar-fill prior"
+          style={`width:${bar.priorPercent}%;background-color:${bar.color}`}
+        ></div>
+      </div>
     {/if}
   </div>
 {/snippet}
@@ -1282,7 +1305,14 @@
                   <span class="amount">{formatCurrency(slice.amountMinorUnits, currency)}</span>
                   <span class="percent">{slice.percent.toFixed(1)}%</span>
                 </div>
-                {@render comparedBar(slice)}
+                <!-- Both lanes sweep in together on the same `fillProgress`,
+                     so the pair grows as one bar rather than the comparison
+                     appearing under an already-drawn bar. -->
+                {@render comparedBar({
+                  color: slice.color,
+                  solidPercent: slice.animatedPercent,
+                  priorPercent: Math.min(slice.percentB, 100) * fillProgress,
+                })}
                 {#if compareActive}
                   {@render priorLine(panelKey, p.label, slice)}
                 {/if}
@@ -1318,19 +1348,14 @@
                             >· {sub.percentOfTotal.toFixed(1)}% of total</span
                           >
                         </div>
-                        <div class="bar-track">
-                          <div
-                            class="bar-fill"
-                            style={`width:${sub.percent}%;background-color:${sub.color}`}
-                          ></div>
-                          {#if compareActive && sub.percentB > 0}
-                            <div
-                              class="bar-tick"
-                              style={`left:${Math.min(sub.percentB, 100)}%`}
-                              title={`${sub.percentB.toFixed(1)}% of ${slice.name} in ${compareLabel.toLowerCase()}`}
-                            ></div>
-                          {/if}
-                        </div>
+                        <!-- Expanded rows appear already-drawn rather than
+                             animating: they open under a bar that has long
+                             since finished sweeping in. -->
+                        {@render comparedBar({
+                          color: sub.color,
+                          solidPercent: sub.percent,
+                          priorPercent: Math.min(sub.percentB, 100),
+                        })}
                         {#if compareActive}
                           {@render priorLine(panelKey, slice.name, sub)}
                         {/if}
@@ -1693,11 +1718,22 @@
     opacity: 0.6;
   }
 
-  .prior-label {
+  /* Takes the place the category name holds on the line above, so this line's
+     amount and percentage land in the same columns as the ones they are being
+     compared with. */
+  .prior-spacer {
     flex: 1;
     min-width: 0;
+  }
+
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
     overflow: hidden;
-    text-overflow: ellipsis;
+    clip-path: inset(50%);
     white-space: nowrap;
   }
 
@@ -1710,21 +1746,6 @@
   .prior-row .delta {
     opacity: 1;
     margin-left: 0.15rem;
-  }
-
-  /* The comparison period's share, marked on the bar's own scale. Two pixels
-     of the page's background either side keep it legible against a bar fill
-     of any colour without needing a colour of its own. */
-  .bar-tick {
-    position: absolute;
-    top: -2px;
-    bottom: -2px;
-    width: 2px;
-    margin-left: -1px;
-    background-color: var(--color-text, #fff);
-    box-shadow: 0 0 0 1.5px var(--color-bg, #000);
-    border-radius: 1px;
-    opacity: 0.85;
   }
 
   .center-delta {
@@ -2178,19 +2199,42 @@
     white-space: nowrap;
   }
 
+  /* A holder for one or two lanes rather than a bar itself. Not comparing,
+     it is a single lane and looks exactly as it always did. */
   .bar-track {
-    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .bar-lane {
     height: 0.4rem;
     border-radius: 999px;
     background-color: var(--color-shade-3);
-    /* Not `overflow: hidden` any more — the comparison tick is deliberately
-       taller than the track so it reads as a mark *on* the scale rather than
-       as a segment of the bar, and clipping would cut its ends off. The fill
-       keeps its own rounding instead. */
+    overflow: hidden;
   }
 
   .bar-fill {
+    height: 100%;
     border-radius: 999px;
+  }
+
+  /* The comparison period, in the category's colour with the colour cut away
+     on the diagonal. Both lanes share a left edge and a scale, so which is
+     longer is the whole reading — the stripes only have to say which one is
+     the past, not carry a value of their own.
+
+     45deg because a vertical hatch on a bar reads as tick marks (i.e. as a
+     scale) and a horizontal one disappears at this height. The opacity keeps
+     it under the solid lane in the visual hierarchy without weakening its
+     edge, which is the part being compared. */
+  .bar-fill.prior {
+    background-image: repeating-linear-gradient(
+      45deg,
+      rgba(0, 0, 0, 0) 0 3px,
+      rgba(0, 0, 0, 0.55) 3px 6px
+    );
+    opacity: 0.8;
   }
 
   .bar-fill {
