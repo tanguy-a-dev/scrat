@@ -129,6 +129,80 @@
     scrollY: 0,
   }));
 
+  /** A "go to transactions" jump from the Details page, as URL params.
+   *
+   * Params rather than reaching across to write this page's view cache from
+   * over there: it keeps the origin a real `<a href>` (middle-click,
+   * keyboard, copyable) and keeps the hand-off inspectable — same choice as
+   * the `?action=` hand-off from the command palette below.
+   *
+   * Everything is validated. These are URL params, so nothing here may
+   * assume the app is what wrote them: an unrecognised range or a
+   * malformed id is dropped rather than passed down to a query. */
+  function incomingFilter() {
+    const params = page.url.searchParams;
+    const kind = params.get("kind");
+    if (kind !== "expense" && kind !== "income") return null;
+    // A malformed id would reach `CategoryId::parse` on the Rust side and
+    // fail the whole load with a parse error; a well-formed one naming
+    // nothing just matches no rows, which is a survivable way to be wrong.
+    const category = params.get("category") ?? "";
+    if (!/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(category)) return null;
+    const range = params.get("range");
+    const isoDate = (raw: string | null) =>
+      raw && /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null;
+    return {
+      kind: kind as SelectionKind,
+      category,
+      mode:
+        range === "month" || range === "year" || range === "all" || range === "custom"
+          ? (range as RangeMode)
+          : null,
+      start: isoDate(params.get("start")),
+      end: isoDate(params.get("end")),
+    };
+  }
+
+  /** Applied to the cache rather than to the `$state` below, and read
+   * synchronously at init: the declarations that follow already pick it up,
+   * so `onMount(load)` issues the filtered fetch directly instead of an
+   * unfiltered one it immediately has to redo. Writing the cache also means
+   * navigating away and back returns to the filtered view, which is what
+   * arriving here deliberately should leave behind.
+   *
+   * The target list's *other* filters are cleared. A jump is a statement
+   * about what the user wants to look at now, and a description filter left
+   * over from a visit ten minutes ago would silently intersect with it —
+   * landing on an empty list with no visible reason why. The other list is
+   * left completely alone; the two never share filters. */
+  const incoming = incomingFilter();
+  if (incoming) {
+    if (incoming.mode) view.rangeMode = incoming.mode;
+    if (incoming.start) view.customStart = incoming.start;
+    if (incoming.end) view.customEnd = incoming.end;
+    if (incoming.kind === "expense") {
+      view.expenseCategoryFilter = incoming.category;
+      view.expenseDescriptionFilter = "";
+      view.expenseAccountFilter = "";
+      view.expenseTypeFilter = "";
+      view.expenseMinAmount = "";
+      view.expenseMaxAmount = "";
+    } else {
+      view.incomeCategoryFilter = incoming.category;
+      view.incomeDescriptionFilter = "";
+      view.incomeAccountFilter = "";
+      view.incomeTypeFilter = "";
+      view.incomeMinAmount = "";
+      view.incomeMaxAmount = "";
+    }
+    // The remembered scroll position was measured against a different set of
+    // rows — restoring it would drop the user somewhere arbitrary in a list
+    // they have never seen.
+    view.scrollY = 0;
+    view.loadedExpenseRows = 0;
+    view.loadedIncomeRows = 0;
+  }
+
   let rangeMode = $state<RangeMode>(view.rangeMode);
   let customStart = $state(view.customStart);
   let customEnd = $state(view.customEnd);
@@ -278,6 +352,13 @@
   let formAccountId = $state("");
 
   onMount(load);
+
+  // The params have done their job at init. Dropping them keeps a reload
+  // from re-clearing filters the user has since set by hand, and matches how
+  // the `?action=` hand-off tidies up after itself.
+  onMount(() => {
+    if (incoming) replaceState(page.url.pathname, {});
+  });
 
   /** Parses a user-typed amount filter bound into minor units, or `null`
    * when blank or unparseable — a filter box left empty or mid-edit means

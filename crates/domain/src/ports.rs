@@ -61,6 +61,14 @@ pub trait CategoryRepository {
 /// meaning "no filter", not "match nothing".
 #[derive(Debug, Clone, Default)]
 pub struct TransactionFilters {
+    /// Matches the named category **and its subcategories**, not the named
+    /// category alone. Naming a parent has to mean the whole branch: that is
+    /// what every total in the app already reports (the Details donut rolls
+    /// children into their root), so an exact-match filter would answer a
+    /// question nobody asked — "rows filed directly against Housing" — with
+    /// a number contradicting the one the user clicked to get here. Naming a
+    /// leaf is unaffected: the two-level hierarchy guarantees a subcategory
+    /// has no children of its own, so the branch is just itself.
     pub category_id: Option<CategoryId>,
     /// Case-insensitive substring match.
     pub description_contains: Option<String>,

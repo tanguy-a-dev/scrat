@@ -13,6 +13,7 @@
   } from "$lib/api";
   import DateRangePicker from "$lib/DateRangePicker.svelte";
   import { pageViewState } from "$lib/pageCache";
+  import { ArrowUpRight } from "@lucide/svelte";
 
   // Validated categorical palette (dark-mode steps) — passes CVD/contrast
   // checks against this app's dark surface. See dataviz skill's palette.md.
@@ -229,6 +230,34 @@
     customEnd = end;
     expandedCategoryIds = { expense: new Set(), income: new Set() };
     load();
+  }
+
+  /** The Transactions page, opened on the same slice of the ledger this row
+   * is showing: same date range, same expense/income side, filtered to this
+   * category.
+   *
+   * A real href rather than a `goto()` click handler — it's a navigation, so
+   * it should behave like one (middle-click, Cmd-click, keyboard). The range
+   * travels as the mode plus, only when it means anything, the custom
+   * endpoints: handing over "month" rather than two computed dates keeps the
+   * two pages agreeing about what "this month" is instead of freezing this
+   * page's answer into the URL.
+   *
+   * Filtering by a parent gives that parent's whole branch — the backend
+   * rolls subcategories into the named category (see `TransactionFilters`),
+   * matching the rollup this row's own amount is built from. Without that,
+   * the row and the list it opens would disagree. */
+  function transactionsHref(panel: PanelKey, categoryId: string): string {
+    const params = new URLSearchParams({
+      kind: panel,
+      category: categoryId,
+      range: rangeMode,
+    });
+    if (rangeMode === "custom") {
+      params.set("start", customStart);
+      params.set("end", customEnd);
+    }
+    return `/transactions?${params}`;
   }
 
   function toggleHidden(panel: PanelKey, categoryId: string) {
@@ -452,6 +481,22 @@
   {/if}
 </div>
 
+<!-- Sits in the row's trailing action column beside the eye, not inside
+     `.row-main` — on a parent row that whole area is already the
+     expand/collapse button, and a button nested in a button is invalid.
+     Borrows the eye's low-opacity-until-pointed-at treatment so the two read
+     as one family of row actions rather than as competing affordances. -->
+{#snippet goToLink(panel: PanelKey, categoryId: string, name: string)}
+  <a
+    class="goto-btn"
+    href={transactionsHref(panel, categoryId)}
+    title={`View ${name} transactions`}
+    aria-label={`View ${name} transactions`}
+  >
+    <ArrowUpRight size={15} aria-hidden="true" />
+  </a>
+{/snippet}
+
 {#snippet eyeToggle(panel: PanelKey, categoryId: string, name: string, hidden: boolean)}
   <button
     type="button"
@@ -621,6 +666,7 @@
                   ></div>
                 </div>
               </button>
+              {@render goToLink(panelKey, slice.categoryId, slice.name)}
               {@render eyeToggle(panelKey, slice.categoryId, slice.name, false)}
             </div>
 
@@ -636,7 +682,20 @@
                           <span class="amount"
                             >{formatCurrency(sub.amountMinorUnits, currency)}</span
                           >
-                          <span class="percent">{sub.percent.toFixed(1)}% of {slice.name}</span>
+                          <!-- Two denominators sit side by side: the bold one
+                               is this row's share of its parent (what the bar
+                               below draws), the muted one its share of the
+                               whole panel (what the parent row's own percent
+                               means). Titles carry the wording so the row
+                               stays one line. -->
+                          <span class="percent" title={`Share of ${slice.name}`}
+                            >{sub.percent.toFixed(1)}%</span
+                          >
+                          <span
+                            class="percent-of-total"
+                            title={`Share of total ${label.toLowerCase()}`}
+                            >· {sub.percentOfTotal.toFixed(1)}% of total</span
+                          >
                         </div>
                         <div class="bar-track">
                           <div
@@ -644,19 +703,20 @@
                             style={`width:${sub.percent}%;background-color:${sub.color}`}
                           ></div>
                         </div>
-                        <div class="percent-of-total">
-                          {sub.percentOfTotal.toFixed(1)}% of total {label.toLowerCase()}
-                        </div>
                       </div>
                       <!-- A parent's transactions logged directly against it
                            (rather than a child) surface as a sub-row carrying
-                           the parent's own id — so an eye here would be the
-                           parent's eye, hiding the whole branch from inside
-                           itself. The parent row above already owns that
-                           toggle; this row just gets a spacer to stay aligned. -->
+                           the parent's own id — so both actions here would be
+                           the parent's: an eye hiding the whole branch from
+                           inside itself, and a link opening the whole branch
+                           under a row showing only the directly-filed part.
+                           The parent row above already owns both; this row
+                           gets spacers to stay aligned. -->
                       {#if sub.categoryId === slice.categoryId}
-                        <span class="eye-spacer"></span>
+                        <span class="action-spacer"></span>
+                        <span class="action-spacer"></span>
                       {:else}
+                        {@render goToLink(panelKey, sub.categoryId, sub.name)}
                         {@render eyeToggle(panelKey, sub.categoryId, sub.name, false)}
                       {/if}
                     </div>
@@ -676,6 +736,7 @@
                           <span class="percent">—</span>
                         </div>
                       </div>
+                      <span class="action-spacer"></span>
                       {@render eyeToggle(panelKey, sub.categoryId, sub.name, true)}
                     </div>
                   </li>
@@ -700,6 +761,11 @@
                   <span class="percent">—</span>
                 </div>
               </div>
+              <!-- No link on a hidden row: the user has excluded it from this
+                   view, so the eye that brings it back is the only action it
+                   should offer. The spacer keeps the eye column aligned with
+                   the rows above, which do carry both. -->
+              <span class="action-spacer"></span>
               {@render eyeToggle(panelKey, row.categoryId, row.name, true)}
             </div>
           </li>
@@ -1033,8 +1099,11 @@
 
   /* The eye is an always-visible affordance rather than hover-only: it's the
      page's only remaining way to filter a category, so it can't be
-     undiscoverable — but it sits back at low opacity until pointed at. */
-  .eye-btn {
+     undiscoverable — but it sits back at low opacity until pointed at.
+     `.goto-btn` shares the treatment so the row's two actions read as a pair
+     rather than as one control plus something else. */
+  .eye-btn,
+  .goto-btn {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1052,7 +1121,9 @@
   }
 
   .eye-btn:hover,
-  .eye-btn:focus-visible {
+  .eye-btn:focus-visible,
+  .goto-btn:hover,
+  .goto-btn:focus-visible {
     opacity: 1;
     background-color: var(--color-shade-3);
   }
@@ -1061,7 +1132,16 @@
     opacity: 0.8;
   }
 
-  .eye-spacer {
+  /* It's an <a> for real navigation semantics, so the anchor defaults
+     (underline, link colour) have to be undone to match the eye beside it. */
+  .goto-btn {
+    text-decoration: none;
+  }
+
+  /* One row action's worth of width, for rows that deliberately don't offer
+     that action — keeps every row's action column landing in the same place
+     regardless of which of them a given row actually has. */
+  .action-spacer {
     flex-shrink: 0;
     width: 1.5rem;
   }
@@ -1133,11 +1213,17 @@
     font-size: 0.85rem;
   }
 
+  /* Sits inline right after `.percent`, deliberately lighter and unbolded:
+     the two numbers share a row, so weight and opacity are what tell them
+     apart at a glance rather than a sentence spelling out each denominator. */
   .percent-of-total {
-    margin-top: 0.25rem;
+    /* pulls back the .row flex gap so the "·" reads as joining the two
+       percentages rather than separating three equal-weight columns */
+    margin-left: -0.25rem;
     font-size: 0.75rem;
-    opacity: 0.65;
-    text-align: right;
+    font-weight: 400;
+    opacity: 0.6;
+    white-space: nowrap;
   }
 
   .row {

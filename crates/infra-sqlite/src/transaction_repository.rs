@@ -319,7 +319,9 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
                 "SELECT {SELECT_COLUMNS_QUALIFIED} FROM transactions
                      LEFT JOIN categories ON categories.id = transactions.category_id
                      LEFT JOIN accounts ON accounts.id = transactions.account_id
-                     WHERE (?3 IS NULL OR transactions.category_id = ?3)
+                     WHERE (?3 IS NULL OR transactions.category_id = ?3
+                              OR transactions.category_id IN
+                                 (SELECT id FROM categories WHERE parent_id = ?3))
                        AND (?4 IS NULL OR LOWER(transactions.description) LIKE '%' || LOWER(?4) || '%')
                        AND (?5 IS NULL OR (?5 = 1 AND transactions.amount_minor_units > 0)
                                         OR (?5 = 0 AND transactions.amount_minor_units < 0))
@@ -362,7 +364,9 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
             .query_row(
                 "SELECT COUNT(*) FROM transactions
                      WHERE date >= ?1 AND date <= ?2
-                       AND (?3 IS NULL OR category_id = ?3)
+                       AND (?3 IS NULL OR category_id = ?3
+                              OR category_id IN
+                                 (SELECT id FROM categories WHERE parent_id = ?3))
                        AND (?4 IS NULL OR LOWER(description) LIKE '%' || LOWER(?4) || '%')
                        AND (?5 IS NULL OR (?5 = 1 AND amount_minor_units > 0)
                                         OR (?5 = 0 AND amount_minor_units < 0))
@@ -1249,6 +1253,116 @@ mod tests {
             .unwrap();
 
         assert_eq!(count, 1);
+    }
+
+    /// Filtering by a parent has to return the whole branch, because that is
+    /// the only reading consistent with every total the app reports: the
+    /// Details donut rolls subcategories into their root, so a €1,800
+    /// "Housing" slice whose money all sits on children must not open onto an
+    /// empty list. Both the page and the count it sits under are checked —
+    /// they run separate SQL and would otherwise be free to disagree.
+    #[test]
+    fn category_filter_includes_subcategories_of_the_named_parent() {
+        let conn = test_conn();
+        let (account_id, groceries_id) = seed_account_and_category(&conn);
+        let category_repo = crate::SqliteCategoryRepository::new(&conn);
+        let housing = Category::new(
+            CategoryId::new(),
+            CategoryName::new("Housing").unwrap(),
+            None,
+        )
+        .unwrap();
+        category_repo.insert(&housing).unwrap();
+        let rent = Category::new(
+            CategoryId::new(),
+            CategoryName::new("Rent").unwrap(),
+            Some(housing.id()),
+        )
+        .unwrap();
+        category_repo.insert(&rent).unwrap();
+        let utilities = Category::new(
+            CategoryId::new(),
+            CategoryName::new("Utilities").unwrap(),
+            Some(housing.id()),
+        )
+        .unwrap();
+        category_repo.insert(&utilities).unwrap();
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+
+        // One row on the parent itself and one on each child: the parent's
+        // branch is all three, and "filed directly against the parent" — the
+        // old behavior — would have been just the first.
+        for (category_id, description) in [
+            (housing.id(), "Housing fees"),
+            (rent.id(), "Landlord"),
+            (utilities.id(), "Electricity"),
+        ] {
+            repo.insert(
+                &Transaction::new(
+                    TransactionId::new(),
+                    NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                    Money::from_minor_units(-90_000, usd()),
+                    Description::new(description).unwrap(),
+                    category_id,
+                    account_id,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        // An unrelated root, to prove the branch is a branch and not "everything".
+        repo.insert(
+            &Transaction::new(
+                TransactionId::new(),
+                NaiveDate::from_ymd_opt(2026, 1, 16).unwrap(),
+                Money::from_minor_units(-100, usd()),
+                Description::new("Supermarket").unwrap(),
+                groceries_id,
+                account_id,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let start = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let end = NaiveDate::from_ymd_opt(2026, 1, 31).unwrap();
+
+        let parent_page = repo
+            .list_page(
+                0,
+                10,
+                &filters(Some(housing.id()), None, None),
+                TransactionSortField::Date,
+                SortDirection::Desc,
+            )
+            .unwrap();
+        assert_eq!(
+            parent_page.len(),
+            3,
+            "parent filter returns its whole branch"
+        );
+        let parent_count = repo
+            .count_in_range(start, end, &filters(Some(housing.id()), None, None))
+            .unwrap();
+        assert_eq!(parent_count, 3, "the count agrees with the page");
+
+        // A leaf is unaffected: the two-level hierarchy means a subcategory
+        // has no children, so its branch is exactly itself.
+        let leaf_page = repo
+            .list_page(
+                0,
+                10,
+                &filters(Some(rent.id()), None, None),
+                TransactionSortField::Date,
+                SortDirection::Desc,
+            )
+            .unwrap();
+        assert_eq!(leaf_page.len(), 1);
+        assert_eq!(leaf_page[0].description().as_str(), "Landlord");
+        let leaf_count = repo
+            .count_in_range(start, end, &filters(Some(rent.id()), None, None))
+            .unwrap();
+        assert_eq!(leaf_count, 1);
     }
 
     #[test]

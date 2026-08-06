@@ -13,4 +13,9 @@ App coverage is rather low. generate and check the report. Check where to add re
 
 I want a button Go To which takes the user to transactions page with appropriate filters (same dates filter and category/sub category)
 
+## Details page 
+
+Hover on category in the list should highlight the graph and legend.
+
+
 ## Details: Compare vue
