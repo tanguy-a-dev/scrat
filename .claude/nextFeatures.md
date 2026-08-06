@@ -1,23 +1,6 @@
 # Features
 
-## Rust version
-
-We are using rust edition = "2021", why not 2024?
-
 ## CI
-
-### Coverage job:
-
-I found this warning in the github ci's jobs: 
-
-"Annotations
-4 warnings
-security
-Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/setup-node@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/"
-
-### Coverage
-
-App coverage is rather low. generate and check the report. Check where to add relevant tests for the app and implement them.
 
 ### Build
 
@@ -47,3 +30,7 @@ When importing a CSV, do not load all rows at once in the app, load 20 by 20 if 
 ## Export transfers bug
 
 If the user has account transfer rules, exports to .csv the transactions, and import them back, there will be duplicates.
+
+## Test Coverage
+
+App coverage is rather low. generate and check the report. Check where to add relevant tests for the app and implement them.
