@@ -330,6 +330,34 @@ mod tests {
         assert!(stored.is_opening_balance_set());
     }
 
+    /// Re-running against an account that already has an anchor overwrites
+    /// it, computed fresh from the current ledger rather than adjusted
+    /// relative to the old value. This is the only way to correct a mistyped
+    /// starting point — nothing else can move the anchor — so it must stay an
+    /// overwrite and not start refusing once one exists.
+    #[test]
+    fn establish_opening_balance_overwrites_an_anchor_that_was_already_set() {
+        let repo = FakeAccountRepository::default();
+        let service = AccountService::new(&repo, Currency::new("USD").unwrap());
+        let account = service.create_account("Checking").unwrap();
+        repo.ledger_sums
+            .lock()
+            .unwrap()
+            .insert(account.id(), 25_000);
+        // A fat-fingered first attempt: an extra zero on the observed balance.
+        service
+            .establish_opening_balance(account.id(), 1_000_000)
+            .unwrap();
+
+        service
+            .establish_opening_balance(account.id(), 100_000)
+            .unwrap();
+
+        let stored = repo.find_by_id(account.id()).unwrap().unwrap();
+        assert_eq!(stored.opening_balance_minor_units(), 75_000);
+        assert!(stored.is_opening_balance_set());
+    }
+
     /// Hand-typed against a bank statement, so a pasted account number must
     /// fail loudly rather than wrap `i64` into a plausible-looking anchor.
     #[test]

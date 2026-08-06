@@ -4,7 +4,9 @@ use chrono::{Local, Months, NaiveDate};
 use scrat_application::transaction_service::{RECONCILIATION_DESCRIPTION, TransactionService};
 use scrat_domain::account::{Account, AccountId};
 use scrat_domain::category::{Category, CategoryId};
-use scrat_domain::ports::{AccountRepository, CategoryRepository, TransactionFilters};
+use scrat_domain::ports::{
+    AccountRepository, CategoryRepository, SortDirection, TransactionFilters, TransactionSortField,
+};
 use scrat_domain::recurring::RecurringCharge;
 use scrat_domain::transaction::{OperationKind, Transaction, TransactionId};
 use scrat_infra_sqlite::{
@@ -150,6 +152,8 @@ pub fn list_transactions_page(
     operation_kind: Option<String>,
     min_amount_minor_units: Option<i64>,
     max_amount_minor_units: Option<i64>,
+    sort_field: String,
+    sort_dir: String,
 ) -> Result<Vec<TransactionDto>, String> {
     let filters = parse_transaction_filters(
         category_id,
@@ -160,8 +164,12 @@ pub fn list_transactions_page(
         min_amount_minor_units,
         max_amount_minor_units,
     )?;
-    with_service(&state, |s| s.list_page(offset, limit, &filters))
-        .map(|txs| txs.into_iter().map(TransactionDto::from).collect())
+    let sort_field = TransactionSortField::parse(&sort_field).map_err(|e| e.to_string())?;
+    let sort_dir = SortDirection::parse(&sort_dir).map_err(|e| e.to_string())?;
+    with_service(&state, |s| {
+        s.list_page(offset, limit, &filters, sort_field, sort_dir)
+    })
+    .map(|txs| txs.into_iter().map(TransactionDto::from).collect())
 }
 
 /// Counts transactions in `[start, end]` matching the same filters the

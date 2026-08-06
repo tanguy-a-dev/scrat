@@ -17,6 +17,7 @@
     type OperationKind,
     type TransactionDto,
     type TransactionFilters,
+    type TransactionSortField,
     type RangeMode,
   } from "$lib/api";
   import ImportCsvDialog from "$lib/ImportCsvDialog.svelte";
@@ -314,6 +315,16 @@
     };
   }
 
+  /** A list's sort in the shape `listTransactionsPage` takes — the one
+   * `SortField` value that isn't already the backend's own word for it is
+   * "type", which the backend (and its `TransactionSortField::parse`) calls
+   * "operation_kind". */
+  function activeSort(kind: SelectionKind): { field: TransactionSortField; dir: "asc" | "desc" } {
+    const field = kind === "expense" ? expenseSortField : incomeSortField;
+    const dir = kind === "expense" ? expenseSortDir : incomeSortDir;
+    return { field: field === "type" ? "operation_kind" : field, dir };
+  }
+
   /** Identity of the filter set a list's rows on screen were fetched with,
    * so the debounced effect below can tell a real filter change from its
    * own first run after `load()` already fetched with these same values. */
@@ -365,9 +376,17 @@
         // them are on screen anyway.
         const expenseLimit = Math.max(PAGE_SIZE, pendingRestore?.expenseRows ?? 0);
         const incomeLimit = Math.max(PAGE_SIZE, pendingRestore?.incomeRows ?? 0);
+        const expenseSort = activeSort("expense");
+        const incomeSort = activeSort("income");
         const [expenseBatch, incomeBatch] = await Promise.all([
-          api.listTransactionsPage(0, expenseLimit, expenseFilters),
-          api.listTransactionsPage(0, incomeLimit, incomeFilters),
+          api.listTransactionsPage(
+            0,
+            expenseLimit,
+            expenseFilters,
+            expenseSort.field,
+            expenseSort.dir,
+          ),
+          api.listTransactionsPage(0, incomeLimit, incomeFilters, incomeSort.field, incomeSort.dir),
         ]);
         if (token !== loadToken) return;
         expenseRows = expenseBatch;
@@ -394,20 +413,29 @@
   }
 
   /** Restarts a list's "All Time" pagination from offset 0 with its current
-   * filters. A filter change there is a different query, not a narrowing of
-   * what's already on screen: the matching rows can live anywhere in the
-   * ledger, including pages that were never fetched — which is why
-   * filtering only the batches loaded so far made a filter look like it had
-   * found almost nothing until the whole ledger had been scrolled in.
+   * filters and sort. A filter or sort change there is a different query,
+   * not a narrowing or reordering of what's already on screen: the matching
+   * rows (in the new order) can live anywhere in the ledger, including pages
+   * that were never fetched — which is why filtering only the batches
+   * loaded so far made a filter look like it had found almost nothing until
+   * the whole ledger had been scrolled in, and the same reasoning is why
+   * sorting only those batches found the wrong "highest"/"lowest" row.
    * Deliberately doesn't touch `loading`: that would unmount the table, and
-   * with it the filter control the user is still interacting with. */
+   * with it the filter/sort control the user is still interacting with. */
   async function reloadFilteredAllTimeKind(kind: SelectionKind) {
     const token = bumpToken(kind);
     const filters = activeFilters(kind);
+    const sort = activeSort(kind);
     if (kind === "expense") loadingMoreExpense = true;
     else loadingMoreIncome = true;
     try {
-      const batch = await api.listTransactionsPage(0, PAGE_SIZE, filters);
+      const batch = await api.listTransactionsPage(
+        0,
+        PAGE_SIZE,
+        filters,
+        sort.field,
+        sort.dir,
+      );
       if (token !== currentToken(kind) || rangeMode !== "all") return;
       if (kind === "expense") {
         expenseRows = batch;
@@ -439,8 +467,15 @@
     else loadingMoreIncome = true;
     try {
       const filters = activeFilters(kind);
+      const sort = activeSort(kind);
       const offset = kind === "expense" ? expenseOffset : incomeOffset;
-      const batch = await api.listTransactionsPage(offset, PAGE_SIZE, filters);
+      const batch = await api.listTransactionsPage(
+        offset,
+        PAGE_SIZE,
+        filters,
+        sort.field,
+        sort.dir,
+      );
       // The range mode, this list's filters, or the whole page may have
       // moved on while this was in flight — don't splice a stale batch into
       // whatever's showing now.
@@ -721,10 +756,16 @@
 
   /** Puts one list back to its default view. Only touches that list's state —
    * Expenses and Income keep independent sort and filters, so resetting one
-   * must leave the other exactly as the user left it. No fetch is issued
-   * here: clearing the filters changes `filterKey`, which the debounced
-   * effect above already treats as a filter change (refreshing the count and,
-   * in "All Time", re-querying the rows), and sorting is client-side. */
+   * must leave the other exactly as the user left it. Clearing the filters
+   * changes `filterKey`, which the debounced effect above already treats as
+   * a filter change (refreshing the count and, in "All Time", re-querying
+   * the rows) — but that effect only fires on a `filterKey` change, so a
+   * reset that touches only the sort (filters already default) would
+   * otherwise snap the sort controls back to "Date" on screen while leaving
+   * the stale, differently-ordered pages already fetched in place. Fetching
+   * here directly, and marking the key as already applied, covers that case
+   * without asking the debounced effect to fire a redundant second fetch
+   * when both filters and sort actually changed. */
   function resetView(kind: SelectionKind) {
     if (kind === "expense") {
       expenseSortField = "date";
@@ -745,6 +786,10 @@
       incomeMinAmount = "";
       incomeMaxAmount = "";
     }
+    if (kind === "expense") appliedExpenseFilterKey = filterKey("expense");
+    else appliedIncomeFilterKey = filterKey("income");
+    refreshCount(kind);
+    if (rangeMode === "all") reloadFilteredAllTimeKind(kind);
   }
 
   async function handleDescriptionBlur() {
@@ -831,6 +876,14 @@
     }
   }
 
+  /** In "All Time", the rows on screen are only a prefix of the ledger
+   * fetched in whatever order was active when they were paged in — changing
+   * that order makes them the wrong prefix, since the true top-N under the
+   * new sort can include rows that were never fetched at all. So a sort
+   * change there restarts that list's pagination from offset 0 under the
+   * new sort, the same way a filter change does; every other range already
+   * has the whole (unfiltered) range loaded, so re-sorting the rows already
+   * on screen is enough. */
   function toggleSort(kind: SelectionKind, field: SortField) {
     if (kind === "expense") {
       if (expenseSortField === field) {
@@ -847,6 +900,7 @@
         incomeSortDir = "desc";
       }
     }
+    if (rangeMode === "all") reloadFilteredAllTimeKind(kind);
   }
 
   function sortTransactions(list: TransactionDto[], kind: SelectionKind): TransactionDto[] {
@@ -1261,7 +1315,9 @@
                     >transfer</span
                   >
                 {:else if t.role === "adjustment"}
-                  <span class="role-badge" title="Reconciliation — not counted as spending"
+                  <span
+                    class="role-badge"
+                    title="Balance adjustment, posted from Accounts — not counted as spending"
                     >adjustment</span
                   >
                 {/if}

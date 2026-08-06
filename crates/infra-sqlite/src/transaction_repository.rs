@@ -3,7 +3,9 @@ use rusqlite::{Connection, params, params_from_iter};
 use scrat_domain::account::AccountId;
 use scrat_domain::category::CategoryId;
 use scrat_domain::money::{Currency, Money};
-use scrat_domain::ports::{RepositoryError, TransactionFilters, TransactionRepository};
+use scrat_domain::ports::{
+    RepositoryError, SortDirection, TransactionFilters, TransactionRepository, TransactionSortField,
+};
 use scrat_domain::transaction::{
     Description, OperationKind, Transaction, TransactionId, TransactionRole, TransferGroupId,
 };
@@ -72,6 +74,50 @@ fn sql_err(e: rusqlite::Error) -> RepositoryError {
     RepositoryError(e.to_string())
 }
 
+/// Builds the `ORDER BY` fragment for `list_page` from a closed Rust enum —
+/// never from caller-supplied text — so interpolating it into the query
+/// string directly is safe; SQLite has no way to bind a column name or sort
+/// direction as a parameter.
+///
+/// `transactions.id` always breaks ties in the same direction as the primary
+/// key, which is what keeps a walk stable across separate LIMIT/OFFSET
+/// queries when many rows share the same sort value (e.g. a whole day of
+/// same-amount transactions) — without it, a row could be skipped or
+/// repeated as the caller pages through.
+///
+/// `Category`/`Account` sort by the joined aggregate's name — `list_page`
+/// always joins both tables so this can reference them regardless of which
+/// field is actually being sorted on. `OperationKind` sorts by the same
+/// alphabetical-by-label order the frontend's `operationKindLabel` produces
+/// (Card, Cash, Cheque, Direct debit, Fees, Other, Transfer), not by the raw
+/// enum string, so the order on screen matches the order it was fetched in.
+fn order_by_clause(sort_field: TransactionSortField, sort_dir: SortDirection) -> String {
+    let dir = match sort_dir {
+        SortDirection::Asc => "ASC",
+        SortDirection::Desc => "DESC",
+    };
+    let key = match sort_field {
+        TransactionSortField::Date => "transactions.date",
+        TransactionSortField::Amount => "transactions.amount_minor_units",
+        TransactionSortField::Description => "transactions.description COLLATE NOCASE",
+        TransactionSortField::OperationKind => {
+            "CASE transactions.operation_kind
+                WHEN 'card' THEN 1
+                WHEN 'cash' THEN 2
+                WHEN 'check' THEN 3
+                WHEN 'direct_debit' THEN 4
+                WHEN 'fees' THEN 5
+                WHEN 'other' THEN 6
+                WHEN 'bank_transfer' THEN 7
+                ELSE 8
+            END"
+        }
+        TransactionSortField::Category => "categories.name COLLATE NOCASE",
+        TransactionSortField::Account => "accounts.name COLLATE NOCASE",
+    };
+    format!("{key} {dir}, transactions.id {dir}")
+}
+
 const INSERT_SQL: &str = "INSERT INTO transactions
     (id, date, amount_minor_units, description, category_id, account_id, fingerprint, created_at,
      role, transfer_group_id, operation_kind)
@@ -81,6 +127,15 @@ const INSERT_SQL: &str = "INSERT INTO transactions
 /// drift apart and silently drop a role or a transfer group.
 const SELECT_COLUMNS: &str = "id, date, amount_minor_units, description, category_id, account_id,
      role, transfer_group_id, operation_kind";
+
+/// Same columns as `SELECT_COLUMNS`, qualified with the table name —
+/// `list_page` joins in `categories`/`accounts` for name-based sorting, and
+/// both of those tables also have an `id` column, so an unqualified `id`
+/// there would be ambiguous.
+const SELECT_COLUMNS_QUALIFIED: &str =
+    "transactions.id, transactions.date, transactions.amount_minor_units,
+     transactions.description, transactions.category_id, transactions.account_id,
+     transactions.role, transactions.transfer_group_id, transactions.operation_kind";
 
 /// Keeps each bulk `IN (...)` clause well under SQLite's variable-count
 /// limit (historically 999, `SQLITE_MAX_VARIABLE_NUMBER`), regardless of how
@@ -244,28 +299,35 @@ impl<'a> TransactionRepository for SqliteTransactionRepository<'a> {
         offset: i64,
         limit: i64,
         filters: &TransactionFilters,
+        sort_field: TransactionSortField,
+        sort_dir: SortDirection,
     ) -> Result<Vec<Transaction>, RepositoryError> {
-        // `id` breaks ties on same-day transactions — `ORDER BY date DESC`
-        // alone isn't a stable order across separate LIMIT/OFFSET queries,
-        // which would let a row be skipped or repeated as the caller pages
-        // through.
-        //
         // The filters use the same `?N IS NULL OR …` shape as
         // `count_in_range`, so a page and the header count it sits under are
         // answering the identical question.
+        //
+        // Always joined to both tables (regardless of `sort_field`) so
+        // `order_by_clause` can reference `categories.name`/`accounts.name`
+        // unconditionally — every transaction has exactly one of each (both
+        // foreign keys are `NOT NULL ... ON DELETE RESTRICT`), so this can't
+        // drop or duplicate a row the way an inner join would if either
+        // reference were ever nullable.
+        let order_by = order_by_clause(sort_field, sort_dir);
         let mut stmt = self
             .conn
             .prepare(&format!(
-                "SELECT {SELECT_COLUMNS} FROM transactions
-                     WHERE (?3 IS NULL OR category_id = ?3)
-                       AND (?4 IS NULL OR LOWER(description) LIKE '%' || LOWER(?4) || '%')
-                       AND (?5 IS NULL OR (?5 = 1 AND amount_minor_units > 0)
-                                        OR (?5 = 0 AND amount_minor_units < 0))
-                       AND (?6 IS NULL OR account_id = ?6)
-                       AND (?7 IS NULL OR operation_kind = ?7)
-                       AND (?8 IS NULL OR ABS(amount_minor_units) >= ?8)
-                       AND (?9 IS NULL OR ABS(amount_minor_units) <= ?9)
-                     ORDER BY date DESC, id DESC LIMIT ?1 OFFSET ?2"
+                "SELECT {SELECT_COLUMNS_QUALIFIED} FROM transactions
+                     LEFT JOIN categories ON categories.id = transactions.category_id
+                     LEFT JOIN accounts ON accounts.id = transactions.account_id
+                     WHERE (?3 IS NULL OR transactions.category_id = ?3)
+                       AND (?4 IS NULL OR LOWER(transactions.description) LIKE '%' || LOWER(?4) || '%')
+                       AND (?5 IS NULL OR (?5 = 1 AND transactions.amount_minor_units > 0)
+                                        OR (?5 = 0 AND transactions.amount_minor_units < 0))
+                       AND (?6 IS NULL OR transactions.account_id = ?6)
+                       AND (?7 IS NULL OR transactions.operation_kind = ?7)
+                       AND (?8 IS NULL OR ABS(transactions.amount_minor_units) >= ?8)
+                       AND (?9 IS NULL OR ABS(transactions.amount_minor_units) <= ?9)
+                     ORDER BY {order_by} LIMIT ?1 OFFSET ?2"
             ))
             .map_err(sql_err)?;
         let rows = stmt
@@ -516,7 +578,13 @@ mod tests {
         let mut offset = 0i64;
         loop {
             let page = repo
-                .list_page(offset, 10, &filters(None, None, None))
+                .list_page(
+                    offset,
+                    10,
+                    &filters(None, None, None),
+                    TransactionSortField::Date,
+                    SortDirection::Desc,
+                )
                 .unwrap();
             if page.is_empty() {
                 break;
@@ -560,13 +628,258 @@ mod tests {
         )
         .unwrap();
 
-        let page = repo.list_page(0, 10, &filters(None, None, None)).unwrap();
+        let page = repo
+            .list_page(
+                0,
+                10,
+                &filters(None, None, None),
+                TransactionSortField::Date,
+                SortDirection::Desc,
+            )
+            .unwrap();
 
         assert_eq!(
             page.iter()
                 .map(|t| t.description().as_str())
                 .collect::<Vec<_>>(),
             vec!["Newest", "Oldest"]
+        );
+    }
+
+    /// Regression test for the Transactions view's sort controls. Sorting
+    /// used to happen entirely in the frontend, over only whatever pages of
+    /// the "All Time" pagination had been fetched so far — so sorting by,
+    /// say, amount only ever reordered the handful of newest-first rows
+    /// already loaded, never reaching a bigger amount sitting deeper in the
+    /// ledger. Pushed down to the query, a page walked in a non-date sort
+    /// order has to hold the true global extremes, wherever in the ledger
+    /// they live — here, more rows exist than fit in one page, and the
+    /// single-page walk still finds the largest amount overall.
+    #[test]
+    fn list_page_orders_by_amount_across_the_whole_matching_set_not_just_one_page() {
+        let conn = test_conn();
+        let (account_id, category_id) = seed_account_and_category(&conn);
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        // The biggest amount is the *oldest* row — a date-desc walk would
+        // only reach it on a later page, past this test's page size.
+        for (day, amount) in [(1, -90_000), (2, -100), (3, -200), (4, -300)] {
+            repo.insert(
+                &Transaction::new(
+                    TransactionId::new(),
+                    NaiveDate::from_ymd_opt(2026, 1, day).unwrap(),
+                    Money::from_minor_units(amount, usd()),
+                    Description::new(&format!("Row {day}")).unwrap(),
+                    category_id,
+                    account_id,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+
+        let first_page = repo
+            .list_page(
+                0,
+                2,
+                &filters(None, None, None),
+                TransactionSortField::Amount,
+                SortDirection::Asc,
+            )
+            .unwrap();
+
+        assert_eq!(
+            first_page
+                .iter()
+                .map(|t| t.description().as_str())
+                .collect::<Vec<_>>(),
+            vec!["Row 1", "Row 4"],
+            "ascending amount finds the largest expense first, even though it's the oldest row"
+        );
+    }
+
+    #[test]
+    fn list_page_orders_by_description() {
+        let conn = test_conn();
+        let (account_id, category_id) = seed_account_and_category(&conn);
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        for description in ["Zebra", "apple", "Mango"] {
+            repo.insert(
+                &Transaction::new(
+                    TransactionId::new(),
+                    NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                    Money::from_minor_units(-100, usd()),
+                    Description::new(description).unwrap(),
+                    category_id,
+                    account_id,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+
+        let page = repo
+            .list_page(
+                0,
+                10,
+                &filters(None, None, None),
+                TransactionSortField::Description,
+                SortDirection::Asc,
+            )
+            .unwrap();
+
+        assert_eq!(
+            page.iter()
+                .map(|t| t.description().as_str())
+                .collect::<Vec<_>>(),
+            vec!["apple", "Mango", "Zebra"],
+            "case-insensitive so a lowercase description doesn't sort after every capitalized one"
+        );
+    }
+
+    /// Category has no column of its own on `transactions` — sorting by it
+    /// means joining to `categories` for the name, so this also guards
+    /// against the join silently dropping or duplicating rows.
+    #[test]
+    fn list_page_orders_by_category_name() {
+        let conn = test_conn();
+        let (account_id, groceries_id) = seed_account_and_category(&conn);
+        let category_repo = crate::SqliteCategoryRepository::new(&conn);
+        let apparel = Category::new(
+            CategoryId::new(),
+            CategoryName::new("Apparel").unwrap(),
+            None,
+        )
+        .unwrap();
+        category_repo.insert(&apparel).unwrap();
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        for (description, cat) in [("Supermarket", groceries_id), ("Shirt", apparel.id())] {
+            repo.insert(
+                &Transaction::new(
+                    TransactionId::new(),
+                    NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                    Money::from_minor_units(-100, usd()),
+                    Description::new(description).unwrap(),
+                    cat,
+                    account_id,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+
+        let page = repo
+            .list_page(
+                0,
+                10,
+                &filters(None, None, None),
+                TransactionSortField::Category,
+                SortDirection::Asc,
+            )
+            .unwrap();
+
+        assert_eq!(
+            page.iter()
+                .map(|t| t.description().as_str())
+                .collect::<Vec<_>>(),
+            vec!["Shirt", "Supermarket"],
+            "Apparel sorts before Groceries"
+        );
+    }
+
+    /// Same join concern as category, for `accounts`.
+    #[test]
+    fn list_page_orders_by_account_name() {
+        let conn = test_conn();
+        let (checking_id, category_id) = seed_account_and_category(&conn);
+        let account_repo = crate::SqliteAccountRepository::new(&conn, usd());
+        let savings = Account::new(
+            AccountId::new(),
+            AccountName::new("Savings").unwrap(),
+            Money::zero(usd()),
+        );
+        account_repo.insert(&savings).unwrap();
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        for (description, account_id) in
+            [("Checking row", checking_id), ("Savings row", savings.id())]
+        {
+            repo.insert(
+                &Transaction::new(
+                    TransactionId::new(),
+                    NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                    Money::from_minor_units(-100, usd()),
+                    Description::new(description).unwrap(),
+                    category_id,
+                    account_id,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+
+        let page = repo
+            .list_page(
+                0,
+                10,
+                &filters(None, None, None),
+                TransactionSortField::Account,
+                SortDirection::Asc,
+            )
+            .unwrap();
+
+        assert_eq!(
+            page.iter()
+                .map(|t| t.description().as_str())
+                .collect::<Vec<_>>(),
+            vec!["Checking row", "Savings row"]
+        );
+    }
+
+    /// Operation kind sorts by the same alphabetical-by-label order the
+    /// frontend displays (Card, Cash, Cheque, Direct debit, Fees, Other,
+    /// Transfer) rather than the raw stored string — `bank_transfer` (label
+    /// "Transfer") would otherwise sort first alphabetically, ahead of
+    /// `card`, which is the opposite of what the user sees on screen.
+    #[test]
+    fn list_page_orders_by_operation_kind_label() {
+        let conn = test_conn();
+        let (account_id, category_id) = seed_account_and_category(&conn);
+        let repo = SqliteTransactionRepository::new(&conn, usd());
+        for (description, kind) in [
+            ("Wire", OperationKind::BankTransfer),
+            ("Swipe", OperationKind::Card),
+            ("Withdrawal", OperationKind::Cash),
+        ] {
+            repo.insert(
+                &Transaction::new(
+                    TransactionId::new(),
+                    NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                    Money::from_minor_units(-100, usd()),
+                    Description::new(description).unwrap(),
+                    category_id,
+                    account_id,
+                )
+                .unwrap()
+                .with_operation_kind(kind),
+            )
+            .unwrap();
+        }
+
+        let page = repo
+            .list_page(
+                0,
+                10,
+                &filters(None, None, None),
+                TransactionSortField::OperationKind,
+                SortDirection::Asc,
+            )
+            .unwrap();
+
+        assert_eq!(
+            page.iter()
+                .map(|t| t.description().as_str())
+                .collect::<Vec<_>>(),
+            vec!["Swipe", "Withdrawal", "Wire"],
+            "Card, then Cash, then Transfer — label order, not raw enum-string order"
         );
     }
 
@@ -625,7 +938,13 @@ mod tests {
         }
 
         let first_page = repo
-            .list_page(0, 10, &filters(Some(salary.id()), None, None))
+            .list_page(
+                0,
+                10,
+                &filters(Some(salary.id()), None, None),
+                TransactionSortField::Date,
+                SortDirection::Desc,
+            )
             .unwrap();
 
         assert_eq!(first_page.len(), 3);
@@ -679,7 +998,13 @@ mod tests {
         let mut offset = 0i64;
         loop {
             let page = repo
-                .list_page(offset, 5, &filters(Some(salary.id()), None, None))
+                .list_page(
+                    offset,
+                    5,
+                    &filters(Some(salary.id()), None, None),
+                    TransactionSortField::Date,
+                    SortDirection::Desc,
+                )
                 .unwrap();
             if page.is_empty() {
                 break;
@@ -715,7 +1040,13 @@ mod tests {
         }
 
         let page = repo
-            .list_page(0, 10, &filters(None, Some("Whole Foods"), None))
+            .list_page(
+                0,
+                10,
+                &filters(None, Some("Whole Foods"), None),
+                TransactionSortField::Date,
+                SortDirection::Desc,
+            )
             .unwrap();
 
         assert_eq!(page.len(), 2);
@@ -762,7 +1093,13 @@ mod tests {
         }
 
         let page = repo
-            .list_page(0, 10, &filters(Some(salary.id()), Some("employer"), None))
+            .list_page(
+                0,
+                10,
+                &filters(Some(salary.id()), Some("employer"), None),
+                TransactionSortField::Date,
+                SortDirection::Desc,
+            )
             .unwrap();
 
         assert_eq!(
@@ -809,7 +1146,13 @@ mod tests {
         }
 
         let page = repo
-            .list_page(0, 100, &filters(Some(salary.id()), None, None))
+            .list_page(
+                0,
+                100,
+                &filters(Some(salary.id()), None, None),
+                TransactionSortField::Date,
+                SortDirection::Desc,
+            )
             .unwrap();
         let count = repo
             .count_in_range(
@@ -978,10 +1321,22 @@ mod tests {
         }
 
         let income = repo
-            .list_page(0, 10, &filters(None, None, Some(true)))
+            .list_page(
+                0,
+                10,
+                &filters(None, None, Some(true)),
+                TransactionSortField::Date,
+                SortDirection::Desc,
+            )
             .unwrap();
         let expenses = repo
-            .list_page(0, 10, &filters(None, None, Some(false)))
+            .list_page(
+                0,
+                10,
+                &filters(None, None, Some(false)),
+                TransactionSortField::Date,
+                SortDirection::Desc,
+            )
             .unwrap();
 
         assert_eq!(
@@ -1076,6 +1431,8 @@ mod tests {
                     account_id: Some(savings.id()),
                     ..Default::default()
                 },
+                TransactionSortField::Date,
+                SortDirection::Desc,
             )
             .unwrap();
 
@@ -1119,6 +1476,8 @@ mod tests {
                     operation_kind: Some(OperationKind::BankTransfer),
                     ..Default::default()
                 },
+                TransactionSortField::Date,
+                SortDirection::Desc,
             )
             .unwrap();
 
@@ -1162,6 +1521,8 @@ mod tests {
                     max_amount_minor_units: Some(50_000),
                     ..Default::default()
                 },
+                TransactionSortField::Date,
+                SortDirection::Desc,
             )
             .unwrap();
 

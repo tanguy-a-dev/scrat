@@ -9,6 +9,11 @@ export interface AccountDto {
    * account happened to begin at zero. Distinct from "started at zero",
    * which is an answer the user gave. */
   is_opening_balance_set: boolean;
+  /** The anchor itself. Zero when unset — which is also what it contributes
+   * to the balance — so read it alongside `is_opening_balance_set`, never on
+   * its own. `balance_minor_units - opening_balance_minor_units` is the
+   * ledger sum, which is what the starting-point preview works back from. */
+  opening_balance_minor_units: number;
   has_transactions: boolean;
   currency: string;
   description_patterns: string[];
@@ -106,6 +111,22 @@ export interface TransactionFilters {
   minAmountMinorUnits: number | null;
   maxAmountMinorUnits: number | null;
 }
+
+/** What `listTransactionsPage` orders a batch by — the exact strings
+ * `TransactionSortField::parse` on the Rust side accepts, so no translation
+ * table sits between the two and can drift out of sync. `category`/`account`
+ * sort by the linked aggregate's name, not its id, and `operation_kind`
+ * sorts by the same alphabetical-by-label order `operationKindLabel`
+ * produces below, not by the raw stored string. */
+export type TransactionSortField =
+  | "date"
+  | "amount"
+  | "description"
+  | "operation_kind"
+  | "category"
+  | "account";
+
+export type SortDirection = "asc" | "desc";
 
 /** Recognizes an imported row as money moving to another of the user's own
  * accounts. Matched as a case-insensitive substring of the row's description
@@ -255,7 +276,11 @@ export const api = {
   /** Sets the account's starting point by working backwards from a balance
    * the user can read off their bank: `opening = observed - ledger sum`.
    * Writes no transaction — unlike `reconcileAccount`, which posts a dated
-   * adjustment for money that moved after the ledger begins. */
+   * adjustment for money that moved after the ledger begins.
+   *
+   * Also the edit path: it overwrites the anchor rather than refusing when
+   * one already exists, so a mistyped starting point is correctable by
+   * running it again. */
   establishOpeningBalance: (id: string, observedBalanceMinorUnits: number) =>
     invoke<void>("establish_opening_balance", { id, observedBalanceMinorUnits }),
   addDescriptionPattern: (id: string, pattern: string) =>
@@ -279,17 +304,20 @@ export const api = {
 
   listTransactions: (start: string, end: string) =>
     invoke<TransactionDto[]>("list_transactions", { start, end }),
-  /** One newest-first batch of the whole ledger, narrowed by the same
-   * filters `countTransactions` takes — the filters are applied in the query
-   * so a batch is a page of *matching* rows, not a page of everything that
-   * then has to be filtered down to almost nothing on this side. `isIncome`
-   * (`true` for positive amounts, `false` for negative, `null` for both)
-   * lets the Expenses and Income lists page through the ledger
-   * independently, each with its own filters. */
+  /** One batch of the whole ledger in `sortField`/`sortDir` order, narrowed
+   * by the same filters `countTransactions` takes — both the filtering and
+   * the ordering are applied in the query, so a batch is a page of
+   * *matching, correctly ordered* rows: sorting only the rows already
+   * fetched would reorder just that page, not the whole matching set behind
+   * it. `isIncome` (`true` for positive amounts, `false` for negative,
+   * `null` for both) lets the Expenses and Income lists page through the
+   * ledger independently, each with its own filters and sort. */
   listTransactionsPage: (
     offset: number,
     limit: number,
     filters: TransactionFilters,
+    sortField: TransactionSortField,
+    sortDir: SortDirection,
   ) =>
     invoke<TransactionDto[]>("list_transactions_page", {
       offset,
@@ -301,6 +329,8 @@ export const api = {
       operationKind: filters.operationKind,
       minAmountMinorUnits: filters.minAmountMinorUnits,
       maxAmountMinorUnits: filters.maxAmountMinorUnits,
+      sortField,
+      sortDir,
     }),
   countTransactions: (start: string, end: string, filters: TransactionFilters) =>
     invoke<number>("count_transactions", {

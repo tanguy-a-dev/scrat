@@ -77,6 +77,70 @@ pub struct TransactionFilters {
     pub max_amount_minor_units: Option<i64>,
 }
 
+/// What `list_page` orders a paginated walk by. `Category` and `Account`
+/// sort by the linked aggregate's display name, not its id — an adapter with
+/// access to those names (e.g. via a SQL join) must resolve them, since an id
+/// order would be meaningless to the person reading the list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TransactionSortField {
+    #[default]
+    Date,
+    Amount,
+    Description,
+    OperationKind,
+    Category,
+    Account,
+}
+
+impl TransactionSortField {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Date => "date",
+            Self::Amount => "amount",
+            Self::Description => "description",
+            Self::OperationKind => "operation_kind",
+            Self::Category => "category",
+            Self::Account => "account",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Result<Self, RepositoryError> {
+        match raw {
+            "date" => Ok(Self::Date),
+            "amount" => Ok(Self::Amount),
+            "description" => Ok(Self::Description),
+            "operation_kind" => Ok(Self::OperationKind),
+            "category" => Ok(Self::Category),
+            "account" => Ok(Self::Account),
+            other => Err(RepositoryError(format!("unknown sort field: {other}"))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SortDirection {
+    Asc,
+    #[default]
+    Desc,
+}
+
+impl SortDirection {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Asc => "asc",
+            Self::Desc => "desc",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Result<Self, RepositoryError> {
+        match raw {
+            "asc" => Ok(Self::Asc),
+            "desc" => Ok(Self::Desc),
+            other => Err(RepositoryError(format!("unknown sort direction: {other}"))),
+        }
+    }
+}
+
 /// Port for persisting transactions (the ledger).
 pub trait TransactionRepository {
     /// Inserts the transaction. Two transactions with the same (account,
@@ -135,11 +199,19 @@ pub trait TransactionRepository {
     /// caller instead would only ever surface the matches that happen to
     /// fall inside the pages already fetched, so a filter would appear to
     /// find almost nothing until the user scrolled the entire ledger in.
+    ///
+    /// `sort_field`/`sort_dir` are pushed down for the identical reason:
+    /// sorting the returned batch in the caller only reorders whatever pages
+    /// happen to be loaded already, which is not the same as "sorted by X
+    /// across the whole matching set" — a batch is a page of rows already in
+    /// the requested order, wherever in the ledger they live.
     fn list_page(
         &self,
         offset: i64,
         limit: i64,
         filters: &TransactionFilters,
+        sort_field: TransactionSortField,
+        sort_dir: SortDirection,
     ) -> Result<Vec<Transaction>, RepositoryError>;
     /// Counts transactions in `[start, end]`, narrowed by `filters` — the
     /// same ones `list_page` takes. Pushed down to the query (rather than

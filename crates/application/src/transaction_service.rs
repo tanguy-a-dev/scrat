@@ -3,8 +3,8 @@ use scrat_domain::account::AccountId;
 use scrat_domain::category::{Category, CategoryError, CategoryId, CategoryName};
 use scrat_domain::money::{Currency, Money};
 use scrat_domain::ports::{
-    AccountRepository, CategoryRepository, RepositoryError, TransactionFilters,
-    TransactionRepository,
+    AccountRepository, CategoryRepository, RepositoryError, SortDirection, TransactionFilters,
+    TransactionRepository, TransactionSortField,
 };
 use scrat_domain::recurring::{self, RecurringCharge};
 use scrat_domain::transaction::{
@@ -262,8 +262,12 @@ impl<'a> TransactionService<'a> {
         offset: i64,
         limit: i64,
         filters: &TransactionFilters,
+        sort_field: TransactionSortField,
+        sort_dir: SortDirection,
     ) -> Result<Vec<Transaction>, ApplicationError> {
-        Ok(self.transactions.list_page(offset, limit, filters)?)
+        Ok(self
+            .transactions
+            .list_page(offset, limit, filters, sort_field, sort_dir)?)
     }
 
     pub fn count_in_range(
@@ -989,6 +993,8 @@ mod tests {
             offset: i64,
             limit: i64,
             filters: &TransactionFilters,
+            sort_field: TransactionSortField,
+            sort_dir: SortDirection,
         ) -> Result<Vec<Transaction>, RepositoryError> {
             let mut sorted: Vec<Transaction> = self
                 .transactions
@@ -998,10 +1004,35 @@ mod tests {
                 .filter(|t| matches_filters(t, filters))
                 .cloned()
                 .collect();
+            // This fake only ever sees a `Transaction`, which carries
+            // `category_id`/`account_id` but not the linked aggregate's
+            // name — unlike the real SQLite adapter, it can't join to
+            // resolve one. Falling back to the id is only exercised by
+            // tests that check filtering/pagination plumbing, not exact
+            // alphabetical order, which is covered against real names in
+            // `infra-sqlite`'s tests instead.
+            let key = |t: &Transaction| -> String {
+                match sort_field {
+                    TransactionSortField::Date => t.date().to_string(),
+                    TransactionSortField::Amount => {
+                        format!("{:020}", t.amount().minor_units() + i64::MAX / 2)
+                    }
+                    TransactionSortField::Description => t.description().as_str().to_lowercase(),
+                    TransactionSortField::OperationKind => t.operation_kind().as_str().to_string(),
+                    TransactionSortField::Category => t.category_id().as_string(),
+                    TransactionSortField::Account => t.account_id().as_string(),
+                }
+            };
             sorted.sort_by(|a, b| {
-                b.date()
-                    .cmp(&a.date())
-                    .then(b.id().as_string().cmp(&a.id().as_string()))
+                let cmp = key(a).cmp(&key(b));
+                let cmp = match sort_dir {
+                    SortDirection::Asc => cmp,
+                    SortDirection::Desc => cmp.reverse(),
+                };
+                cmp.then(match sort_dir {
+                    SortDirection::Asc => a.id().as_string().cmp(&b.id().as_string()),
+                    SortDirection::Desc => b.id().as_string().cmp(&a.id().as_string()),
+                })
             });
             Ok(sorted
                 .into_iter()
@@ -1382,9 +1413,23 @@ mod tests {
             )
             .unwrap();
 
-        let unfiltered = service.list_page(0, 3, &filters(None, None, None)).unwrap();
+        let unfiltered = service
+            .list_page(
+                0,
+                3,
+                &filters(None, None, None),
+                TransactionSortField::Date,
+                SortDirection::Desc,
+            )
+            .unwrap();
         let filtered = service
-            .list_page(0, 3, &filters(Some(salary.id()), None, None))
+            .list_page(
+                0,
+                3,
+                &filters(Some(salary.id()), None, None),
+                TransactionSortField::Date,
+                SortDirection::Desc,
+            )
             .unwrap();
 
         assert!(
@@ -1425,7 +1470,13 @@ mod tests {
             .unwrap();
 
         let page = service
-            .list_page(0, 10, &filters(None, Some("whole foods"), None))
+            .list_page(
+                0,
+                10,
+                &filters(None, Some("whole foods"), None),
+                TransactionSortField::Date,
+                SortDirection::Desc,
+            )
             .unwrap();
 
         assert_eq!(page.len(), 1);
@@ -1459,10 +1510,22 @@ mod tests {
             .unwrap();
 
         let income = service
-            .list_page(0, 10, &filters(None, None, Some(true)))
+            .list_page(
+                0,
+                10,
+                &filters(None, None, Some(true)),
+                TransactionSortField::Date,
+                SortDirection::Desc,
+            )
             .unwrap();
         let expenses = service
-            .list_page(0, 10, &filters(None, None, Some(false)))
+            .list_page(
+                0,
+                10,
+                &filters(None, None, Some(false)),
+                TransactionSortField::Date,
+                SortDirection::Desc,
+            )
             .unwrap();
 
         assert_eq!(

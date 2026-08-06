@@ -20,20 +20,61 @@
   let newName = $state("");
   let newPatternDrafts = $state<Record<string, string>>({});
   let newTransferPatternDrafts = $state<Record<string, string>>({});
-  /** Which account has its reconcile input open, and what's typed in it.
-   * Only one at a time — reconciling is a deliberate act against a number
-   * read off another app, not something to have half-open everywhere. */
+  /** Which account has its adjustment input open, and what's typed in it.
+   * Only one at a time — posting an adjustment is a deliberate act against a
+   * number read off another app, not something to have half-open
+   * everywhere. */
   let reconcilingAccountId = $state<string | null>(null);
   let reconcileDraft = $state("");
   /** Which account's "apply to past transactions" confirm is open. Only one
    * at a time, same reasoning as `reconcilingAccountId`. */
   let applyingRulesAccountId = $state<string | null>(null);
   /** Which account has its starting-point input open, and what's typed in
-   * it. Same one-at-a-time rule as reconciling — and deliberately separate
-   * state, because the two ask for the same number and mean different
-   * things. */
+   * it. Same one-at-a-time rule as the adjustment panel — and deliberately
+   * separate state, because the two ask for the same number and mean
+   * different things. */
   let anchoringAccountId = $state<string | null>(null);
   let anchorDraft = $state("");
+
+  const anchoringAccount = $derived(
+    accounts.find((a) => a.id === anchoringAccountId) ?? null,
+  );
+  const reconcilingAccount = $derived(
+    accounts.find((a) => a.id === reconcilingAccountId) ?? null,
+  );
+
+  /** SUM(transactions) for an account. Derived rather than fetched: a
+   * balance *is* the starting point plus the ledger, so subtracting the
+   * anchor back out is exact, not an estimate. */
+  function ledgerSum(account: AccountDto): number {
+    return account.balance_minor_units - account.opening_balance_minor_units;
+  }
+
+  /** What the starting point would work out to for what's typed right now —
+   * the same `observed - ledger sum` the backend computes, shown before the
+   * user commits to it. Null while the input isn't a number.
+   *
+   * Showing the result is what makes the two panels tellable apart without
+   * understanding anchors versus adjustments: you pick the one whose outcome
+   * line says what you meant. It's also what makes editing an existing
+   * starting point safe — otherwise the number being replaced is invisible. */
+  const anchorPreview = $derived.by(() => {
+    if (!anchoringAccount) return null;
+    const observed = parseToMinorUnits(anchorDraft);
+    if (observed === null) return null;
+    return observed - ledgerSum(anchoringAccount);
+  });
+
+  /** The adjustment that would be posted: what the bank says minus what the
+   * app currently believes. Null while the input isn't a number, and zero is
+   * a meaningful value — it's the "nothing to adjust" case, worth showing
+   * rather than hiding, so Apply isn't a mystery no-op. */
+  const adjustmentPreview = $derived.by(() => {
+    if (!reconcilingAccount) return null;
+    const observed = parseToMinorUnits(reconcileDraft);
+    if (observed === null) return null;
+    return observed - reconcilingAccount.balance_minor_units;
+  });
 
   onMount(load);
 
@@ -110,9 +151,11 @@
     // a choice between two identical forms.
     cancelReconcile();
     anchoringAccountId = account.id;
-    // Pre-filled with the provisional balance rather than left blank: if the
+    // Pre-filled with the balance on screen rather than left blank: if the
     // account really did start at zero, that number is already correct and
-    // submitting it unchanged is the right answer.
+    // submitting it unchanged is the right answer. It's also what makes
+    // opening the panel to *edit* an anchor harmless — unchanged input means
+    // unchanged anchor, so looking costs nothing.
     anchorDraft = formatMinorUnits(account.balance_minor_units);
   }
 
@@ -127,11 +170,16 @@
       toast.error("Balance must be a number.");
       return;
     }
+    const wasSet = account.is_opening_balance_set;
     try {
       await api.establishOpeningBalance(account.id, minorUnits);
       cancelAnchor();
       await load(true);
-      toast.success(`Starting point set for "${account.name}".`);
+      toast.success(
+        wasSet
+          ? `Starting point updated for "${account.name}".`
+          : `Starting point set for "${account.name}".`,
+      );
     } catch (e) {
       toast.error(String(e));
     }
@@ -277,13 +325,13 @@
               Set as default
             </button>
           {/if}
-          {#if !account.is_opening_balance_set}
-            <button type="button" onclick={() => startAnchor(account)}>
-              Set starting point
-            </button>
-          {/if}
+          <!-- Shown whether or not the anchor is set: a mistyped starting
+               point is otherwise permanent, since nothing else can move it. -->
+          <button type="button" onclick={() => startAnchor(account)}>
+            {account.is_opening_balance_set ? "Edit" : "Set"} starting point
+          </button>
           <button type="button" onclick={() => startReconcile(account)}>
-            Reconcile
+            Add adjustment
           </button>
           <DeleteButton
             label="Delete account"
@@ -301,7 +349,8 @@
         {#if anchoringAccountId === account.id}
           <div class="reconcile">
             <p class="panel-title">
-              Set starting point <span>— no entry is added to the ledger</span>
+              {account.is_opening_balance_set ? "Edit" : "Set"} starting point
+              <span>— no entry is added to the ledger</span>
             </p>
             <label for="anchor-{account.id}">
               Balance your bank shows today
@@ -326,17 +375,48 @@
             <button type="button" class="secondary" onclick={cancelAnchor}>
               Cancel
             </button>
+            <!-- The arithmetic, shown rather than explained: the user can
+                 check the outcome against what they meant without having to
+                 know the formula, or that there is one. -->
+            {#if anchorPreview !== null}
+              <dl class="preview">
+                <div>
+                  <dt>Transactions on record</dt>
+                  <dd>{formatCurrency(ledgerSum(account), account.currency)}</dd>
+                </div>
+                {#if account.is_opening_balance_set}
+                  <div>
+                    <dt>Starting point now</dt>
+                    <dd>
+                      {formatCurrency(
+                        account.opening_balance_minor_units,
+                        account.currency,
+                      )}
+                    </dd>
+                  </div>
+                {/if}
+                <div class="result">
+                  <dt>Starting point becomes</dt>
+                  <dd>{formatCurrency(anchorPreview, account.currency)}</dd>
+                </div>
+              </dl>
+            {/if}
             <p class="hint">
               Use this when the balance is wrong all the way back. Works out
               what the account held before your earliest recorded transaction,
               correcting every past balance at once.
+              {#if account.is_opening_balance_set}
+                This replaces the starting point outright — but it won't undo
+                an adjustment posted by mistake, only absorb it. Delete that
+                entry from Transactions first if there is one.
+              {/if}
             </p>
           </div>
         {/if}
         {#if reconcilingAccountId === account.id}
           <div class="reconcile">
             <p class="panel-title">
-              Reconcile <span>— adds one adjustment dated today</span>
+              Add adjustment <span>— one entry, dated today</span>
             </p>
             <label for="reconcile-{account.id}">
               Balance your bank shows today
@@ -361,6 +441,38 @@
             <button type="button" class="secondary" onclick={cancelReconcile}>
               Cancel
             </button>
+            <!-- Same reasoning as the starting-point preview: the panels are
+                 told apart by their outcome, not by their input. It also
+                 makes the zero case legible, so Apply is never a silent
+                 no-op. -->
+            {#if adjustmentPreview !== null}
+              <dl class="preview">
+                <div>
+                  <dt>App currently shows</dt>
+                  <dd>
+                    {formatCurrency(
+                      account.balance_minor_units,
+                      account.currency,
+                    )}
+                  </dd>
+                </div>
+                <div class="result">
+                  <dt>Adjustment posted</dt>
+                  <dd>
+                    {#if adjustmentPreview === 0}
+                      none — already matches
+                    {:else}
+                      {adjustmentPreview > 0
+                        ? "+"
+                        : ""}{formatCurrency(
+                        adjustmentPreview,
+                        account.currency,
+                      )}
+                    {/if}
+                  </dd>
+                </div>
+              </dl>
+            {/if}
             <p class="hint">
               Use this when money moved that you never imported — fees,
               interest, market movement. Past balances are left as they were,
@@ -637,6 +749,46 @@
     margin: 0;
     font-size: 0.8rem;
     opacity: 0.7;
+  }
+
+  /* The working-out behind whichever panel is open. Deliberately laid out
+     like a till receipt — inputs above, outcome on the last line — so the
+     line that matters is the one the eye lands on. */
+  .preview {
+    flex-basis: 100%;
+    margin: 0;
+    font-size: 0.8rem;
+  }
+
+  /* Width is capped on the rows, not on .preview itself: a max-width there
+     shrinks the hypothetical main size below 100%, and the receipt stops
+     reliably breaking onto its own line. */
+  .preview div {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    max-width: 22rem;
+    padding: 0.15rem 0;
+  }
+
+  .preview dt {
+    opacity: 0.7;
+  }
+
+  .preview dd {
+    margin: 0;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .preview .result {
+    border-top: 1px solid var(--color-shade-2);
+    margin-top: 0.15rem;
+    padding-top: 0.3rem;
+    font-weight: 600;
+  }
+
+  .preview .result dt {
+    opacity: 1;
   }
 
   button.secondary {

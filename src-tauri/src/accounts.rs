@@ -18,6 +18,13 @@ pub struct AccountDto {
     /// correct if the account happened to begin at zero — the UI says so
     /// rather than presenting a guess as fact.
     pub is_opening_balance_set: bool,
+    /// The anchor itself, so the UI can both show what it currently is (a
+    /// mistyped one is otherwise invisible and therefore uncorrectable) and
+    /// derive the ledger sum as `balance - opening` to preview what a new
+    /// anchor would work out to. Zero when unset, which is also what it
+    /// contributes to the balance — read it alongside
+    /// `is_opening_balance_set`, never on its own.
+    pub opening_balance_minor_units: i64,
     /// Paired with `is_opening_balance_set` to decide whether to prompt: an
     /// account with no transactions has nothing to anchor yet.
     pub has_transactions: bool,
@@ -40,6 +47,7 @@ fn to_dto(value: AccountWithBalance, default_account_id: Option<AccountId>) -> A
         name: account.name().as_str().to_string(),
         balance_minor_units: balance.minor_units(),
         is_opening_balance_set: account.is_opening_balance_set(),
+        opening_balance_minor_units: account.opening_balance_minor_units(),
         has_transactions: transaction_count > 0,
         currency: balance.currency().code().to_string(),
         description_patterns: account
