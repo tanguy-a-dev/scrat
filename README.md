@@ -9,10 +9,10 @@
 <p align="center">
   <a href="https://github.com/tanguy-a-dev/scrat/actions/workflows/ci.yml"><img src="https://github.com/tanguy-a-dev/scrat/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="./LICENSE.md"><img src="https://img.shields.io/badge/license-non--commercial-blue.svg" alt="License"></a>
-  <img src="https://img.shields.io/badge/rust-2021-orange.svg" alt="Rust edition 2021">
-  <img src="https://img.shields.io/badge/tauri-2-24C8DB.svg" alt="Tauri 2">
-  <img src="https://img.shields.io/badge/svelte-5-FF3E00.svg" alt="Svelte 5">
-  <img src="https://img.shields.io/badge/status-alpha-yellow.svg" alt="Status: alpha">
+  <a href="https://doc.rust-lang.org/edition-guide/rust-2024/index.html"><img src="https://img.shields.io/badge/rust-2021-orange.svg" alt="Rust edition 2021"></a>
+  <a href="https://v2.tauri.app/"><img src="https://img.shields.io/badge/tauri-2-24C8DB.svg" alt="Tauri 2"></a>
+  <a href="https://svelte.dev/"><img src="https://img.shields.io/badge/svelte-5-FF3E00.svg" alt="Svelte 5"></a>
+  <a href="https://github.com/Kaonashi-42/scrat/releases"><img src="https://img.shields.io/badge/status-alpha-yellow.svg" alt="Status: alpha"></a>
 </p>
 
 > **A note on how this was built:** this codebase was written with [Claude
@@ -98,11 +98,19 @@ Run `make help` to see the full list of targets.
 
 ## Releases
 
-Releases are cut automatically. Push to `main`, and once CI is green the
-release workflow reads the commit messages written since the last tag, decides
-the next [semantic version](https://semver.org/), builds installers for macOS,
-Linux, and Windows, and publishes them as a GitHub release whose notes are
-those commits.
+Tagging and releasing are two separate steps.
+
+Push to `main`, and once CI is green the **Tag** workflow reads the commit
+messages written since the last tag, decides the next
+[semantic version](https://semver.org/), and — if anything releasable
+landed — bumps the version and pushes a tag. This part is fully automatic and
+happens on every green push.
+
+Building installers for macOS, Linux, and Windows and publishing them as a
+GitHub release is not automatic: run the **Build and Release** workflow by
+hand from the Actions tab, optionally pointing it at a specific tag (it
+defaults to the most recent one). The release notes are the commits covered
+by that tag.
 
 The version bump follows the commit type:
 
@@ -128,8 +136,8 @@ root `Cargo.toml`. Every other manifest either inherits it
 `src-tauri/tauri.conf.json` deliberately has no `version` key so that Tauri
 falls back to the Cargo one; don't add it back, or the two will drift.
 
-To release something the commit types wouldn't (or to force a specific bump),
-run the **Release** workflow manually from the Actions tab and pick the bump.
+To tag something the commit types wouldn't (or to force a specific bump), run
+the **Tag** workflow manually from the Actions tab and pick the bump.
 
 ### Released binaries are unsigned
 
