@@ -77,6 +77,63 @@
   // never rests on the color boundary alone.
   const SLICE_GAP = 2;
 
+  // The comparison period's ring, concentric inside the main one. It sits far
+  // enough in to leave a clear band of background between the two — touching,
+  // they would read as one thick ring with a seam rather than as two.
+  //
+  // Two rings can never be read arc-against-arc: a slice's start angle depends
+  // on every slice before it, so the same category begins somewhere different
+  // in each ring and nothing lines up. That limit is inherent to the shape, and
+  // the fix is the hover the page already has — pointing at a category lights
+  // it up in both rings, the legend and the list at once, which turns "compare
+  // everything at a glance" into "compare any one instantly".
+  //
+  // What the rings *can* show at a glance is the shape of each period: whether
+  // spending was spread evenly or dominated by one category, and whether that
+  // changed. That is what the donut is for, and it is the one reading the
+  // paired bars below don't give.
+  const COMPARE_RADIUS = 54;
+
+  // Thickness carries the period's total, so a month that cost more is visibly
+  // fatter — the magnitude a share-based chart otherwise throws away entirely.
+  //
+  // Clamped hard, and deliberately narrow. Width is a weak perceptual channel,
+  // the exact figures are already printed in the middle of the ring, and an
+  // unclamped ratio would turn a quiet month into a hairline and a bad one into
+  // a band thicker than the ring it is nested in. It is a nudge, not a
+  // measurement.
+  const COMPARE_WIDTH = 11;
+  const COMPARE_WIDTH_MIN = 7;
+  const COMPARE_WIDTH_MAX = 15;
+
+  function compareRingWidth(totalA: number, totalB: number): number {
+    if (totalA <= 0) return COMPARE_WIDTH;
+    const scaled = COMPARE_WIDTH * (totalB / totalA);
+    return Math.min(Math.max(scaled, COMPARE_WIDTH_MIN), COMPARE_WIDTH_MAX);
+  }
+
+  /** The comparison ring's arcs, built from `percentB` the same way
+   * `withDonutSlices` + `withAnimatedSlices` build the main ring's from
+   * `percent` — its own circumference, its own cumulative walk, sharing the
+   * row order so both rings run through the categories in the same sequence
+   * and the same colours. */
+  function compareArcs<T extends { percentB: number }>(rows: T[]) {
+    const circumference = 2 * Math.PI * COMPARE_RADIUS;
+    const drawnCount = rows.filter((r) => r.percentB > 0).length;
+    let cumulative = 0;
+    return rows.map((row) => {
+      const full = (row.percentB / 100) * circumference;
+      const dashoffset = -cumulative * fillProgress;
+      cumulative += full;
+      const drawn = gapped(full * fillProgress, drawnCount);
+      return {
+        ...row,
+        arcDasharray: `${drawn} ${circumference - drawn}`,
+        arcDashoffset: dashoffset,
+      };
+    });
+  }
+
   // Shrink an arc by the gap, but never past half its own length — a very
   // small slice should stay visible rather than be eaten by the spacer.
   // A lone slice has nothing to be separated from, so it keeps the full ring.
@@ -1155,8 +1212,20 @@
   {@const slices = p.slices}
   {@const hidden = p.hidden}
   <div class="graph-column">
-    <div class="graph-graphics">
-      <h2 class="panel-title">{label}</h2>
+    <div class="graph-graphics" class:comparing={compareActive}>
+      <h2 class="panel-title">
+        {label}
+        <!-- The key for the inner ring, and the only place the comparison
+             period is named per-panel now that the rows no longer repeat it.
+             The swatch carries the same diagonal as the ring and the bars, so
+             the three read as one statement about which period is which. -->
+        {#if compareActive}
+          <span class="panel-subtitle">
+            <span class="stripe-swatch" aria-hidden="true"></span>
+            {compareLabel} · {formatCurrency(p.totalB, currency)}
+          </span>
+        {/if}
+      </h2>
       <div class="donut-wrap">
         <svg viewBox="0 0 200 200" class="donut">
           <defs>
@@ -1182,6 +1251,19 @@
               <stop offset="42%" stop-color="#ffffff" stop-opacity="0.015" />
               <stop offset="100%" stop-color="#ffffff" stop-opacity="0" />
             </linearGradient>
+            <!-- The same diagonal cut the comparison bars use, so "striped"
+                 means the earlier period everywhere on the page. Painted as
+                 transparent-and-black over the colour rather than as two
+                 colours, so one pattern serves all eight palette slots. -->
+            <pattern
+              id={`donut-stripes-${panelKey}`}
+              width="6"
+              height="6"
+              patternUnits="userSpaceOnUse"
+              patternTransform="rotate(45 0 0)"
+            >
+              <rect x="0" y="0" width="3" height="6" fill="#000000" fill-opacity="0.55" />
+            </pattern>
           </defs>
           <g transform="rotate(-90 100 100)">
             <circle
@@ -1226,6 +1308,53 @@
                 />
               </g>
             {/each}
+
+            {#if compareActive}
+              {@const ringWidth = compareRingWidth(total, p.totalB)}
+              <circle
+                cx="100"
+                cy="100"
+                r={COMPARE_RADIUS}
+                fill="none"
+                stroke="var(--donut-track)"
+                stroke-width={ringWidth}
+              />
+              {#each compareArcs(slices) as arc (arc.categoryId)}
+                <g
+                  class="slice compare-slice"
+                  class:dimmed={hoveredCategoryId !== null && hoveredCategoryId !== arc.categoryId}
+                  role="presentation"
+                  onmouseenter={() => (hoveredCategoryId = arc.categoryId)}
+                  onmouseleave={() => (hoveredCategoryId = null)}
+                >
+                  <circle
+                    cx="100"
+                    cy="100"
+                    r={COMPARE_RADIUS}
+                    fill="none"
+                    stroke={arc.color}
+                    stroke-width={ringWidth}
+                    stroke-dasharray={arc.arcDasharray}
+                    stroke-dashoffset={arc.arcDashoffset}
+                  />
+                  <!-- No tube gradient on this ring. Its stops are radii
+                       measured against OUTER_EDGE, so at this radius they
+                       land deep in the dark inner end and would black the
+                       arc out — and a flat inner ring is the right hierarchy
+                       anyway: the glass belongs to the period in focus. -->
+                  <circle
+                    cx="100"
+                    cy="100"
+                    r={COMPARE_RADIUS}
+                    fill="none"
+                    stroke={`url(#donut-stripes-${panelKey})`}
+                    stroke-width={ringWidth}
+                    stroke-dasharray={arc.arcDasharray}
+                    stroke-dashoffset={arc.arcDashoffset}
+                  />
+                </g>
+              {/each}
+            {/if}
           </g>
           <!-- Fixed light direction: the sheen sits outside the rotated group.
                It covers the whole ring, so without pointer-events="none" it
@@ -1241,7 +1370,11 @@
             role="presentation"
           />
         </svg>
-        <div class="donut-center">
+        <!-- The comparison ring takes the middle in from radius 68 to 47, and
+             the two extra lines go in at the same time — so the type steps
+             down to keep the block inside the hole rather than colliding with
+             the ring around it. -->
+        <div class="donut-center" class:compact={compareActive}>
           <span class="total">{formatCurrency(total, currency)}</span>
           <span class="label">{label}</span>
           {#if compareActive}
@@ -1249,7 +1382,6 @@
             <span class="center-delta {favourability(panelKey, delta) ?? 'flat'}">
               {formatDelta(delta, currency)}
             </span>
-            <span class="center-was">was {formatCurrency(p.totalB, currency)}</span>
           {/if}
         </div>
       </div>
@@ -1749,15 +1881,48 @@
   }
 
   .center-delta {
-    margin-top: 0.25rem;
-    font-size: 0.95rem;
+    margin-top: 0.15rem;
+    font-size: 0.85rem;
     font-weight: 700;
   }
 
-  .center-was,
   .net-was {
-    font-size: 0.7rem;
+    font-size: 0.65rem;
     opacity: 0.55;
+    white-space: nowrap;
+  }
+
+  .panel-subtitle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+    margin-top: 0.2rem;
+    color: var(--color-text);
+    font-size: 0.72rem;
+    font-weight: 400;
+    opacity: 0.6;
+    white-space: nowrap;
+  }
+
+  .stripe-swatch {
+    width: 0.85rem;
+    height: 0.5rem;
+    border-radius: 2px;
+    flex-shrink: 0;
+    background-color: currentColor;
+    background-image: repeating-linear-gradient(
+      45deg,
+      rgba(0, 0, 0, 0) 0 2px,
+      rgba(0, 0, 0, 0.6) 2px 4px
+    );
+  }
+
+  /* The comparison ring is the past: present but not competing with the ring
+     in focus. Lower than the main ring's 0.82 and flat rather than glassed,
+     so the eye lands on the outer ring first and finds this one second. */
+  .compare-slice {
+    opacity: 0.66;
   }
 
   .net-delta {
@@ -1840,6 +2005,7 @@
        each — the donuts stay aligned at every window size, just closer in. */
     --donut-size: min(260px, 60vw);
     display: grid;
+    /* fallthrough — see `.graph-graphics.comparing` below */
     grid-template-columns: var(--donut-size) minmax(0, 11rem);
     /* The panel title takes row 1 of the donut's column so it is centered on
        the donut, not on donut+legend. Row 2 stays exactly the donut's size —
@@ -1852,6 +2018,14 @@
     row-gap: 0;
     margin-bottom: 1.5rem;
   }
+
+  /* The donut deliberately does *not* grow when comparing. Growing it to buy
+     back the room the inner ring takes was tried, and at the app's own default
+     1100px window it ate the legend's track instead — "Dining out" became
+     "Dining …". The middle got its room from losing a line rather than from
+     taking one off the legend: the comparison total moved up into the panel
+     header (see `.panel-subtitle`), where it does a second job the centre
+     never could — naming the striped ring. */
 
   .donut-wrap {
     /* scoped to the component, not :root — a page-level :root block is
@@ -1978,6 +2152,21 @@
     font-size: 0.8rem;
     opacity: 0.7;
     text-transform: uppercase;
+  }
+
+  /* The hole is a circle, so the usable width narrows the further a line sits
+     from the middle — which is why the outer two lines step down hardest. */
+  .donut-center.compact {
+    gap: 0.05rem;
+    padding: 0 12%;
+  }
+
+  .donut-center.compact .total {
+    font-size: 1.1rem;
+  }
+
+  .donut-center.compact .label {
+    font-size: 0.62rem;
   }
 
   .breakdown {
