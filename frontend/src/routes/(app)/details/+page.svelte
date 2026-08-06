@@ -101,9 +101,10 @@
   let customStart = $state(view.customStart);
   let customEnd = $state(view.customEnd);
 
-  // Hovering the donut slice or the legend entry for a category highlights
-  // both plus the matching breakdown row — but not the reverse: hovering the
-  // breakdown row only highlights itself, it never drives the graph/legend.
+  // Hovering the donut slice, the legend entry, or the top-level breakdown
+  // row for a category highlights all three — one shared id drives every
+  // view of "this category" at once. Subcategory rows aren't included: they
+  // have no slice or legend entry of their own to light up.
   let hoveredCategoryId = $state<string | null>(null);
 
   type PanelKey = "expense" | "income";
@@ -643,6 +644,8 @@
           {@const subHidden = hiddenRows(panelKey, allTxns, slice.categoryId)}
           <li
             class:dimmed={hoveredCategoryId !== null && hoveredCategoryId !== slice.categoryId}
+            onmouseenter={() => (hoveredCategoryId = slice.categoryId)}
+            onmouseleave={() => (hoveredCategoryId = null)}
           >
             <div class="breakdown-row">
               <button
