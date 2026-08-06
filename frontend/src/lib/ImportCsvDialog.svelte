@@ -31,6 +31,24 @@
   } = $props();
 
   let preview = $state<ImportPreviewDto | null>(null);
+  /** The preview table renders this many rows at a time instead of the whole
+   * file at once — a multi-thousand-row export would otherwise mean that
+   * many checkboxes and table rows in the DOM on first paint. Grows by
+   * `ROWS_PAGE_SIZE` as the user scrolls `.rows` toward its bottom; every
+   * selection/count elsewhere in this dialog still operates on the full
+   * `preview.rows`, only what's painted is paginated. */
+  let visibleRowCount = $state(0);
+  const ROWS_PAGE_SIZE = 20;
+  let visibleRows = $derived(preview?.rows.slice(0, visibleRowCount) ?? []);
+
+  function handleRowsScroll(event: Event) {
+    if (!preview) return;
+    const el = event.currentTarget as HTMLDivElement;
+    const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 64;
+    if (nearBottom && visibleRowCount < preview.rows.length) {
+      visibleRowCount = Math.min(visibleRowCount + ROWS_PAGE_SIZE, preview.rows.length);
+    }
+  }
   /** Kept so a corrected mapping can be applied to the same file without
    * asking the user to pick it again. */
   let fileBytes = $state<number[] | null>(null);
@@ -212,6 +230,7 @@
     try {
       const result = await api.previewCsvImport(bytes);
       preview = result;
+      visibleRowCount = Math.min(ROWS_PAGE_SIZE, result.rows.length);
       included = result.rows.map((r) => r.include_by_default);
       // Open the editor unprompted when detection clearly failed — the user
       // shouldn't have to discover that the fix exists.
@@ -238,6 +257,7 @@
     try {
       const result = await api.previewCsvImport(fileBytes, mapping);
       preview = result;
+      visibleRowCount = Math.min(ROWS_PAGE_SIZE, result.rows.length);
       included = result.rows.map((r) => r.include_by_default);
       await refreshDuplicateFlags();
     } catch (e) {
@@ -665,7 +685,7 @@
       </div>
 
 
-      <div class="rows">
+      <div class="rows" onscroll={handleRowsScroll}>
         <table>
           <thead>
             <tr>
@@ -686,7 +706,7 @@
             </tr>
           </thead>
           <tbody>
-            {#each preview.rows as row, i (i)}
+            {#each visibleRows as row, i (i)}
               {@const invalid = row.date === null || row.amount_minor_units === null}
               <tr
                 class:invalid
@@ -731,6 +751,9 @@
       <div class="actions">
         <span class="actions-note">
           {includableCount} of {preview.rows.length} rows selected
+          {#if visibleRowCount < preview.rows.length}
+            · showing {visibleRowCount} — scroll for more
+          {/if}
         </span>
         <button type="button" onclick={onClose}>Cancel</button>
         <button

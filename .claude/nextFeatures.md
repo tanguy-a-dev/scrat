@@ -1,13 +1,16 @@
 # Features
 
-## Transactions -> Import CSV
-
-When importing a CSV, do not load all rows at once in the app, load 20 by 20 if the user scrolls down.
-
 ## Test Coverage
 
 App coverage is rather low. generate and check the report. Check where to add relevant tests for the app and implement them.
 
-## Details: Compare vue
+
+## Details page UX
+
+- Graph Legend Categories could take up a bit more space on the right as to not cut category names.
 
 ## Details -> go to
+
+I want a button Go To which takes the user to transactions page with appropriate filters (same dates filter and category/sub category)
+
+## Details: Compare vue
