@@ -5,6 +5,10 @@
     countsTowardTotals,
     formatCurrency,
     computeRange,
+    describeRange,
+    formatDateSpan,
+    precedingSpan,
+    spanDays,
     todayIsoDate,
     oneMonthAgoIsoDate,
     type CategoryDto,
@@ -13,7 +17,13 @@
   } from "$lib/api";
   import DateRangePicker from "$lib/DateRangePicker.svelte";
   import { pageViewState } from "$lib/pageCache";
-  import { ArrowUpRight } from "@lucide/svelte";
+  import {
+    ArrowUpRight,
+    ChevronLeft,
+    ChevronRight,
+    GitCompareArrows,
+    TriangleAlert,
+  } from "@lucide/svelte";
 
   // Validated categorical palette (dark-mode steps) — passes CVD/contrast
   // checks against this app's dark surface. See dataviz skill's palette.md.
@@ -77,6 +87,11 @@
 
   let categories = $state<CategoryDto[]>([]);
   let transactions = $state<TransactionDto[]>([]);
+  // The comparison period's rows. Kept separate rather than merged into
+  // `transactions` with a tag: everything downstream of the primary period —
+  // the donuts, the totals, the hidden-category bookkeeping — is about period
+  // A alone, and a merged list would have to be re-split at every one of them.
+  let transactionsB = $state<TransactionDto[]>([]);
   let loading = $state(true);
   let error = $state("");
 
@@ -85,6 +100,9 @@
   // re-fetched on every mount as usual.
   const view = pageViewState("details", () => ({
     rangeMode: "month" as RangeMode,
+    rangeOffset: 0,
+    comparing: false,
+    compareOffset: -1,
     customStart: oneMonthAgoIsoDate(),
     customEnd: todayIsoDate(),
     expanded: {
@@ -98,8 +116,38 @@
   }));
 
   let rangeMode = $state<RangeMode>(view.rangeMode);
+  // Whole periods back from the one containing today: -1 is last month, -2 the
+  // one before. Only `month` and `year` can be stepped — "All Time" has one
+  // period and "Set Dates" is already an explicit answer.
+  let rangeOffset = $state(view.rangeOffset);
   let customStart = $state(view.customStart);
   let customEnd = $state(view.customEnd);
+
+  let steppable = $derived(rangeMode === "month" || rangeMode === "year");
+
+  // Whether the page is showing two periods side by side, and which period the
+  // second one is. `compareOffset` is absolute like `rangeOffset`, not a gap:
+  // it is what the second stepper edits directly. Stepping the *first* period
+  // moves both together (see `stepPeriod`), which is what keeps a comparison
+  // the user set up as "against the month before" saying that at every month
+  // they walk back to.
+  let comparing = $state(view.comparing);
+  let compareOffset = $state(view.compareOffset);
+
+  // "All Time" is one period — there is no second one to hold it against.
+  // Every other mode has a defensible predecessor: the previous month or year,
+  // or for hand-picked dates the equally-long span ending just before them.
+  let canCompare = $derived(rangeMode !== "all");
+  let compareActive = $derived(comparing && canCompare);
+
+  /** The second period's bounds. In `custom` mode it trails period A by its
+   * own length rather than being independently steppable — there is no
+   * calendar unit to step, and matching the length is what keeps the two
+   * halves of the comparison the same size. */
+  function computeRangeB(): { start: string; end: string } {
+    if (rangeMode === "custom") return precedingSpan(customStart, customEnd);
+    return computeRange(rangeMode, { offset: compareOffset });
+  }
 
   // Hovering the donut slice, the legend entry, or the top-level breakdown
   // row for a category highlights all three — one shared id drives every
@@ -132,6 +180,9 @@
   // plain object and not a handle into a torn-down reactive graph.
   $effect(() => {
     view.rangeMode = rangeMode;
+    view.rangeOffset = rangeOffset;
+    view.comparing = comparing;
+    view.compareOffset = compareOffset;
     view.customStart = customStart;
     view.customEnd = customEnd;
     view.expanded = {
@@ -144,6 +195,40 @@
     };
   });
 
+  /** A change in money, always carrying its sign — "+€62,10", "−€45,00".
+   * `formatCurrency` renders a negative amount with a leading "-", but a
+   * *positive* delta needs its "+" said out loud too: without it "€62,10"
+   * beside "−€45,00" reads as an amount next to a change rather than as two
+   * changes. */
+  function formatDelta(minorUnits: number, code: string): string {
+    if (minorUnits === 0) return `±${formatCurrency(0, code)}`;
+    const sign = minorUnits > 0 ? "+" : "−";
+    return `${sign}${formatCurrency(Math.abs(minorUnits), code)}`;
+  }
+
+  /** Whether a change is good news for the user, which is the opposite thing
+   * in the two panels: spending more is bad, earning more is good. Colouring
+   * both by the sign of the number would paint every raise red.
+   *
+   * Returns null for no change and for the expense/income *totals* being
+   * genuinely neutral, so nothing gets a verdict it hasn't earned. */
+  function favourability(panel: PanelKey, deltaMinor: number): "good" | "bad" | null {
+    if (deltaMinor === 0) return null;
+    const grew = deltaMinor > 0;
+    return panel === "expense" ? (grew ? "bad" : "good") : grew ? "good" : "bad";
+  }
+
+  /** The relative change as text, or the word for the cases a percentage
+   * cannot express: a category that had nothing to grow from, and one that
+   * has nothing left. */
+  function formatRatio(row: { amountMinorUnits: number; amountB: number; deltaRatio: number | null }): string {
+    if (row.deltaRatio === null) return row.amountMinorUnits === 0 ? "—" : "new";
+    if (row.amountMinorUnits === 0) return "gone";
+    const pct = row.deltaRatio * 100;
+    const sign = pct > 0 ? "+" : pct < 0 ? "−" : "";
+    return `${sign}${Math.abs(pct).toFixed(pct !== 0 && Math.abs(pct) < 10 ? 1 : 0)}%`;
+  }
+
   function categoryHasChildren(id: string): boolean {
     return categories.some((c) => c.parent_id === id);
   }
@@ -154,11 +239,18 @@
   // whose transactions are all logged directly against it (e.g. Transportation
   // with no transaction ever assigned to a specific subcategory) would just
   // show itself again under itself, which isn't useful.
-  function hasVisibleSubcategories(txns: TransactionDto[], rootId: string): boolean {
+  function hasVisibleSubcategories(
+    txns: TransactionDto[],
+    txnsB: TransactionDto[],
+    rootId: string,
+  ): boolean {
     if (!categoryHasChildren(rootId)) return false;
-    return txns.some(
-      (t) => t.category_id !== rootId && rootCategoryId(t.category_id) === rootId,
-    );
+    const hasChildRow = (list: TransactionDto[]) =>
+      list.some((t) => t.category_id !== rootId && rootCategoryId(t.category_id) === rootId);
+    // Either period is enough. A category that was broken down by subcategory
+    // in June and lumped together in August still has a breakdown worth
+    // opening — that shift is itself part of what changed.
+    return hasChildRow(txns) || hasChildRow(txnsB);
   }
 
   function toggleExpand(panel: PanelKey, categoryId: string) {
@@ -201,13 +293,21 @@
       const range = computeRange(rangeMode, {
         start: customStart,
         end: customEnd,
+        offset: rangeOffset,
       });
-      const [c, t] = await Promise.all([
+      // The comparison period is a second query over the same command rather
+      // than one widened query split afterwards: the two periods needn't be
+      // adjacent (August against June leaves July in between), so a single
+      // range covering both would fetch a month nothing on the page shows.
+      const rangeB = compareActive ? computeRangeB() : null;
+      const [c, t, tb] = await Promise.all([
         api.listCategories(),
         api.listTransactions(range.start, range.end),
+        rangeB ? api.listTransactions(rangeB.start, rangeB.end) : Promise.resolve([]),
       ]);
       categories = c;
       transactions = t;
+      transactionsB = tb;
     } catch (e) {
       error = String(e);
     } finally {
@@ -222,6 +322,13 @@
    * closing it behind their back. */
   function setRange(mode: RangeMode) {
     rangeMode = mode;
+    // A month offset means nothing as a year offset — two months back is not
+    // two years back — so switching mode lands on the current period rather
+    // than silently reinterpreting the step. The comparison gap is reset for
+    // the same reason: carried across, a three-months-back comparison would
+    // reappear as three *years* back.
+    rangeOffset = 0;
+    compareOffset = -1;
     expandedCategoryIds = { expense: new Set(), income: new Set() };
     load();
   }
@@ -232,6 +339,126 @@
     expandedCategoryIds = { expense: new Set(), income: new Set() };
     load();
   }
+
+  /** Steps the selected period, and resets what was expanded for the same
+   * reason `setRange` does: the rows under an open category are about to be a
+   * different month's breakdown entirely.
+   *
+   * Stepping forward past the current period is allowed rather than walled
+   * off. Nothing stops a ledger holding future-dated rows, and an arrow that
+   * greys out at "now" would hide them; the label going accented is what says
+   * you are no longer looking at the present. */
+  function stepPeriod(delta: number) {
+    rangeOffset += delta;
+    // The comparison period travels with it, holding the gap the user set up.
+    // Someone comparing August against June is asking about a two-month gap,
+    // not about June specifically — walking back to July should show May, not
+    // pin June and silently turn the question into a different one.
+    compareOffset += delta;
+    expandedCategoryIds = { expense: new Set(), income: new Set() };
+    load();
+  }
+
+  function resetPeriod() {
+    if (rangeOffset === 0) return;
+    compareOffset -= rangeOffset;
+    rangeOffset = 0;
+    expandedCategoryIds = { expense: new Set(), income: new Set() };
+    load();
+  }
+
+  /** Steps the comparison period alone, which is how the gap gets set in the
+   * first place. Landing on period A is allowed: the deltas all read zero,
+   * which is a perfectly clear way for the view to say the two periods are the
+   * same one, and skipping over it would move the period further than the
+   * arrow the user pressed says it should. */
+  function stepCompare(delta: number) {
+    compareOffset += delta;
+    expandedCategoryIds = { expense: new Set(), income: new Set() };
+    load();
+  }
+
+  function toggleCompare() {
+    comparing = !comparing;
+    // Reaching for Compare almost always means "against the one before".
+    // Anchoring to A rather than to now keeps that true at every period the
+    // user has stepped to.
+    if (comparing) compareOffset = rangeOffset - 1;
+    expandedCategoryIds = { expense: new Set(), income: new Set() };
+    load();
+  }
+
+  let periodLabel = $derived(
+    describeRange(rangeMode, rangeOffset, { start: customStart, end: customEnd }),
+  );
+
+  /** The exact days on screen, spelled out under the period label so the
+   * label is never the only thing saying what "August" covers. */
+  let rangeSpan = $derived.by(() => {
+    if (!steppable) return "";
+    const r = computeRange(rangeMode, { offset: rangeOffset });
+    return formatDateSpan(r.start, r.end);
+  });
+
+  /** How much of the current period has actually happened, when it is still
+   * happening. This is the guard against the partial-period trap: on the 6th,
+   * "August" holds six days of spending, and set beside a whole earlier month
+   * it reads as a collapse rather than as a month that has not finished. The
+   * span alone can't say it — a month range is the whole calendar month
+   * whether or not today is inside it — so the elapsed count is spelled out
+   * separately, and only where it's true. */
+  let periodProgress = $derived.by(() => {
+    if (!steppable || rangeOffset !== 0) return "";
+    const now = new Date();
+    const r = computeRange(rangeMode, { offset: 0 });
+    const dayMs = 24 * 60 * 60 * 1000;
+    const startMs = new Date(`${r.start}T00:00:00`).getTime();
+    const endMs = new Date(`${r.end}T00:00:00`).getTime();
+    const elapsed = Math.round((now.setHours(0, 0, 0, 0) - startMs) / dayMs) + 1;
+    const total = Math.round((endMs - startMs) / dayMs) + 1;
+    return `${elapsed} of ${total} days so far`;
+  });
+
+  let compareLabel = $derived(
+    rangeMode === "custom"
+      ? "Preceding span"
+      : describeRange(rangeMode, compareOffset, { start: customStart, end: customEnd }),
+  );
+
+  let compareSpan = $derived.by(() => {
+    if (!compareActive) return "";
+    const r = computeRangeB();
+    return formatDateSpan(r.start, r.end);
+  });
+
+  /** Says so when the two periods are not the same length, which is the one
+   * thing that makes every number below it unfair. It fires for the obvious
+   * case — a month still in progress against a finished one — and for the
+   * quieter ones nobody thinks about, like February against January.
+   *
+   * The comparison is still shown rather than blocked. A 28-vs-31-day month is
+   * a real question people ask; it just needs saying that the answer is
+   * shorter by three days. */
+  let lengthMismatch = $derived.by(() => {
+    if (!compareActive) return "";
+    const a = computeRange(rangeMode, {
+      start: customStart,
+      end: customEnd,
+      offset: rangeOffset,
+    });
+    const b = computeRangeB();
+    // A period still running is measured by the days that have happened, not
+    // by the days it will eventually hold — otherwise the six days of August
+    // on screen would compare as a full month.
+    const elapsedIfCurrent = (r: { start: string; end: string }) => {
+      const today = todayIsoDate();
+      return r.start <= today && today < r.end ? spanDays(r.start, today) : spanDays(r.start, r.end);
+    };
+    const daysA = elapsedIfCurrent(a);
+    const daysB = elapsedIfCurrent(b);
+    if (daysA === daysB) return "";
+    return `${daysA} days vs ${daysB} — not the same length`;
+  });
 
   /** The Transactions page, opened on the same slice of the ledger this row
    * is showing: same date range, same expense/income side, filtered to this
@@ -244,17 +471,29 @@
    * two pages agreeing about what "this month" is instead of freezing this
    * page's answer into the URL.
    *
+   * That only holds while this page is *on* the current period, though. The
+   * Transactions page has no offset of its own, so a stepped-back month has
+   * to travel as explicit dates under `custom` — handing it "month" would
+   * open August's list from under June's row. The two pages agreeing about
+   * "now" was the point of passing a mode; there is no shared "now" to agree
+   * about once the user has walked away from it.
+   *
    * Filtering by a parent gives that parent's whole branch — the backend
    * rolls subcategories into the named category (see `TransactionFilters`),
    * matching the rollup this row's own amount is built from. Without that,
    * the row and the list it opens would disagree. */
   function transactionsHref(panel: PanelKey, categoryId: string): string {
+    const stepped = steppable && rangeOffset !== 0;
     const params = new URLSearchParams({
       kind: panel,
       category: categoryId,
-      range: rangeMode,
+      range: stepped ? "custom" : rangeMode,
     });
-    if (rangeMode === "custom") {
+    if (stepped) {
+      const r = computeRange(rangeMode, { offset: rangeOffset });
+      params.set("start", r.start);
+      params.set("end", r.end);
+    } else if (rangeMode === "custom") {
       params.set("start", customStart);
       params.set("end", customEnd);
     }
@@ -324,8 +563,31 @@
     incomeTransactions.filter((t) => !isHidden("income", t.category_id)),
   );
 
+  // The comparison period goes through exactly the same sieve as period A —
+  // transfers and adjustments out, sign split, hidden categories dropped. A
+  // category hidden from Expenses has to leave both periods' totals or the two
+  // percentages beside each other would be shares of different denominators.
+  let reportableTransactionsB = $derived(transactionsB.filter(countsTowardTotals));
+  let visibleExpenseTransactionsB = $derived(
+    reportableTransactionsB.filter(
+      (t) => t.amount_minor_units < 0 && !isHidden("expense", t.category_id),
+    ),
+  );
+  let visibleIncomeTransactionsB = $derived(
+    reportableTransactionsB.filter(
+      (t) => t.amount_minor_units > 0 && !isHidden("income", t.category_id),
+    ),
+  );
+
   let netLeftMinorUnits = $derived(
     [...visibleExpenseTransactions, ...visibleIncomeTransactions].reduce(
+      (sum, t) => sum + t.amount_minor_units,
+      0,
+    ),
+  );
+
+  let netLeftMinorUnitsB = $derived(
+    [...visibleExpenseTransactionsB, ...visibleIncomeTransactionsB].reduce(
       (sum, t) => sum + t.amount_minor_units,
       0,
     ),
@@ -381,28 +643,113 @@
       .sort((a, b) => b.amountMinorUnits - a.amountMinorUnits);
   }
 
+  /** One category's line in a panel: always its period-A figures, plus its
+   * period-B ones when comparing (zeros when not, so one code path serves
+   * both views).
+   *
+   * `deltaRatio` is null rather than Infinity when the category had nothing in
+   * period B. "Up ∞%" is not a fact about spending, it's a division by zero
+   * wearing a percentage sign — the row says "new" instead. */
+  type PanelRow = {
+    categoryId: string;
+    name: string;
+    amountMinorUnits: number;
+    percent: number;
+    amountB: number;
+    percentB: number;
+    deltaMinor: number;
+    deltaRatio: number | null;
+  };
+
+  /** Merges a panel's two periods into one list of rows.
+   *
+   * The union, not period A's categories: a category with €300 in June and
+   * nothing in August has to appear, or the comparison quietly omits the
+   * single biggest thing that changed. Those rows carry `amountMinorUnits: 0`,
+   * so they take no donut slice — they exist in the list, which is where the
+   * comparison actually lives.
+   *
+   * Sorting is by whichever period the category was larger in, rather than by
+   * period A. Sorting by A alone would drop every disappeared category into a
+   * silent block at the bottom, ranked below rows a hundredth their size. */
+  function buildPanelRows(
+    txnsA: TransactionDto[],
+    txnsB: TransactionDto[],
+    scopeRootId: string | null,
+  ) {
+    const a = buildBreakdown(txnsA, scopeRootId);
+    const b = compareActive
+      ? buildBreakdown(txnsB, scopeRootId)
+      : { total: 0, breakdown: [] as ReturnType<typeof buildBreakdown>["breakdown"] };
+    const bById = new Map(b.breakdown.map((r) => [r.categoryId, r]));
+
+    const row = (
+      categoryId: string,
+      name: string,
+      amountMinorUnits: number,
+      percent: number,
+    ): PanelRow => {
+      const match = bById.get(categoryId);
+      const amountB = match?.amountMinorUnits ?? 0;
+      return {
+        categoryId,
+        name,
+        amountMinorUnits,
+        percent,
+        amountB,
+        percentB: match?.percent ?? 0,
+        deltaMinor: amountMinorUnits - amountB,
+        deltaRatio: amountB === 0 ? null : (amountMinorUnits - amountB) / amountB,
+      };
+    };
+
+    const rows = a.breakdown.map((r) =>
+      row(r.categoryId, r.name, r.amountMinorUnits, r.percent),
+    );
+    if (compareActive) {
+      const inA = new Set(a.breakdown.map((r) => r.categoryId));
+      for (const r of b.breakdown) {
+        if (!inA.has(r.categoryId)) rows.push(row(r.categoryId, r.name, 0, 0));
+      }
+    }
+    rows.sort(
+      (x, y) =>
+        Math.max(y.amountMinorUnits, y.amountB) - Math.max(x.amountMinorUnits, x.amountB),
+    );
+    return { total: a.total, totalB: b.total, rows: withDonutSlices(rows) };
+  }
+
   // Colored (but non-animated) breakdown of one root category's subcategories,
   // for rendering the expanded rows nested under it in the breakdown list.
   // Each row gets two percentages: `percent` is share of the parent category
   // (e.g. Rent's share of Housing), `percentOfTotal` is share of the whole
   // panel (e.g. Rent's share of all Expenses) — the two answer different
   // questions and both are useful side by side.
-  function subCategoryBreakdown(txns: TransactionDto[], rootId: string, panelTotal: number) {
+  function subCategoryBreakdown(
+    txns: TransactionDto[],
+    txnsB: TransactionDto[],
+    rootId: string,
+    panelTotal: number,
+  ) {
     const panelTotalOrOne = panelTotal || 1;
-    const withTotalShare = buildBreakdown(txns, rootId).breakdown.map((slice) => ({
+    return buildPanelRows(txns, txnsB, rootId).rows.map((slice) => ({
       ...slice,
       percentOfTotal: (slice.amountMinorUnits / panelTotalOrOne) * 100,
     }));
-    return withDonutSlices(withTotalShare);
   }
 
   function withDonutSlices<T extends { percent: number }>(breakdown: T[]) {
     let cumulative = 0;
+    // Rows the comparison added for categories absent from this period draw no
+    // arc, so they must not be counted when deciding whether there is a
+    // neighbour to leave a gap against — otherwise a panel showing one real
+    // category would carve a spacer out of a ring it has entirely to itself.
+    const drawnCount = breakdown.filter((s) => s.percent > 0).length;
     return breakdown.map((slice, i) => {
       const length = (slice.percent / 100) * CIRCUMFERENCE;
       const dashoffset = -cumulative;
       cumulative += length;
-      const drawn = gapped(length, breakdown.length);
+      const drawn = gapped(length, drawnCount);
       return {
         ...slice,
         color: PALETTE[i % PALETTE.length],
@@ -416,10 +763,11 @@
   // `fillProgress`, so the whole donut sweeps in from empty together rather
   // than each slice animating independently out of sync with the others.
   function withAnimatedSlices<T extends { percent: number; dashoffset: number }>(slices: T[]) {
+    const drawnCount = slices.filter((s) => s.percent > 0).length;
     return slices.map((slice) => {
       const animatedLength = gapped(
         (slice.percent / 100) * CIRCUMFERENCE * fillProgress,
-        slices.length,
+        drawnCount,
       );
       return {
         ...slice,
@@ -430,15 +778,15 @@
     });
   }
 
-  let expenseData = $derived.by(() => buildBreakdown(visibleExpenseTransactions, null));
-  let incomeData = $derived.by(() => buildBreakdown(visibleIncomeTransactions, null));
+  let expenseData = $derived.by(() =>
+    buildPanelRows(visibleExpenseTransactions, visibleExpenseTransactionsB, null),
+  );
+  let incomeData = $derived.by(() =>
+    buildPanelRows(visibleIncomeTransactions, visibleIncomeTransactionsB, null),
+  );
 
-  let animatedExpenseSlices = $derived(
-    withAnimatedSlices(withDonutSlices(expenseData.breakdown)),
-  );
-  let animatedIncomeSlices = $derived(
-    withAnimatedSlices(withDonutSlices(incomeData.breakdown)),
-  );
+  let animatedExpenseSlices = $derived(withAnimatedSlices(expenseData.rows));
+  let animatedIncomeSlices = $derived(withAnimatedSlices(incomeData.rows));
 
   let expenseHiddenRows = $derived(hiddenRows("expense", expenseTransactions, null));
   let incomeHiddenRows = $derived(hiddenRows("income", incomeTransactions, null));
@@ -479,8 +827,111 @@
   </div>
   {#if rangeMode === "custom"}
     <DateRangePicker start={customStart} end={customEnd} onChange={setCustomRange} />
+  {:else if steppable}
+    <!-- The label is itself the way back to the current period. It carries
+         the accent only when there is somewhere to go back to, so a period
+         that isn't "now" is visibly not "now" and the affordance appears
+         exactly when it does something. -->
+    <div class="period-nav">
+      <button
+        type="button"
+        class="nav-button"
+        onclick={() => stepPeriod(-1)}
+        aria-label={`Previous ${rangeMode}`}
+        title={`Previous ${rangeMode}`}
+      >
+        <ChevronLeft size={16} />
+      </button>
+      <button
+        type="button"
+        class="period-label"
+        class:stepped={rangeOffset !== 0}
+        disabled={rangeOffset === 0}
+        onclick={resetPeriod}
+        aria-label={rangeOffset === 0
+          ? `Showing ${periodLabel}`
+          : `Showing ${periodLabel} — back to this ${rangeMode}`}
+        title={rangeOffset === 0 ? undefined : `Back to this ${rangeMode}`}
+      >
+        <span class="period-name">{periodLabel}</span>
+        <span class="period-span">{rangeSpan}</span>
+      </button>
+      <button
+        type="button"
+        class="nav-button"
+        onclick={() => stepPeriod(1)}
+        aria-label={`Next ${rangeMode}`}
+        title={`Next ${rangeMode}`}
+      >
+        <ChevronRight size={16} />
+      </button>
+    </div>
+    <!-- Outside the stepper, not under the label with the dates: as part of
+         the button it was the widest thing in it, so the arrows jumped
+         sideways every time the user stepped off the current period and the
+         note disappeared. It is a remark about what's on screen rather than
+         part of the control. -->
+    {#if periodProgress && !compareActive}
+      <span class="period-progress">{periodProgress}</span>
+    {/if}
   {/if}
+
+  {#if compareActive}
+    <span class="vs">vs</span>
+    <div class="period-nav compare">
+      {#if steppable}
+        <button
+          type="button"
+          class="nav-button"
+          onclick={() => stepCompare(-1)}
+          aria-label={`Previous comparison ${rangeMode}`}
+          title={`Previous comparison ${rangeMode}`}
+        >
+          <ChevronLeft size={16} />
+        </button>
+      {/if}
+      <div class="period-label static">
+        <span class="period-name">{compareLabel}</span>
+        <span class="period-span">{compareSpan}</span>
+      </div>
+      {#if steppable}
+        <button
+          type="button"
+          class="nav-button"
+          onclick={() => stepCompare(1)}
+          aria-label={`Next comparison ${rangeMode}`}
+          title={`Next comparison ${rangeMode}`}
+        >
+          <ChevronRight size={16} />
+        </button>
+      {/if}
+    </div>
+  {/if}
+
+  <button
+    type="button"
+    class="compare-btn"
+    class:active={compareActive}
+    disabled={!canCompare}
+    aria-pressed={compareActive}
+    onclick={toggleCompare}
+    title={canCompare
+      ? "Compare this period against another"
+      : "All Time is a single period — there is nothing to compare it against"}
+  >
+    <GitCompareArrows size={14} aria-hidden="true" />
+    Compare
+  </button>
 </div>
+
+<!-- Loud enough to be read before the numbers are, because it is the thing
+     that decides whether they mean anything. -->
+{#if lengthMismatch}
+  <p class="mismatch">
+    <TriangleAlert size={14} aria-hidden="true" />
+    {lengthMismatch}
+  </p>
+{/if}
 
 <!-- Sits in the row's trailing action column beside the eye, not inside
      `.row-main` — on a parent row that whole area is already the
@@ -516,15 +967,111 @@
   </button>
 {/snippet}
 
-{#snippet donutPanel(
-  label: string,
-  panelKey: PanelKey,
-  total: number,
-  slices: typeof animatedExpenseSlices,
-  txns: TransactionDto[],
-  allTxns: TransactionDto[],
-  hidden: { categoryId: string; name: string; amountMinorUnits: number }[],
+<!-- The change in money, said first and loudest. A share-of-total change alone
+     would be actively misleading: when the panel's own total moves, a category
+     can take a *larger share* of it while costing *less*, and a row saying
+     only "+3pp" would report that as a rise. The relative change rides along
+     after it, muted, for the size the absolute figure can't convey. -->
+{#snippet deltaChip(
+  panel: PanelKey,
+  row: { amountMinorUnits: number; amountB: number; deltaMinor: number; deltaRatio: number | null },
 )}
+  <span class="delta {favourability(panel, row.deltaMinor) ?? 'flat'}">
+    {#if row.deltaMinor === 0}
+      <!-- "= ±€0,00 0%" is three tokens agreeing that nothing happened. One
+           says it. -->
+      <span class="delta-flat-text">no change</span>
+    {:else}
+      <!-- The arrow says up or down on its own, so the good/bad colouring is a
+           second reading of the same fact rather than the only one — the
+           difference survives being printed, and being colour-blind. -->
+      <span class="delta-arrow" aria-hidden="true">{row.deltaMinor > 0 ? "▲" : "▼"}</span>
+      <span class="delta-amount">{formatDelta(row.deltaMinor, currency)}</span>
+      <span class="delta-ratio">{formatRatio(row)}</span>
+    {/if}
+  </span>
+{/snippet}
+
+<!-- The comparison period's own figures, under the current period's rather
+     than beside them. Side by side as "X% vs Y%" the two would compete for
+     which one is *the* number; stacked and muted, the top line still reads as
+     the answer and the one below as what it is being measured against.
+
+     The delta rides at the end of this line rather than on the one above.
+     Sharing a line with the name it left too little room for the name itself,
+     which ellipsised down to "S…" and "Dinin…" — and the name is the one thing
+     in the row nothing else can stand in for. Down here it also sits directly
+     beside the two figures it is the difference of, and the top line stays
+     byte-identical to the non-comparing view, so turning Compare on adds a
+     line rather than reflowing the one that was already there. It keeps colour
+     and weight against a muted row, so it still reads first. -->
+{#snippet priorLine(
+  panel: PanelKey,
+  panelLabel: string,
+  row: {
+    amountMinorUnits: number;
+    amountB: number;
+    percentB: number;
+    deltaMinor: number;
+    deltaRatio: number | null;
+  },
+)}
+  <div class="prior-row">
+    <span class="prior-label">{compareLabel}</span>
+    <span class="amount">{formatCurrency(row.amountB, currency)}</span>
+    <span
+      class="percent"
+      title={`Share of ${panelLabel.toLowerCase()} in ${compareLabel.toLowerCase()}`}
+      >{row.percentB.toFixed(1)}%</span
+    >
+    {@render deltaChip(panel, row)}
+  </div>
+{/snippet}
+
+<!-- The bar, with the comparison period's share marked on the same track as a
+     tick rather than drawn as a second bar or hatched over the first.
+     The track's length already encodes share-of-total; a hatch laid over it
+     would be a second, different quantity on the same pixels, which reads as
+     "part of this bar" rather than as "where this was before". A tick is a
+     reference mark on the scale that's already there: past it means grown,
+     short of it means shrunk, and it needs no legend to say so. -->
+{#snippet comparedBar(slice: { color: string; animatedPercent: number; percentB: number })}
+  <div class="bar-track">
+    <div
+      class="bar-fill"
+      style={`width:${slice.animatedPercent}%;background-color:${slice.color}`}
+    ></div>
+    {#if compareActive && slice.percentB > 0}
+      <div
+        class="bar-tick"
+        style={`left:${Math.min(slice.percentB, 100) * fillProgress}%`}
+        title={`${slice.percentB.toFixed(1)}% in ${compareLabel.toLowerCase()}`}
+      ></div>
+    {/if}
+  </div>
+{/snippet}
+
+<!-- One object rather than a positional list: comparing doubled almost every
+     argument (a total and a total-before, a period's rows and the other
+     period's), and eight same-typed positional arrays is a call site nobody
+     can read or safely reorder. -->
+{#snippet donutPanel(p: {
+  label: string;
+  panelKey: PanelKey;
+  total: number;
+  totalB: number;
+  slices: typeof animatedExpenseSlices;
+  txns: TransactionDto[];
+  txnsB: TransactionDto[];
+  allTxns: TransactionDto[];
+  allTxnsB: TransactionDto[];
+  hidden: { categoryId: string; name: string; amountMinorUnits: number }[];
+})}
+  {@const label = p.label}
+  {@const panelKey = p.panelKey}
+  {@const total = p.total}
+  {@const slices = p.slices}
+  {@const hidden = p.hidden}
   <div class="graph-column">
     <div class="graph-graphics">
       <h2 class="panel-title">{label}</h2>
@@ -615,13 +1162,23 @@
         <div class="donut-center">
           <span class="total">{formatCurrency(total, currency)}</span>
           <span class="label">{label}</span>
+          {#if compareActive}
+            {@const delta = total - p.totalB}
+            <span class="center-delta {favourability(panelKey, delta) ?? 'flat'}">
+              {formatDelta(delta, currency)}
+            </span>
+            <span class="center-was">was {formatCurrency(p.totalB, currency)}</span>
+          {/if}
         </div>
       </div>
 
       <!-- Rendered even when empty: it holds the column that keeps this panel's
            donut horizontally aligned with the other panel's. -->
+      <!-- Only categories with a slice to point at. A comparison row for a
+           category that has nothing in this period would be a colour swatch
+           beside a name with no matching arc anywhere on the ring. -->
       <ul class="legend">
-        {#each slices as slice (slice.categoryId)}
+        {#each slices.filter((s) => s.amountMinorUnits > 0) as slice (slice.categoryId)}
           <li
             class:dimmed={hoveredCategoryId !== null && hoveredCategoryId !== slice.categoryId}
             onmouseenter={() => (hoveredCategoryId = slice.categoryId)}
@@ -639,9 +1196,13 @@
     {:else}
       <ul class="breakdown">
         {#each slices as slice (slice.categoryId)}
-          {@const hasChildren = hasVisibleSubcategories(allTxns, slice.categoryId)}
+          {@const hasChildren = hasVisibleSubcategories(
+            p.allTxns,
+            p.allTxnsB,
+            slice.categoryId,
+          )}
           {@const expanded = expandedCategoryIds[panelKey].has(slice.categoryId)}
-          {@const subHidden = hiddenRows(panelKey, allTxns, slice.categoryId)}
+          {@const subHidden = hiddenRows(panelKey, p.allTxns, slice.categoryId)}
           <li
             class:dimmed={hoveredCategoryId !== null && hoveredCategoryId !== slice.categoryId}
             onmouseenter={() => (hoveredCategoryId = slice.categoryId)}
@@ -662,12 +1223,10 @@
                   <span class="amount">{formatCurrency(slice.amountMinorUnits, currency)}</span>
                   <span class="percent">{slice.percent.toFixed(1)}%</span>
                 </div>
-                <div class="bar-track">
-                  <div
-                    class="bar-fill"
-                    style={`width:${slice.animatedPercent}%;background-color:${slice.color}`}
-                  ></div>
-                </div>
+                {@render comparedBar(slice)}
+                {#if compareActive}
+                  {@render priorLine(panelKey, p.label, slice)}
+                {/if}
               </button>
               {@render goToLink(panelKey, slice.categoryId, slice.name)}
               {@render eyeToggle(panelKey, slice.categoryId, slice.name, false)}
@@ -675,7 +1234,7 @@
 
             {#if hasChildren && expanded}
               <ul class="sub-breakdown">
-                {#each subCategoryBreakdown(txns, slice.categoryId, total) as sub (sub.categoryId)}
+                {#each subCategoryBreakdown(p.txns, p.txnsB, slice.categoryId, total) as sub (sub.categoryId)}
                   <li class="sub-row">
                     <div class="breakdown-row">
                       <div class="row-main">
@@ -705,7 +1264,17 @@
                             class="bar-fill"
                             style={`width:${sub.percent}%;background-color:${sub.color}`}
                           ></div>
+                          {#if compareActive && sub.percentB > 0}
+                            <div
+                              class="bar-tick"
+                              style={`left:${Math.min(sub.percentB, 100)}%`}
+                              title={`${sub.percentB.toFixed(1)}% of ${slice.name} in ${compareLabel.toLowerCase()}`}
+                            ></div>
+                          {/if}
                         </div>
+                        {#if compareActive}
+                          {@render priorLine(panelKey, slice.name, sub)}
+                        {/if}
                       </div>
                       <!-- A parent's transactions logged directly against it
                            (rather than a child) surface as a sub-row carrying
@@ -782,30 +1351,46 @@
   <p>Loading…</p>
 {:else}
   <div class="layout">
-    {@render donutPanel(
-      "Expenses",
-      "expense",
-      expenseData.total,
-      animatedExpenseSlices,
-      visibleExpenseTransactions,
-      expenseTransactions,
-      expenseHiddenRows,
-    )}
+    {@render donutPanel({
+      label: "Expenses",
+      panelKey: "expense",
+      total: expenseData.total,
+      totalB: expenseData.totalB,
+      slices: animatedExpenseSlices,
+      txns: visibleExpenseTransactions,
+      txnsB: visibleExpenseTransactionsB,
+      allTxns: expenseTransactions,
+      allTxnsB: reportableTransactionsB.filter((t) => t.amount_minor_units < 0),
+      hidden: expenseHiddenRows,
+    })}
 
     <div class="net-summary">
       <span class="net-summary-label">Left this period</span>
       <strong>{formatCurrency(netLeftMinorUnits, currency)}</strong>
+      {#if compareActive}
+        {@const delta = netLeftMinorUnits - netLeftMinorUnitsB}
+        <!-- Money left over is the one figure on this page where more is
+             simply better, whichever panel it came from — so unlike a
+             category row it takes its verdict straight from the sign. -->
+        <span class="net-delta {delta > 0 ? 'good' : delta < 0 ? 'bad' : 'flat'}">
+          {formatDelta(delta, currency)}
+        </span>
+        <span class="net-was">was {formatCurrency(netLeftMinorUnitsB, currency)}</span>
+      {/if}
     </div>
 
-    {@render donutPanel(
-      "Income",
-      "income",
-      incomeData.total,
-      animatedIncomeSlices,
-      visibleIncomeTransactions,
-      incomeTransactions,
-      incomeHiddenRows,
-    )}
+    {@render donutPanel({
+      label: "Income",
+      panelKey: "income",
+      total: incomeData.total,
+      totalB: incomeData.totalB,
+      slices: animatedIncomeSlices,
+      txns: visibleIncomeTransactions,
+      txnsB: visibleIncomeTransactionsB,
+      allTxns: incomeTransactions,
+      allTxnsB: reportableTransactionsB.filter((t) => t.amount_minor_units > 0),
+      hidden: incomeHiddenRows,
+    })}
   </div>
 {/if}
 
@@ -825,7 +1410,9 @@
   .range-bar {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 0.75rem;
+    row-gap: 0.6rem;
     margin-bottom: 1.5rem;
   }
 
@@ -847,6 +1434,257 @@
   .range-buttons button.active {
     background-color: var(--color-accent);
     color: var(--color-accent-contrast);
+  }
+
+  .period-nav {
+    display: flex;
+    align-items: center;
+    gap: 0.15rem;
+  }
+
+  .period-nav .nav-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: transparent;
+    color: inherit;
+    padding: 0.3rem;
+    border-radius: 4px;
+    cursor: pointer;
+    opacity: 0.7;
+    transition:
+      opacity 0.15s ease,
+      background-color 0.15s ease;
+  }
+
+  .period-nav .nav-button:hover,
+  .period-nav .nav-button:focus-visible {
+    opacity: 1;
+    background-color: var(--color-shade-3);
+  }
+
+  .period-label {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.05rem;
+    /* Wide enough that stepping between months of different name lengths
+       doesn't shuffle the two arrows left and right under the pointer. */
+    min-width: 11rem;
+    border: none;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    padding: 0.15rem 0.4rem;
+    border-radius: 6px;
+    line-height: 1.2;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+  }
+
+  .period-label:disabled {
+    cursor: default;
+  }
+
+  .period-label:not(:disabled):hover {
+    background-color: var(--color-shade-3);
+  }
+
+  .period-name {
+    font-size: 0.9rem;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .period-label.stepped .period-name {
+    color: var(--color-accent);
+  }
+
+  .period-span {
+    font-size: 0.7rem;
+    opacity: 0.55;
+    white-space: nowrap;
+  }
+
+  .period-progress {
+    font-size: 0.75rem;
+    font-style: italic;
+    opacity: 0.55;
+    white-space: nowrap;
+  }
+
+  /* The comparison period's stepper is deliberately the same control as the
+     primary one, just without the reset (there is no "now" for it to return
+     to) — the two periods are peers, and giving the second one a different
+     shape would suggest it is a setting rather than a period. */
+  .period-label.static {
+    cursor: default;
+  }
+
+  .vs {
+    font-size: 0.8rem;
+    opacity: 0.5;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .compare-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-left: auto;
+    background-color: var(--color-shade-3);
+    color: inherit;
+    border: none;
+    border-radius: 6px;
+    padding: 0.45rem 0.9rem;
+    font-size: 0.9rem;
+    font-family: inherit;
+    cursor: pointer;
+  }
+
+  .compare-btn.active {
+    background-color: var(--color-accent);
+    color: var(--color-accent-contrast);
+  }
+
+  .compare-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
+  .mismatch {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin: -0.75rem 0 1.25rem;
+    font-size: 0.82rem;
+    color: #e0a33c;
+  }
+
+  /* Delta type is sized down from the amount beside it and coloured by whether
+     the change is *good*, not by its sign — see `favourability`. `.flat` gets
+     no colour at all: an unchanged figure has no verdict to give. */
+  .delta {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.3rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  /* Not `--color-success` / `--color-danger`: this app's danger colour is a
+     light teal on purpose (see app.css — it has to sit beside the teal
+     palette), and success *is* the accent, so the two resolve to nearly the
+     same colour. A good/bad pair has to be opposites to be worth printing, so
+     these take the accent's teal against the chart palette's coral — a hue
+     already validated against this dark surface for CVD and contrast. The
+     arrow in the text carries the same meaning independently, so nothing here
+     rests on colour alone. */
+  .delta.good,
+  .net-delta.good,
+  .center-delta.good {
+    color: #00d6be;
+  }
+
+  .delta.bad,
+  .net-delta.bad,
+  .center-delta.bad {
+    color: #ed613f;
+  }
+
+  .delta.flat,
+  .net-delta.flat,
+  .center-delta.flat {
+    opacity: 0.5;
+  }
+
+  .delta-arrow {
+    font-size: 0.62rem;
+  }
+
+  .delta-flat-text {
+    font-size: 0.72rem;
+    font-weight: 400;
+    font-style: italic;
+  }
+
+  .delta-ratio {
+    font-size: 0.72rem;
+    font-weight: 400;
+    opacity: 0.75;
+  }
+
+  /* Indented to clear the chevron and dot columns above it, so it hangs under
+     the name it belongs to rather than starting a column of its own. */
+  .prior-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.2rem;
+    padding-left: 1.2rem;
+    font-size: 0.78rem;
+    opacity: 0.6;
+  }
+
+  .prior-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .prior-row .percent {
+    font-weight: 400;
+  }
+
+  /* The row around it is dimmed to 0.6; the delta undoes that so it keeps its
+     full colour and stays the first thing read on this line. */
+  .prior-row .delta {
+    opacity: 1;
+    margin-left: 0.15rem;
+  }
+
+  /* The comparison period's share, marked on the bar's own scale. Two pixels
+     of the page's background either side keep it legible against a bar fill
+     of any colour without needing a colour of its own. */
+  .bar-tick {
+    position: absolute;
+    top: -2px;
+    bottom: -2px;
+    width: 2px;
+    margin-left: -1px;
+    background-color: var(--color-text, #fff);
+    box-shadow: 0 0 0 1.5px var(--color-bg, #000);
+    border-radius: 1px;
+    opacity: 0.85;
+  }
+
+  .center-delta {
+    margin-top: 0.25rem;
+    font-size: 0.95rem;
+    font-weight: 700;
+  }
+
+  .center-was,
+  .net-was {
+    font-size: 0.7rem;
+    opacity: 0.55;
+  }
+
+  .net-delta {
+    display: block;
+    margin-top: 0.2rem;
+    font-size: 0.95rem;
+    font-weight: 700;
+  }
+
+  .net-was {
+    display: block;
+    margin-top: 0.1rem;
   }
 
   .net-summary {
@@ -878,7 +1716,13 @@
 
   .layout {
     display: grid;
-    grid-template-columns: 1fr auto 1fr;
+    /* `minmax(0, 1fr)`, not `1fr`: a bare `1fr` track floors at its content's
+       min-width, and the comparison delta made a breakdown row wide enough to
+       push the two columns past the page and out under the window edge. With
+       the floor removed the track takes its half and the row absorbs it the
+       way it was already built to — the legend gives width back, the category
+       name ellipsises. */
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
     gap: 2rem;
     align-items: start;
   }
@@ -1247,19 +2091,42 @@
     flex: 1;
   }
 
+  /* Both nowrap: with a delta chip competing for the row's width, "€2 500,00"
+     was breaking after the "€2" and reading as two numbers. `.name` is the
+     only thing in the row that may give ground, and it ellipsises. */
   .amount {
     opacity: 0.75;
+    white-space: nowrap;
   }
 
   .percent {
     font-weight: 600;
+    white-space: nowrap;
+  }
+
+  /* `min-width: 0` is what actually lets it ellipsise: a flex item defaults to
+     `min-width: auto`, which refuses to shrink below its own text and pushes
+     the row's trailing actions off the edge of the column instead. */
+  .row .name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .bar-track {
+    position: relative;
     height: 0.4rem;
     border-radius: 999px;
     background-color: var(--color-shade-3);
-    overflow: hidden;
+    /* Not `overflow: hidden` any more — the comparison tick is deliberately
+       taller than the track so it reads as a mark *on* the scale rather than
+       as a segment of the bar, and clipping would cut its ends off. The fill
+       keeps its own rounding instead. */
+  }
+
+  .bar-fill {
+    border-radius: 999px;
   }
 
   .bar-fill {

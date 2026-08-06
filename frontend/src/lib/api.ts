@@ -540,8 +540,15 @@ export function buildCategoryOptions(
 
 export type RangeMode = "month" | "year" | "all" | "custom";
 
+/** Local-calendar YYYY-MM-DD. Deliberately not `toISOString()`, which converts
+ * to UTC first and so rolls a local midnight back to the previous day anywhere
+ * east of Greenwich — in Paris that made "this month" resolve to 31 Jul – 30
+ * Aug and `todayIsoDate()` return yesterday. Transaction dates are plain
+ * calendar days with no timezone of their own, so the only correct reading of
+ * a `Date` here is its local components. */
 function toIsoDate(d: Date): string {
-  return d.toISOString().slice(0, 10);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 export function todayIsoDate(): string {
@@ -556,26 +563,126 @@ export function oneMonthAgoIsoDate(): string {
   return toIsoDate(new Date(now.getFullYear(), now.getMonth() - 1, now.getDate()));
 }
 
-/** Computes the [start, end] ISO date bounds for a range mode. */
+/** Computes the [start, end] ISO date bounds for a range mode.
+ *
+ * `offset` steps whole periods away from the one containing today: -1 is last
+ * month (or last year), +1 the next. It is the only way to name a period other
+ * than the current one without falling back to `custom` and two hand-typed
+ * dates. `all` has exactly one period and `custom`'s bounds are given
+ * outright, so both ignore it.
+ *
+ * The stepping goes through the `Date` constructor's own month overflow
+ * (month 12 is next January, month -1 last December) rather than arithmetic on
+ * the components, so December → January needs no wrap case of its own. Day 0
+ * of the following month is the last day of this one, which is likewise how
+ * month lengths and leap years stay someone else's problem. */
 export function computeRange(
   mode: RangeMode,
-  custom?: { start: string; end: string },
+  opts?: { start?: string; end?: string; offset?: number },
 ): { start: string; end: string } {
   const now = new Date();
+  const offset = opts?.offset ?? 0;
   if (mode === "month") {
     return {
-      start: toIsoDate(new Date(now.getFullYear(), now.getMonth(), 1)),
-      end: toIsoDate(new Date(now.getFullYear(), now.getMonth() + 1, 0)),
+      start: toIsoDate(new Date(now.getFullYear(), now.getMonth() + offset, 1)),
+      end: toIsoDate(new Date(now.getFullYear(), now.getMonth() + offset + 1, 0)),
     };
   }
   if (mode === "year") {
     return {
-      start: toIsoDate(new Date(now.getFullYear(), 0, 1)),
-      end: toIsoDate(new Date(now.getFullYear(), 11, 31)),
+      start: toIsoDate(new Date(now.getFullYear() + offset, 0, 1)),
+      end: toIsoDate(new Date(now.getFullYear() + offset, 11, 31)),
     };
   }
   if (mode === "all") {
     return { start: "0001-01-01", end: "9999-12-31" };
   }
-  return custom ?? { start: toIsoDate(now), end: toIsoDate(now) };
+  return opts?.start && opts?.end
+    ? { start: opts.start, end: opts.end }
+    : { start: toIsoDate(now), end: toIsoDate(now) };
+}
+
+const MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+/** Human name for the period a mode and offset select — "August 2026", "2025",
+ * "All time", "1–6 Aug 2026".
+ *
+ * Built from the mode and offset rather than by inspecting the computed
+ * bounds: a month's label is "August 2026" whether or not today happens to
+ * fall inside it, and reading that back out of two ISO strings would mean
+ * re-deriving what `computeRange` already knew. `custom` is the exception —
+ * there the bounds *are* the only description there is. */
+export function describeRange(
+  mode: RangeMode,
+  offset: number,
+  custom?: { start: string; end: string },
+): string {
+  const now = new Date();
+  if (mode === "month") {
+    const d = new Date(now.getFullYear(), now.getMonth() + offset, 1);
+    return `${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`;
+  }
+  if (mode === "year") return String(now.getFullYear() + offset);
+  if (mode === "all") return "All time";
+  if (!custom) return "Custom";
+  return formatDateSpan(custom.start, custom.end);
+}
+
+/** The span of the same length immediately before `[start, end]` — the only
+ * defensible "previous period" for a hand-picked range, which unlike a month
+ * or a year has no calendar predecessor of its own. Comparing 30 days against
+ * 30 days is a fair comparison; comparing them against a whole month is not,
+ * which is why this matches the length rather than snapping to a boundary. */
+export function precedingSpan(
+  start: string,
+  end: string,
+): { start: string; end: string } {
+  const s = new Date(`${start}T00:00:00`);
+  const e = new Date(`${end}T00:00:00`);
+  const days = Math.round((e.getTime() - s.getTime()) / 86400000) + 1;
+  const bEnd = new Date(s);
+  bEnd.setDate(bEnd.getDate() - 1);
+  const bStart = new Date(bEnd);
+  bStart.setDate(bStart.getDate() - (days - 1));
+  return { start: toIsoDate(bStart), end: toIsoDate(bEnd) };
+}
+
+/** How many whole days a span covers, both ends included. Two periods of
+ * different lengths can still be compared, but the difference has to be
+ * visible when they are. */
+export function spanDays(start: string, end: string): number {
+  const s = new Date(`${start}T00:00:00`).getTime();
+  const e = new Date(`${end}T00:00:00`).getTime();
+  return Math.round((e - s) / 86400000) + 1;
+}
+
+/** A date span with the parts both ends share said once — "1–6 Aug 2026",
+ * "28 Jul – 6 Aug 2026", "6 Dec 2025 – 6 Aug 2026". */
+export function formatDateSpan(start: string, end: string): string {
+  const a = new Date(`${start}T00:00:00`);
+  const b = new Date(`${end}T00:00:00`);
+  const shortMonth = (d: Date) => MONTH_NAMES[d.getMonth()].slice(0, 3);
+  if (a.getFullYear() === b.getFullYear()) {
+    if (a.getMonth() === b.getMonth()) {
+      return `${a.getDate()}–${b.getDate()} ${shortMonth(b)} ${b.getFullYear()}`;
+    }
+    return `${a.getDate()} ${shortMonth(a)} – ${b.getDate()} ${shortMonth(b)} ${b.getFullYear()}`;
+  }
+  return (
+    `${a.getDate()} ${shortMonth(a)} ${a.getFullYear()} – ` +
+    `${b.getDate()} ${shortMonth(b)} ${b.getFullYear()}`
+  );
 }
