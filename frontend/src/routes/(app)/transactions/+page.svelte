@@ -1185,14 +1185,28 @@
       const survives = (t: TransactionDto) =>
         !idSet.has(t.id) &&
         !(t.transfer_group_id && groupIds.has(t.transfer_group_id));
+      const expenseCountBefore = expenseRows.length;
+      const incomeCountBefore = incomeRows.length;
       transactions = transactions.filter(survives);
       expenseRows = expenseRows.filter(survives);
       incomeRows = incomeRows.filter(survives);
+      // expenseOffset/incomeOffset are backend fetch cursors, not derived from
+      // array length — removing already-loaded rows shifts every later
+      // backend row up by the number removed, so the cursor must shrink by
+      // that same amount or the next page fetch skips the rows that just
+      // moved into the gap (and can wrongly mark the list "exhausted" if the
+      // skipped-past fetch comes back short).
+      expenseOffset -= expenseCountBefore - expenseRows.length;
+      incomeOffset -= incomeCountBefore - incomeRows.length;
       selectionSet(kind).clear();
       setLastClickedId(kind, null);
       // A transfer's counterpart can land in either list's count, so both
       // are refreshed regardless of which list the selection was made in.
       await Promise.all([refreshCount("expense"), refreshCount("income")]);
+      // The IntersectionObserver only fires on an intersection *change*; a
+      // sentinel that stays in view after rows vanish from under it would
+      // otherwise never re-trigger, leaving the list stuck empty.
+      await fillViewport();
       toast.success(
         outcome.transfer_groups > 0
           ? `${outcome.deleted} transactions deleted (${outcome.transfer_groups} transfer${outcome.transfer_groups === 1 ? "" : "s"} removed on both accounts).`
