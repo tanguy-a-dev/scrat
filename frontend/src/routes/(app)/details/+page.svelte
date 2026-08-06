@@ -286,6 +286,14 @@
     };
   });
 
+  // On `window` rather than an element, so the shortcut works wherever the
+  // user's focus happens to be on the page — and torn down with the component,
+  // since it steps *this* page's period and means nothing anywhere else.
+  onMount(() => {
+    window.addEventListener("keydown", handleKeydown);
+    return () => window.removeEventListener("keydown", handleKeydown);
+  });
+
   async function load() {
     loading = true;
     error = "";
@@ -340,28 +348,40 @@
     load();
   }
 
+  /** The present is the ceiling: offset 0 is the period containing today, and
+   * nothing may step past it. A future month holds no spending to look at, so
+   * an arrow leading there only offers the user a series of empty pages to
+   * walk back out of.
+   *
+   * Both periods are capped, not just the primary one — the comparison period
+   * moves with it (see `stepPeriod`), so capping only the visible arrow would
+   * let the second period be carried over the line by the first. */
+  let canStepForward = $derived(rangeOffset < 0);
+  let canStepCompareForward = $derived(compareOffset < 0);
+
   /** Steps the selected period, and resets what was expanded for the same
    * reason `setRange` does: the rows under an open category are about to be a
-   * different month's breakdown entirely.
-   *
-   * Stepping forward past the current period is allowed rather than walled
-   * off. Nothing stops a ledger holding future-dated rows, and an arrow that
-   * greys out at "now" would hide them; the label going accented is what says
-   * you are no longer looking at the present. */
+   * different month's breakdown entirely. */
   function stepPeriod(delta: number) {
-    rangeOffset += delta;
+    const next = Math.min(rangeOffset + delta, 0);
+    if (next === rangeOffset) return;
+    rangeOffset = next;
     // The comparison period travels with it, holding the gap the user set up.
     // Someone comparing August against June is asking about a two-month gap,
     // not about June specifically — walking back to July should show May, not
-    // pin June and silently turn the question into a different one.
-    compareOffset += delta;
+    // pin June and silently turn the question into a different one. It gets
+    // its own ceiling rather than blocking the primary arrow: the user pressed
+    // the arrow for *this* period, and refusing to move it because the other
+    // one is already at the present would be answering a question they didn't
+    // ask.
+    compareOffset = Math.min(compareOffset + delta, 0);
     expandedCategoryIds = { expense: new Set(), income: new Set() };
     load();
   }
 
   function resetPeriod() {
     if (rangeOffset === 0) return;
-    compareOffset -= rangeOffset;
+    compareOffset = Math.min(compareOffset - rangeOffset, 0);
     rangeOffset = 0;
     expandedCategoryIds = { expense: new Set(), income: new Set() };
     load();
@@ -373,9 +393,39 @@
    * same one, and skipping over it would move the period further than the
    * arrow the user pressed says it should. */
   function stepCompare(delta: number) {
-    compareOffset += delta;
+    const next = Math.min(compareOffset + delta, 0);
+    if (next === compareOffset) return;
+    compareOffset = next;
     expandedCategoryIds = { expense: new Set(), income: new Set() };
     load();
+  }
+
+  /** ← / → step the period, matching the arrows in the range bar.
+   *
+   * Bare arrows only. `Cmd`/`Alt` + arrow is already the app's page-to-page
+   * navigation (see `CommandPalette`), and leaving every modifier alone keeps
+   * the browser's own back/forward gestures intact.
+   *
+   * Three things have to be true before a keypress is ours: the range mode is
+   * one that *has* neighbouring periods, the user isn't typing (an arrow in a
+   * text field moves the caret), and no overlay is up — with the command
+   * palette open, arrows would silently walk the months behind it. */
+  function handleKeydown(event: KeyboardEvent) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+    if (!steppable) return;
+    const target = event.target;
+    if (
+      target instanceof HTMLElement &&
+      (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)
+    ) {
+      return;
+    }
+    if (document.querySelector(".backdrop")) return;
+    const delta = event.key === "ArrowLeft" ? -1 : 1;
+    if (delta > 0 && !canStepForward) return;
+    event.preventDefault();
+    stepPeriod(delta);
   }
 
   function toggleCompare() {
@@ -838,7 +888,7 @@
         class="nav-button"
         onclick={() => stepPeriod(-1)}
         aria-label={`Previous ${rangeMode}`}
-        title={`Previous ${rangeMode}`}
+        title={`Previous ${rangeMode} (←)`}
       >
         <ChevronLeft size={16} />
       </button>
@@ -856,12 +906,18 @@
         <span class="period-name">{periodLabel}</span>
         <span class="period-span">{rangeSpan}</span>
       </button>
+      <!-- Disabled rather than hidden at the present: a control that vanishes
+           at the end of its range leaves the label sliding sideways under the
+           pointer, and says nothing about why. -->
       <button
         type="button"
         class="nav-button"
+        disabled={!canStepForward}
         onclick={() => stepPeriod(1)}
         aria-label={`Next ${rangeMode}`}
-        title={`Next ${rangeMode}`}
+        title={canStepForward
+          ? `Next ${rangeMode} (→)`
+          : `${rangeMode === "month" ? "This month" : "This year"} is the latest there is`}
       >
         <ChevronRight size={16} />
       </button>
@@ -898,9 +954,12 @@
         <button
           type="button"
           class="nav-button"
+          disabled={!canStepCompareForward}
           onclick={() => stepCompare(1)}
           aria-label={`Next comparison ${rangeMode}`}
-          title={`Next comparison ${rangeMode}`}
+          title={canStepCompareForward
+            ? `Next comparison ${rangeMode}`
+            : `${rangeMode === "month" ? "This month" : "This year"} is the latest there is`}
         >
           <ChevronRight size={16} />
         </button>
@@ -1458,10 +1517,15 @@
       background-color 0.15s ease;
   }
 
-  .period-nav .nav-button:hover,
-  .period-nav .nav-button:focus-visible {
+  .period-nav .nav-button:hover:not(:disabled),
+  .period-nav .nav-button:focus-visible:not(:disabled) {
     opacity: 1;
     background-color: var(--color-shade-3);
+  }
+
+  .period-nav .nav-button:disabled {
+    opacity: 0.22;
+    cursor: default;
   }
 
   .period-label {
