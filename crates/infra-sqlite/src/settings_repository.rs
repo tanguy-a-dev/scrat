@@ -37,6 +37,14 @@ pub fn set_default_account_id(conn: &Connection, id: &str) -> Result<(), Reposit
     set_setting(conn, "default_account_id", id)
 }
 
+pub fn get_rent_category_id(conn: &Connection) -> Result<Option<String>, RepositoryError> {
+    get_setting(conn, "rent_category_id")
+}
+
+pub fn set_rent_category_id(conn: &Connection, id: &str) -> Result<(), RepositoryError> {
+    set_setting(conn, "rent_category_id", id)
+}
+
 /// Stored as the decimal string form of the minutes value (`"0"` for
 /// "never"). `None` means nobody has changed it from the app default yet.
 pub fn get_auto_lock_minutes(conn: &Connection) -> Result<Option<String>, RepositoryError> {
@@ -102,6 +110,33 @@ mod tests {
         assert_eq!(
             get_default_account_id(&conn).unwrap(),
             Some("acc-2".to_string())
+        );
+    }
+
+    #[test]
+    fn get_rent_category_id_returns_none_when_unset() {
+        let conn = test_conn();
+        assert_eq!(get_rent_category_id(&conn).unwrap(), None);
+    }
+
+    #[test]
+    fn set_then_get_rent_category_id_roundtrips() {
+        let conn = test_conn();
+        set_rent_category_id(&conn, "cat-1").unwrap();
+        assert_eq!(
+            get_rent_category_id(&conn).unwrap(),
+            Some("cat-1".to_string())
+        );
+    }
+
+    #[test]
+    fn set_rent_category_id_overwrites_previous_value() {
+        let conn = test_conn();
+        set_rent_category_id(&conn, "cat-1").unwrap();
+        set_rent_category_id(&conn, "cat-2").unwrap();
+        assert_eq!(
+            get_rent_category_id(&conn).unwrap(),
+            Some("cat-2".to_string())
         );
     }
 

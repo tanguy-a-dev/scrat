@@ -1,5 +1,6 @@
 use scrat_application::category_service::CategoryService;
 use scrat_domain::category::{Category, CategoryId};
+use scrat_domain::ports::CategoryRepository;
 use scrat_infra_sqlite::{Connection, SqliteCategoryRepository};
 use serde::Serialize;
 use tauri::State;
@@ -133,4 +134,51 @@ pub fn delete_category(
     let id = parse_id(&id)?;
     let reassign_to = parse_optional_id(reassign_to)?;
     with_service(&state, |s| s.delete_category(id, reassign_to))
+}
+
+/// Resolves the category the "Mean monthly spend" card treats as rent:
+/// whatever's configured in settings, as long as it still exists —
+/// otherwise falls back to a category literally named "Rent"
+/// (case-insensitive), which was the original, non-configurable heuristic.
+/// Returns `None` when neither resolves to anything.
+pub(crate) fn resolve_rent_category_id(conn: &Connection) -> Result<Option<CategoryId>, String> {
+    let repo = SqliteCategoryRepository::new(conn);
+    let service = CategoryService::new(&repo);
+    let categories = service.list_categories().map_err(|e| e.to_string())?;
+
+    if let Some(id_str) =
+        scrat_infra_sqlite::get_rent_category_id(conn).map_err(|e| e.to_string())?
+        && let Ok(id) = CategoryId::parse(&id_str)
+        && categories.iter().any(|c| c.id() == id)
+    {
+        return Ok(Some(id));
+    }
+
+    Ok(categories
+        .iter()
+        .find(|c| c.name().as_str().trim().eq_ignore_ascii_case("rent"))
+        .map(|c| c.id()))
+}
+
+#[tauri::command]
+pub fn get_rent_category(state: State<DbState>) -> Result<Option<String>, String> {
+    let guard = state.0.lock().unwrap();
+    let conn = guard
+        .as_ref()
+        .ok_or_else(|| "database is locked".to_string())?;
+    Ok(resolve_rent_category_id(conn)?.map(|id| id.as_string()))
+}
+
+#[tauri::command]
+pub fn set_rent_category(state: State<DbState>, id: String) -> Result<(), String> {
+    let id = parse_id(&id)?;
+    let guard = state.0.lock().unwrap();
+    let conn = guard
+        .as_ref()
+        .ok_or_else(|| "database is locked".to_string())?;
+    let repo = SqliteCategoryRepository::new(conn);
+    repo.find_by_id(id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "category not found".to_string())?;
+    scrat_infra_sqlite::set_rent_category_id(conn, &id.as_string()).map_err(|e| e.to_string())
 }

@@ -17,8 +17,8 @@ pub use connection::{DbError, create_new, database_exists, rekey, unlock_existin
 pub use csv_mapping_repository::{get_csv_mapping, save_csv_mapping};
 pub use rusqlite::Connection;
 pub use settings_repository::{
-    get_auto_lock_minutes, get_currency_code, get_default_account_id, set_auto_lock_minutes,
-    set_currency_code, set_default_account_id,
+    get_auto_lock_minutes, get_currency_code, get_default_account_id, get_rent_category_id,
+    set_auto_lock_minutes, set_currency_code, set_default_account_id, set_rent_category_id,
 };
 pub use transaction_repository::SqliteTransactionRepository;
 pub use transfer_rule_repository::SqliteTransferRuleRepository;

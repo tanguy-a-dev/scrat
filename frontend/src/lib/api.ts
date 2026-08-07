@@ -301,6 +301,10 @@ export const api = {
     invoke<void>("move_category", { id, parentId }),
   deleteCategory: (id: string, reassignTo: string | null) =>
     invoke<void>("delete_category", { id, reassignTo }),
+  /** The category the "Mean monthly spend" card treats as rent — `null` when
+   * nothing is configured and no category is named "Rent" either. */
+  getRentCategory: () => invoke<string | null>("get_rent_category"),
+  setRentCategory: (id: string) => invoke<void>("set_rent_category", { id }),
 
   listTransactions: (start: string, end: string) =>
     invoke<TransactionDto[]>("list_transactions", { start, end }),

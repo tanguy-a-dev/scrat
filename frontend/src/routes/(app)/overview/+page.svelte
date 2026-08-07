@@ -3,6 +3,7 @@
   import { scale } from "svelte/transition";
   import {
     api,
+    buildCategoryOptions,
     countsTowardTotals,
     formatCurrency,
     formatCurrencyRounded,
@@ -11,6 +12,9 @@
     type RecurringChargeDto,
     type TransactionDto,
   } from "$lib/api";
+  import SearchSelect from "$lib/SearchSelect.svelte";
+  import { EllipsisVertical } from "@lucide/svelte";
+  import { toast } from "$lib/toasts.svelte";
 
   // Matches .bar.income / .dot.savings / etc in the stylesheet below — kept
   // in sync by hand since the tooltip needs the same colors as swatch values.
@@ -45,6 +49,11 @@
   let categories = $state<CategoryDto[]>([]);
   let loading = $state(true);
   let error = $state("");
+
+  // The category the mean-spend card treats as rent — user-configurable via
+  // the card's menu, falling back backend-side to a category literally named
+  // "Rent" when nothing has been chosen yet.
+  let rentCategoryId = $state<string | null>(null);
 
   // Captured once, so every derived figure on the page is anchored to the same
   // "now" rather than each recomputing its own.
@@ -87,16 +96,18 @@
       // Recurring detection has its own (much longer) lookback, decided
       // backend-side — it needs three occurrences of a charge, which a yearly
       // one can only reach across years.
-      const [a, t, r, c] = await Promise.all([
+      const [a, t, r, c, rentId] = await Promise.all([
         api.listAccounts(),
         api.listTransactions(start, end),
         api.listRecurringCharges(),
         api.listCategories(),
+        api.getRentCategory(),
       ]);
       accounts = a;
       transactions = t;
       recurring = r;
       categories = c;
+      rentCategoryId = rentId;
     } catch (e) {
       error = String(e);
     } finally {
@@ -117,14 +128,43 @@
    * the money really did move, so it counts there. */
   let reportableTransactions = $derived(transactions.filter(countsTowardTotals));
 
-  /** Category ids named "Rent" (case-insensitive) — seeded as a subcategory
-   * of Housing, but matched by name rather than a fixed id since the user can
-   * rename or recreate categories. */
-  let rentCategoryIds = $derived(
-    new Set(
-      categories.filter((c) => c.name.trim().toLowerCase() === "rent").map((c) => c.id),
-    ),
-  );
+  let rentCategoryIds = $derived(new Set(rentCategoryId ? [rentCategoryId] : []));
+
+  let categoryOptions = $derived(buildCategoryOptions(categories));
+
+  async function handleRentCategoryChange(categoryId: string) {
+    if (categoryId === rentCategoryId) return;
+    try {
+      await api.setRentCategory(categoryId);
+      rentCategoryId = categoryId;
+    } catch (e) {
+      toast.error(String(e));
+    }
+  }
+
+  // "Mean monthly spend" card menu: the three-dot trigger opens a one-item
+  // menu, which swaps in place for the category picker rather than opening a
+  // second popover — one thing on screen at a time.
+  let rentMenuState = $state<"closed" | "menu" | "edit">("closed");
+  let rentMenuEl: HTMLElement | undefined = $state();
+
+  $effect(() => {
+    if (rentMenuState === "closed") return;
+    function handleClickOutside(event: MouseEvent) {
+      if (rentMenuEl && !rentMenuEl.contains(event.target as Node)) {
+        rentMenuState = "closed";
+      }
+    }
+    function handleKeydown(event: KeyboardEvent) {
+      if (event.key === "Escape") rentMenuState = "closed";
+    }
+    window.addEventListener("mousedown", handleClickOutside);
+    window.addEventListener("keydown", handleKeydown);
+    return () => {
+      window.removeEventListener("mousedown", handleClickOutside);
+      window.removeEventListener("keydown", handleKeydown);
+    };
+  });
 
   /** The last `monthsCount` months (oldest first), zero-filled so a month with
    * no transactions still shows up as an empty bar rather than a gap.
@@ -588,7 +628,43 @@
     </div>
 
     <div class="month-card">
-      <h2>Mean monthly spend</h2>
+      <div class="card-header">
+        <h2>Mean monthly spend</h2>
+        <span class="card-menu" bind:this={rentMenuEl}>
+          <button
+            type="button"
+            class="icon-button"
+            aria-label="Mean monthly spend options"
+            onclick={() => (rentMenuState = rentMenuState === "closed" ? "menu" : "closed")}
+          >
+            <EllipsisVertical size={16} />
+          </button>
+          {#if rentMenuState === "menu"}
+            <div class="menu-popover" role="menu">
+              <button
+                type="button"
+                class="menu-item"
+                onclick={() => (rentMenuState = "edit")}
+              >
+                Edit rent category
+              </button>
+            </div>
+          {:else if rentMenuState === "edit"}
+            <div class="menu-popover menu-edit" role="menu">
+              <span class="menu-label">Edit rent category</span>
+              <SearchSelect
+                options={categoryOptions}
+                value={rentCategoryId ?? ""}
+                onChange={(id) => {
+                  handleRentCategoryChange(id);
+                  rentMenuState = "closed";
+                }}
+                searchPlaceholder="Search category…"
+              />
+            </div>
+          {/if}
+        </span>
+      </div>
       <div class="month-stats">
         <div class="stat">
           <span class="label">With rent</span>
@@ -1053,6 +1129,87 @@
   .month-card h2 {
     font-size: 1rem;
     margin: 0 0 0.9rem;
+  }
+
+  .card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+
+  .card-header h2 {
+    margin: 0 0 0.9rem;
+  }
+
+  .card-menu {
+    position: relative;
+    display: inline-flex;
+  }
+
+  .icon-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    border-radius: 6px;
+    background-color: transparent;
+    color: inherit;
+    padding: 0.3rem;
+    opacity: 0.6;
+    cursor: pointer;
+  }
+
+  .icon-button:hover {
+    opacity: 1;
+    background-color: var(--color-shade-3);
+  }
+
+  .menu-popover {
+    position: absolute;
+    top: calc(100% + 0.3rem);
+    right: 0;
+    z-index: 10;
+    min-width: 12rem;
+    padding: 0.3rem;
+    border-radius: 8px;
+    background-color: var(--color-shade-2);
+    border: 1px solid var(--color-shade-3);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  }
+
+  .menu-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border: none;
+    background: transparent;
+    color: inherit;
+    padding: 0.4rem 0.5rem;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    font-family: inherit;
+    cursor: pointer;
+  }
+
+  .menu-item:hover {
+    background-color: var(--color-shade-3);
+  }
+
+  .menu-edit {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    padding: 0.3rem 0.4rem;
+  }
+
+  .menu-label {
+    font-size: 0.75rem;
+    opacity: 0.7;
+  }
+
+  .menu-edit :global(.search-select) {
+    max-width: none;
   }
 
   .month-stats {
