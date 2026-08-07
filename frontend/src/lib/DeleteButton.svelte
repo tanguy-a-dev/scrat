@@ -81,6 +81,22 @@
 <style>
   .delete-button {
     display: inline-flex;
+    position: relative;
+  }
+
+  /* The confirm step is a transient overlay, not a wider control. In flow it
+     was ~120px wider than the trash button it replaces, and in a table cell
+     that widened the column, the table, and the page — clicking delete on the
+     right-hand (Income) list pushed the whole layout past the right edge of
+     the window and forced a horizontal scroll to reach the buttons being
+     asked about. Pinning the footprint to the trigger's own 2rem and letting
+     the popover grow leftward out of flow means opening it moves nothing.
+     Compact (the bulk-actions pill) keeps the in-flow version: it lives in a
+     flex header with room to grow, and overlaying there would cover the
+     "N selected" count the confirmation is about. */
+  .delete-button:not(.compact) {
+    width: 2rem;
+    height: 2rem;
   }
 
   .confirm-popover {
@@ -90,6 +106,17 @@
     background-color: var(--color-shade-3);
     border-radius: 999px;
     padding: 0.15rem 0.15rem 0.15rem 0.7rem;
+  }
+
+  .delete-button:not(.compact) .confirm-popover {
+    position: absolute;
+    top: 50%;
+    right: 0;
+    transform: translateY(-50%);
+    /* Above the row's own content it slides over, and above the category
+       SearchSelect next door, which sits at z-index 1. */
+    z-index: 5;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
   }
 
   .confirm-text {

@@ -29,7 +29,25 @@
   import DatePicker from "$lib/DatePicker.svelte";
   import { pageViewState } from "$lib/pageCache";
   import { toast } from "$lib/toasts.svelte";
-  import { ArrowUp, FileUp, Pencil, Plus, RotateCcw, Search } from "@lucide/svelte";
+  import {
+    ArrowUp,
+    ChevronDown,
+    FileUp,
+    Pencil,
+    Plus,
+    RotateCcw,
+    Search,
+  } from "@lucide/svelte";
+
+  /** The width at or below which the two lists stack instead of sitting side
+   * by side, and so the width at or below which collapsing one of them means
+   * anything. Side by side both are on screen at once and there is nothing to
+   * collapse *for*.
+   *
+   * Duplicated in the `@media (max-width: 1600px)` rule at the bottom of this
+   * file — CSS can't read a JS constant and JS can't read a media query, so
+   * the two have to be moved together. */
+  const STACKED_MAX_WIDTH_PX = 1600;
 
   function autofocus(node: HTMLElement) {
     node.focus();
@@ -124,6 +142,11 @@
     incomeTypeFilter: "",
     incomeMinAmount: "",
     incomeMaxAmount: "",
+    // Which lists the user has folded away. Remembered like sort and filters
+    // — it's a statement about how they want this page set up, not something
+    // that should quietly undo itself on the next visit.
+    expenseCollapsed: false,
+    incomeCollapsed: false,
     loadedExpenseRows: 0,
     loadedIncomeRows: 0,
     scrollY: 0,
@@ -226,7 +249,14 @@
   let loadingMoreExpense = $state(false);
   let loadingMoreIncome = $state(false);
   let loadingMore = $derived(loadingMoreExpense || loadingMoreIncome);
-  let allTimeExhausted = $derived(expenseExhausted && incomeExhausted);
+  // "All transactions loaded" is a claim about what's on screen, so a folded
+  // list counts as settled rather than as still-loading — otherwise
+  // collapsing one list would leave the footer permanently blank, since that
+  // list deliberately stops paging while it's away.
+  let allTimeExhausted = $derived(
+    (expenseExhausted || isCollapsed("expense")) &&
+      (incomeExhausted || isCollapsed("income")),
+  );
   let sentinel = $state<HTMLDivElement | null>(null);
 
   // Bumped by anything that invalidates the rows on screen for that list —
@@ -272,6 +302,47 @@
   );
   let incomeMinAmount = $state(view.incomeMinAmount);
   let incomeMaxAmount = $state(view.incomeMaxAmount);
+  let expenseCollapsed = $state(view.expenseCollapsed);
+  let incomeCollapsed = $state(view.incomeCollapsed);
+
+  /** Whether the page is in its stacked, one-list-above-the-other layout —
+   * compared against the same breakpoint the stylesheet uses, so the collapse
+   * control appears exactly when the stacking it exists to relieve does.
+   *
+   * Measured from `innerWidth` (bound on `<svelte:window>` below), which is
+   * the same width a `max-width` media query resolves against — both include
+   * the scrollbar gutter, so the two can't disagree about which side of the
+   * breakpoint the window is on. `matchMedia` with a `change` listener would
+   * work too; this needs no listener to add and tear down, and `$derived`
+   * only propagates when the boolean actually flips, so binding a value that
+   * changes on every resize tick costs nothing downstream.
+   *
+   * The `> 0` guard is for the first frame, before the binding is
+   * initialised: an unguarded 0 satisfies "≤ 1600" and would flash the
+   * toggles onto a wide window. */
+  let viewportWidth = $state(0);
+  let stackedLayout = $derived(
+    viewportWidth > 0 && viewportWidth <= STACKED_MAX_WIDTH_PX,
+  );
+
+  /** Collapsed *and* actually folded away. Widening the window back to the
+   * side-by-side layout shows both lists again without discarding the
+   * user's choice, so narrowing it once more folds the same list back up
+   * rather than making them re-collapse it every time they resize. */
+  function isCollapsed(kind: SelectionKind): boolean {
+    if (!stackedLayout) return false;
+    return kind === "expense" ? expenseCollapsed : incomeCollapsed;
+  }
+
+  function toggleCollapsed(kind: SelectionKind) {
+    if (kind === "expense") expenseCollapsed = !expenseCollapsed;
+    else incomeCollapsed = !incomeCollapsed;
+    // A list that was folded away while "All Time" was paging stopped
+    // fetching at whatever it had (see `loadMoreKind`), and unfolding it may
+    // put the scroll sentinel back on screen with nothing under it. Top it
+    // up rather than leave it stuck short until the user scrolls.
+    if (!isCollapsed(kind)) fillViewportKind(kind);
+  }
 
   // Mirrors the user's choices back into the cache. `loadedExpenseRows` /
   // `loadedIncomeRows` only mean anything in "All Time" — every other range
@@ -296,6 +367,8 @@
     view.incomeTypeFilter = incomeTypeFilter;
     view.incomeMinAmount = incomeMinAmount;
     view.incomeMaxAmount = incomeMaxAmount;
+    view.expenseCollapsed = expenseCollapsed;
+    view.incomeCollapsed = incomeCollapsed;
     view.loadedExpenseRows = rangeMode === "all" ? expenseOffset : 0;
     view.loadedIncomeRows = rangeMode === "all" ? incomeOffset : 0;
   });
@@ -538,11 +611,21 @@
     if (token === currentToken(kind)) await fillViewportKind(kind);
   }
 
+  /** Paging a folded-away list isn't just wasted work, it's unbounded: the
+   * two lists share one scroll sentinel, a collapsed list adds no height to
+   * the page, so every batch it pulls leaves the sentinel exactly where it
+   * was and `fillViewportKind`'s loop never reaches its stopping condition.
+   * Collapsing Expenses to read Income would quietly fetch the entire
+   * expense ledger — the single decades-long query this pagination exists to
+   * avoid. Both the loop and the single-batch fetch check, because the
+   * IntersectionObserver can call the latter on its own. */
   async function loadMoreKind(kind: SelectionKind) {
     const exhausted = kind === "expense" ? expenseExhausted : incomeExhausted;
     const alreadyLoading =
       kind === "expense" ? loadingMoreExpense : loadingMoreIncome;
-    if (rangeMode !== "all" || exhausted || alreadyLoading) return;
+    if (rangeMode !== "all" || exhausted || alreadyLoading || isCollapsed(kind)) {
+      return;
+    }
     const token = currentToken(kind);
     if (kind === "expense") loadingMoreExpense = true;
     else loadingMoreIncome = true;
@@ -593,6 +676,7 @@
   async function fillViewportKind(kind: SelectionKind) {
     while (
       rangeMode === "all" &&
+      !isCollapsed(kind) &&
       !(kind === "expense" ? expenseExhausted : incomeExhausted)
     ) {
       await tick();
@@ -1273,7 +1357,7 @@
 <!-- Catches the drag's mouseup wherever it lands, including outside any
      row — the button can be released past the last row, past the edge of
      the table, anywhere. -->
-<svelte:window onmouseup={endRowDrag} />
+<svelte:window onmouseup={endRowDrag} bind:innerWidth={viewportWidth} />
 
 {#snippet list(items: TransactionDto[], kind: SelectionKind)}
     {@const selected = selectionSet(kind)}
@@ -1295,7 +1379,7 @@
               >Date</button
             ></th
           >
-          <th>
+          <th class="amount-cell">
             <div class="column-header" class:filtered={amountFilterActive(kind)}>
               <button type="button" onclick={() => toggleSort(kind, "amount")}
                 >Amount</button
@@ -1334,7 +1418,7 @@
               </FilterPopover>
             </div>
           </th>
-          <th>
+          <th class="description-cell">
             <div
               class="column-header"
               class:filtered={descriptionFilterFor(kind).trim() !== ""}
@@ -1375,7 +1459,7 @@
               </SearchSelect>
             </div>
           </th>
-          <th>
+          <th class="category-cell">
             <div
               class="column-header align-right"
               class:filtered={categoryFilterFor(kind) !== ""}
@@ -1395,7 +1479,7 @@
               </SearchSelect>
             </div>
           </th>
-          <th>
+          <th class="account-cell">
             <div
               class="column-header align-right"
               class:filtered={accountFilterFor(kind) !== ""}
@@ -1413,7 +1497,7 @@
               </SearchSelect>
             </div>
           </th>
-          <th></th>
+          <th class="actions-cell"></th>
         </tr>
       </thead>
       <tbody>
@@ -1430,8 +1514,8 @@
                 />
               </td>
               <td class="date-cell">{t.date}</td>
-              <td>{formatCurrency(t.amount_minor_units, t.currency)}</td>
-              <td>
+              <td class="amount-cell">{formatCurrency(t.amount_minor_units, t.currency)}</td>
+              <td class="description-cell">
                 {t.description}
                 {#if t.role === "transfer"}
                   <span class="role-badge" title="Between your own accounts — not counted as spending"
@@ -1446,16 +1530,17 @@
                 {/if}
               </td>
               <td class="kind-cell">{operationKindLabel(t.operation_kind)}</td>
-              <td>
+              <td class="category-cell">
                 <SearchSelect
                   options={categoryOptions}
                   value={t.category_id}
                   onChange={(categoryId) => handleCategoryChange(t, categoryId)}
                   searchPlaceholder="Search category…"
+                  stacked
                 />
               </td>
-              <td>{accountName(t.account_id)}</td>
-              <td>
+              <td class="account-cell">{accountName(t.account_id)}</td>
+              <td class="actions-cell">
                 <DeleteButton
                   label="Delete transaction"
                   onConfirm={() => handleDelete(t)}
@@ -1582,7 +1667,28 @@
   <div class="lists">
     <section>
       <div class="section-header">
-        <h2>Expenses</h2>
+        <h2>
+          {#if stackedLayout}
+            <button
+              type="button"
+              class="collapse-toggle"
+              aria-expanded={!expenseCollapsed}
+              aria-controls="expenses-list"
+              title={expenseCollapsed ? "Show expenses" : "Hide expenses"}
+              onclick={() => toggleCollapsed("expense")}
+            >
+              <span class="chevron" class:folded={expenseCollapsed} aria-hidden="true">
+                <ChevronDown size={16} />
+              </span>
+              Expenses
+            </button>
+          {:else}
+            Expenses
+          {/if}
+        </h2>
+        {#if isCollapsed("expense")}
+          <span class="collapsed-count">{expenseCount} transactions</span>
+        {/if}
         {#if !viewIsDefault("expense")}
           <button
             type="button"
@@ -1621,11 +1727,36 @@
           </div>
         {/if}
       </div>
-      {@render list(expenses, "expense")}
+      <div id="expenses-list">
+        {#if !isCollapsed("expense")}
+          {@render list(expenses, "expense")}
+        {/if}
+      </div>
     </section>
     <section>
       <div class="section-header">
-        <h2>Income</h2>
+        <h2>
+          {#if stackedLayout}
+            <button
+              type="button"
+              class="collapse-toggle"
+              aria-expanded={!incomeCollapsed}
+              aria-controls="income-list"
+              title={incomeCollapsed ? "Show income" : "Hide income"}
+              onclick={() => toggleCollapsed("income")}
+            >
+              <span class="chevron" class:folded={incomeCollapsed} aria-hidden="true">
+                <ChevronDown size={16} />
+              </span>
+              Income
+            </button>
+          {:else}
+            Income
+          {/if}
+        </h2>
+        {#if isCollapsed("income")}
+          <span class="collapsed-count">{incomeCount} transactions</span>
+        {/if}
         {#if !viewIsDefault("income")}
           <button
             type="button"
@@ -1664,7 +1795,11 @@
           </div>
         {/if}
       </div>
-      {@render list(income, "income")}
+      <div id="income-list">
+        {#if !isCollapsed("income")}
+          {@render list(income, "income")}
+        {/if}
+      </div>
     </section>
   </div>
   {#if rangeMode === "all"}
@@ -1818,9 +1953,15 @@
     color: var(--color-accent-contrast);
   }
 
+  /* `minmax(0, 1fr)`, not `1fr`. A bare `1fr` is `minmax(auto, 1fr)`, and
+     `auto` as a *minimum* means min-content — so a table too wide to fit
+     doesn't get compressed, it pushes its grid column (and the page) wider
+     and hands the user a horizontal scrollbar. The `0` minimum lets each
+     column shrink to the space actually available and forces the table to
+     solve the fit instead, which the column rules below let it do. */
   .lists {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: 1rem;
     /* Breathing room above "Expenses"/"Income", separate from the range
        bar's own margin-bottom. */
@@ -1891,6 +2032,49 @@
     white-space: nowrap;
   }
 
+  /* Selector is `button.collapse-toggle`, not `.collapse-toggle`, for the
+     same reason `.reset-view` needs it: the generic `button:not(.icon-button)`
+     rule scores (0,1,1) and would otherwise win, handing this a border and a
+     0.9rem font in place of the heading's own.
+
+     The negative margin pulls the chevron left into the 2.5rem gutter that
+     `.section-header` reserves for the checkbox column, so "Expenses" and
+     "Income" keep the left edge they share with the "Date" heading below —
+     adding the chevron in flow would have shifted both headings right and
+     broken that alignment for the sake of an icon. */
+  button.collapse-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-left: -1.4rem;
+    padding: 0;
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .chevron {
+    display: inline-flex;
+    transition: transform 0.15s ease;
+  }
+
+  /* Points down at an open list and right at a folded one — the direction
+     the content went, which is the convention every disclosure widget uses. */
+  .chevron.folded {
+    transform: rotate(-90deg);
+  }
+
+  /* A folded list says nothing about what's inside it; the count is the one
+     thing worth keeping visible, so the fold is a considered choice rather
+     than a guess about where the rows went. */
+  .collapsed-count {
+    font-size: 0.85rem;
+    opacity: 0.6;
+    white-space: nowrap;
+  }
+
   /* Sits in the section header rather than in a `<th>`: that row already
      exists and already reserves 2rem of height for the bulk-actions pill, so
      this costs the page no extra height — and, unlike a control inside a
@@ -1948,8 +2132,21 @@
     --checkbox-opacity: 1;
   }
 
+  /* `fixed`, not the default `auto`. Auto layout sizes columns from their
+     content, and a column's min-content width is a floor it will overflow
+     the page rather than go under — which is how a half-width table with
+     eight columns ended up wider than the window. Worse, that floor is set
+     by whichever cell happens to hold the longest word, so the space went
+     where the data fell rather than where it was useful: measured at a 760px
+     window, Category (a dropdown showing "Courses alimentaires") held 151px
+     while Description was squeezed to 64px.
+
+     Fixed layout ignores content entirely and uses the widths declared
+     below, so the table is always exactly as wide as the space it's given
+     and the split between columns is a decision rather than an accident. */
   table {
     width: 100%;
+    table-layout: fixed;
     border-collapse: collapse;
     font-size: 0.9rem;
   }
@@ -1970,10 +2167,29 @@
     color: inherit;
   }
 
+  /* `flex`, not `inline-flex`, so `max-width` has a definite box to bite on
+     and the label below can be told to shrink. */
   .column-header {
-    display: inline-flex;
+    display: flex;
     align-items: center;
     gap: 0.15rem;
+    max-width: 100%;
+  }
+
+  /* A column label is a single word, and a single word narrower than its
+     column wraps one letter per line — at a 700px window "Account" rendered
+     as a seven-line vertical stack that spilled over the Category header
+     next to it. Clipping the label instead keeps the header one line tall at
+     any width; the ellipsis says it's been shortened. `min-width: 0` is what
+     actually lets it shrink: a flex item won't go below its own min-content
+     (the whole word) without it. Not done by clipping the `th` — the filter
+     dropdowns are positioned inside it and would be clipped too. */
+  th .column-header > button,
+  th > button {
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   /* Deliberately still in flow, not `position: absolute`. An earlier version
@@ -2088,27 +2304,141 @@
     border-bottom: 1px solid var(--color-shade-2);
   }
 
-  /* Targeted by class, not :first-child — the checkbox column sits to its
-     left now, and a position-based selector silently stops matching the
-     Date column the moment the column order changes again (already bit us
-     once when this column added the leading checkbox). */
+  /* Rigid columns, in absolute units: a date, an amount and an operation
+     kind are short, fixed-shape strings whose width doesn't depend on how
+     wide the window is, and each is sized to the widest value it can
+     realistically hold. Giving them the window's surplus would only pad
+     them out; it goes to the three text columns instead.
+
+     Targeted by class, not :first-child — the checkbox column sits to the
+     Date column's left now, and a position-based selector silently stops
+     matching the moment the column order changes again (already bit us once
+     when this column added the leading checkbox). */
   .date-cell {
     white-space: nowrap;
+    width: 5.5rem;
+  }
+
+  /* Wide enough for a grouped amount plus a three-letter currency code, the
+     fallback `formatCurrency` uses for anything without a symbol
+     ("-CHF 25 000,00"). Deliberately not `nowrap`: fixed layout gives a
+     column exactly its declared width and lets anything longer spill over
+     the neighbouring cell, and an amount is the one thing on this page that
+     must never be shown overlapping or half-read. Wrapping is the graceful
+     failure — an implausibly large amount takes two lines and stays
+     legible. */
+  .amount-cell {
+    width: 7rem;
+    overflow-wrap: anywhere;
   }
 
   /* How the money moved. Reads exactly like Account — same colour, size and
      weight — since the two are the same kind of thing: flat context about
-     the row, not something ranked above it. Only the width rule is its own:
-     `1%` collapses the column to its content so the space goes to
-     Description and Category instead. */
+     the row, not something ranked above it. */
   .kind-cell {
     white-space: nowrap;
-    width: 1%;
+    width: 5.5rem;
   }
 
-  @media (max-width: 900px) {
+  /* Just wide enough for the round trash button. The confirm step that
+     replaces it is drawn out of flow (see DeleteButton.svelte), so this
+     width holds whether or not a row is mid-confirmation. */
+  .actions-cell {
+    width: 2.4rem;
+    padding-left: 0.15rem;
+    padding-right: 0.15rem;
+  }
+
+  /* The elastic columns: free text of unbounded length, so these are the
+     ones that give way as the window narrows. The percentages are read as a
+     ratio rather than as literal shares — they can't all be honoured once
+     the rigid columns above have taken their absolute widths — so what they
+     actually set is how the leftover space is split: Description gets the
+     most because it's the only column that says what a transaction *was*. */
+  .description-cell {
+    width: 40%;
+  }
+
+  .category-cell {
+    width: 32%;
+  }
+
+  .account-cell {
+    width: 28%;
+  }
+
+  /* Bank descriptions are single unbroken tokens as often as not
+     ("PRLV/SEPA/ABONNEMENT..."), and account names can be too. Without this
+     they'd spill out of a column narrower than their longest word instead
+     of wrapping inside it. */
+  .description-cell,
+  .account-cell {
+    overflow-wrap: anywhere;
+  }
+
+  /* SearchSelect caps itself at 11rem, sized for the Add form where it's one
+     of five controls on a full-width row. Here it should simply be as wide
+     as the column it's in — wider when the window allows, narrower when it
+     doesn't; the trigger already ellipsises its label either way.
+
+     `td`, not the bare class: the Category *header* holds a SearchSelect
+     too (the filter icon), and stretching that one to the full column width
+     pushed the "Category" label down to "Ca…". */
+  td.category-cell :global(.search-select) {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  /* Side by side, each list gets a little under half the window; below this
+     the eight columns still *fit* (the rules above guarantee that at any
+     width) but stop being readable — every text column ellipsised, every
+     description wrapping to three lines. So the two lists stack and each
+     takes the full width instead.
+
+     Measured, not guessed: Account is the narrowest elastic column and its
+     own header needs ~90px (label, filter icon, cell padding), which it only
+     gets once a table is ~700px wide — two of those plus the nav rail, the
+     page padding, the grid gap and the divider is 1600px. Below that,
+     stacking trades seeing both lists at once for seeing either one
+     properly, which is the better trade for a ledger you read a row at a
+     time. */
+  @media (max-width: 1600px) {
     .lists {
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    /* The divider is between two columns; stacked, it would be a stray line
+       down the left of the second list. */
+    .lists > section:last-child {
+      border-left: none;
+      padding-left: 0;
+      /* Replaces the vertical rule with a horizontal one, so the two lists
+         stay visibly separate now that they're above and below each other. */
+      border-top: 0.5px solid var(--color-accent);
+      padding-top: 1.5rem;
+    }
+  }
+
+  /* Below this the elastic columns are narrower than their own one-word
+     headers, so nothing is gained by keeping all eight — the table stops
+     shrinking and starts becoming unreadable. Account goes first and Type
+     next: both are flat context about a row, where Date, Amount,
+     Description and Category are what identify and classify it.
+
+     Hiding a column also hides its sort and filter control. That's a real
+     loss, but it's bounded — the Reset button in the section header appears
+     whenever any filter is set, including one left over from a wider window,
+     so a filter can never become both invisible and unclearable. */
+  @media (max-width: 820px) {
+    .account-cell {
+      display: none;
+    }
+  }
+
+  @media (max-width: 680px) {
+    .kind-cell {
+      display: none;
     }
   }
 </style>

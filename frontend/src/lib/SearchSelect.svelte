@@ -12,6 +12,10 @@
   interface Option {
     id: string;
     label: string;
+    /** Set by `buildCategoryOptions` for a subcategory. Only `stacked` reads
+     * these; every other caller works off `label` alone. */
+    parentName?: string;
+    name?: string;
   }
 
   let {
@@ -20,6 +24,7 @@
     onChange,
     placeholder = "Select…",
     searchPlaceholder = "Search…",
+    stacked = false,
     trigger,
   }: {
     options: Option[];
@@ -29,6 +34,16 @@
     placeholder?: string;
     /** Shown in the filter box once the dropdown is open. */
     searchPlaceholder?: string;
+    /** Draw the closed trigger as two lines — the parent's name above, dim
+     * and small, this option's own name below — instead of one joined
+     * "Parent > Child". For narrow columns, where one line has to ellipsise
+     * and does it from the right, cutting off the *sub*category: the part
+     * that distinguishes the option from its siblings. Stacking makes the
+     * parent the line that gives way instead. Off everywhere the control has
+     * a full row to itself, and it never affects the open dropdown — that
+     * list stays flat, since it's scanned and typed at rather than read a
+     * row at a time. */
+    stacked?: boolean;
     trigger?: Snippet<[{ label: string; active: boolean }]>;
   } = $props();
 
@@ -39,9 +54,11 @@
   let inputEl: HTMLInputElement | undefined = $state();
   let listEl: HTMLUListElement | undefined = $state();
 
-  let selectedLabel = $derived(
-    options.find((o) => o.id === value)?.label ?? placeholder,
-  );
+  let selected = $derived(options.find((o) => o.id === value));
+  let selectedLabel = $derived(selected?.label ?? placeholder);
+  /** Two lines only when there are two levels to show — a top-level category
+   * has no parent, so it stays a single line and its row stays short. */
+  let showStacked = $derived(stacked && !!selected?.parentName);
 
   let filtered = $derived.by(() => {
     const q = query.trim().toLowerCase();
@@ -123,11 +140,16 @@
     type="button"
     class="trigger"
     class:icon-trigger={!!trigger}
+    class:stacked-trigger={showStacked}
     class:active={!!trigger && value !== ""}
+    title={stacked ? selectedLabel : undefined}
     onclick={handleTriggerClick}
   >
     {#if trigger}
       {@render trigger({ label: selectedLabel, active: value !== "" })}
+    {:else if showStacked}
+      <span class="stacked-parent">{selected?.parentName}</span>
+      <span class="stacked-name">{selected?.name}</span>
     {:else}
       {selectedLabel}
     {/if}
@@ -217,6 +239,32 @@
     align-items: center;
     justify-content: center;
     padding: 0.3rem;
+  }
+
+  /* The single-line trigger ellipsises itself; the stacked one hands that job
+     to each line, so it has to stop clipping at the button level or the
+     second line would be cut off vertically. */
+  .trigger.stacked-trigger {
+    white-space: normal;
+    overflow: visible;
+    line-height: 1.2;
+    padding-top: 0.1rem;
+    padding-bottom: 0.1rem;
+  }
+
+  .stacked-parent,
+  .stacked-name {
+    display: block;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Smaller and dimmer than the name below it: this is the line that should
+     give way first, both to the eye and to the ellipsis. */
+  .stacked-parent {
+    font-size: 0.72rem;
+    opacity: 0.6;
   }
 
   .trigger.icon-trigger.active {

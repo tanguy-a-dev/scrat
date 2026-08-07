@@ -518,10 +518,26 @@ export function parseToMinorUnits(input: string): number | null {
   return Math.round(value * 100);
 }
 
-/** Builds a flat, depth-indented option list from a category tree. */
-export function buildCategoryOptions(
-  categories: CategoryDto[],
-): { id: string; label: string }[] {
+export interface CategoryOption {
+  id: string;
+  /** The two levels joined for display and for search — "Parent > Child",
+   * or just the name for a top-level category. */
+  label: string;
+  /** The parent's name, when this is a subcategory. */
+  parentName?: string;
+  /** This category's own name, without its parent's. */
+  name: string;
+}
+
+/** Builds a flat, depth-indented option list from a category tree.
+ *
+ * The two levels are carried alongside the joined `label` rather than left to
+ * be recovered from it. Splitting `label` back on " > " looks equivalent and
+ * isn't: `CategoryName` only rejects empty and over-long names, so a category
+ * may legitimately *be called* "Sport > Fitness", and a renderer that split
+ * the string would tear that one in half and attribute it to a parent that
+ * doesn't exist. */
+export function buildCategoryOptions(categories: CategoryDto[]): CategoryOption[] {
   const byId = new Map(categories.map((c) => [c.id, c]));
   const byParent = new Map<string | null, CategoryDto[]>();
   for (const c of categories) {
@@ -529,12 +545,12 @@ export function buildCategoryOptions(
     if (!byParent.has(key)) byParent.set(key, []);
     byParent.get(key)!.push(c);
   }
-  const result: { id: string; label: string }[] = [];
+  const result: CategoryOption[] = [];
   function walk(parentId: string | null) {
     for (const c of byParent.get(parentId) ?? []) {
       const parentName = c.parent_id ? byId.get(c.parent_id)?.name : undefined;
       const label = parentName ? `${parentName} > ${c.name}` : c.name;
-      result.push({ id: c.id, label });
+      result.push({ id: c.id, label, parentName, name: c.name });
       walk(c.id);
     }
   }
