@@ -155,6 +155,17 @@ Privacy is the non-negotiable design constraint of this project:
 - Your database passphrase is never persisted anywhere; it only exists in
   memory for the lifetime of the running app.
 
+## Contact
+
+Bug reports, questions, and feedback: **<me@kaonashi.dev>** — or open a
+[GitHub issue](https://github.com/Kaonashi-42/scrat/issues). The same address
+is in the app under *Settings → Report a bug or contact the maintainer*, which
+opens your mail client with the Scrat version already filled in.
+
+Please don't attach a real bank export or database file to a bug report — a
+few fabricated rows that reproduce the problem are enough, and they're the
+only thing that should ever leave your machine.
+
 ## Contributing
 
 Issues and pull requests are welcome. This project follows

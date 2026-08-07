@@ -2,6 +2,8 @@
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
   import { save, open } from "@tauri-apps/plugin-dialog";
+  import { openUrl } from "@tauri-apps/plugin-opener";
+  import { getVersion } from "@tauri-apps/api/app";
   import SearchSelect from "$lib/SearchSelect.svelte";
   import { api, type AccountDto } from "$lib/api";
   import { clearPageCache } from "$lib/pageCache";
@@ -100,6 +102,13 @@
       if (accounts.length === 1) csvAccountId = accounts[0].id;
     } catch (e) {
       accountsLoadError = String(e);
+    }
+
+    try {
+      appVersion = await getVersion();
+    } catch {
+      // Version is a nicety in the contact section, not a reason to show an
+      // error — leave it blank.
     }
   });
 
@@ -274,6 +283,41 @@
       passphraseError = String(e);
     } finally {
       changingPassphrase = false;
+    }
+  }
+
+  const CONTACT_EMAIL = "me@kaonashi.dev";
+
+  /** Shown next to the contact address and prefilled into the report, because
+   * "which version were you running" is the first question any bug report
+   * raises and the one users can least easily answer. Blank if it can't be
+   * read — the section is still useful without it. */
+  let appVersion = $state("");
+
+  let contactMailto = $derived.by(() => {
+    const subject = appVersion
+      ? `Scrat ${appVersion} — bug report`
+      : "Scrat — bug report";
+    const body = [
+      "What happened:",
+      "",
+      "What I expected:",
+      "",
+      "Steps to reproduce:",
+      "",
+      appVersion ? `Scrat version: ${appVersion}` : "",
+    ].join("\n");
+    return `mailto:${CONTACT_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  });
+
+  /** Hands the address to the OS's default mail client rather than opening it
+   * in the webview. If there's no mail client to hand it to, the address is
+   * already on screen to copy — say so instead of failing silently. */
+  async function handleContact() {
+    try {
+      await openUrl(contactMailto);
+    } catch {
+      toast.error(`Couldn't open your mail app — write to ${CONTACT_EMAIL}.`);
     }
   }
 
@@ -509,6 +553,18 @@
 </section>
 
 <section>
+  <h2>Report a bug or contact the maintainer</h2>
+  <p class="hint">
+    Found a bug, or have a question? Write to
+    <span class="contact-address">{CONTACT_EMAIL}</span>.
+  </p>
+  <button type="button" onclick={handleContact}>Send an email</button>
+  {#if appVersion}
+    <p class="hint version">Scrat {appVersion}</p>
+  {/if}
+</section>
+
+<section>
   <h2>Delete my data</h2>
   <p class="hint">Permanently deletes your local database. No backup is made.</p>
   {#if !deleteRequested}
@@ -578,6 +634,21 @@
 
   .error {
     color: var(--color-danger);
+  }
+
+  /* The address is deliberately selectable text as well as a button — a user
+     without a configured mail client still needs to be able to copy it. */
+  .contact-address {
+    user-select: text;
+    white-space: nowrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  .version {
+    margin-top: 0.6rem;
+    margin-bottom: 0;
+    font-size: 0.8rem;
+    opacity: 0.6;
   }
 
   .csv-export {

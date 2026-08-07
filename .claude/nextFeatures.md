@@ -5,6 +5,3 @@
 
 ## Language ? 
 
-
-## Transactions page UX
-
