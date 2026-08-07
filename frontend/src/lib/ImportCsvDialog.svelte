@@ -4,7 +4,7 @@
   import { toast } from "$lib/toasts.svelte";
   import Checkbox from "$lib/Checkbox.svelte";
   import SearchSelect from "$lib/SearchSelect.svelte";
-  import { Pencil, Tags } from "@lucide/svelte";
+  import { LoaderCircle, Pencil, Tags } from "@lucide/svelte";
   import {
     api,
     buildCategoryOptions,
@@ -758,9 +758,13 @@
         <button type="button" onclick={onClose}>Cancel</button>
         <button
           type="button"
+          class="import-button"
           disabled={importing || includableCount === 0}
           onclick={handleImport}
         >
+          {#if importing}
+            <LoaderCircle class="spinner" size={14} aria-hidden="true" />
+          {/if}
           Import {includableCount} transaction{includableCount === 1 ? "" : "s"}
         </button>
       </div>
@@ -1095,5 +1099,21 @@
   button:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+
+  .import-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  .import-button :global(.spinner) {
+    animation: spin 0.8s linear infinite;
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 </style>
