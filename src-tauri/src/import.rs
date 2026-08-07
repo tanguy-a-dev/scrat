@@ -529,3 +529,137 @@ pub fn commit_csv_import(
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mapping() -> ColumnMapping {
+        ColumnMapping {
+            delimiter: ';',
+            has_header: true,
+            column_count: 8,
+            date_column: Some(0),
+            date_format: "%d/%m/%Y".to_string(),
+            amount: Some(AmountSource::Single(1)),
+            description_columns: vec![3, 4],
+            category_column: Some(5),
+            subcategory_column: Some(6),
+            currency_column: Some(2),
+            account_column: Some(7),
+            operation_kind_column: None,
+        }
+    }
+
+    /// Everything the user can correct in the dialog has to survive the trip
+    /// out to the frontend and back, or a mapping would quietly degrade each
+    /// time the dialog re-rendered it.
+    #[test]
+    fn a_mapping_survives_a_round_trip_through_the_dto() {
+        let original = mapping();
+
+        let restored = ColumnMappingDto::from_domain(&original).into_domain(original.delimiter);
+
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn a_debit_credit_pair_survives_a_round_trip() {
+        let original = ColumnMapping {
+            amount: Some(AmountSource::DebitCredit {
+                debit: 2,
+                credit: 3,
+            }),
+            ..mapping()
+        };
+
+        let restored = ColumnMappingDto::from_domain(&original).into_domain(original.delimiter);
+
+        assert_eq!(restored.amount, original.amount);
+    }
+
+    /// A file whose amount column detection couldn't place round-trips as
+    /// "still unplaced" rather than collapsing to column 0 — which would
+    /// silently import every row with whatever the first column happens to
+    /// hold.
+    #[test]
+    fn an_undetected_amount_column_stays_undetected() {
+        let original = ColumnMapping {
+            amount: None,
+            date_column: None,
+            ..mapping()
+        };
+
+        let restored = ColumnMappingDto::from_domain(&original).into_domain(original.delimiter);
+
+        assert_eq!(restored.amount, None);
+        assert_eq!(restored.date_column, None);
+    }
+
+    /// The delimiter is deliberately absent from the DTO — it's re-sniffed
+    /// from the file on every preview. `into_domain` must take the caller's,
+    /// not resurrect a stale one.
+    #[test]
+    fn the_delimiter_comes_from_the_caller_not_the_dto() {
+        let original = mapping();
+
+        let restored = ColumnMappingDto::from_domain(&original).into_domain(',');
+
+        assert_eq!(restored.delimiter, ',');
+    }
+
+    #[test]
+    fn every_offered_date_format_survives_a_round_trip() {
+        for (pattern, _label) in DATE_FORMATS {
+            let original = ColumnMapping {
+                date_format: (*pattern).to_string(),
+                ..mapping()
+            };
+
+            let restored = ColumnMappingDto::from_domain(&original).into_domain(';');
+
+            assert_eq!(
+                restored.date_format, *pattern,
+                "{pattern} should not be rewritten"
+            );
+        }
+    }
+
+    /// The date format is handed to chrono as a parse pattern, so it must
+    /// come from the fixed list the dialog offers and nowhere else. A value
+    /// the frontend didn't get from `DATE_FORMATS` — whether a typo, a stale
+    /// remembered mapping, or a hand-crafted IPC payload — falls back to the
+    /// day-first default instead of reaching chrono verbatim.
+    #[test]
+    fn a_date_format_off_the_offered_list_falls_back_to_the_default() {
+        let unoffered = [
+            "%Y",
+            "%d/%m/%y",
+            "not a format at all",
+            "",
+            "%d/%m/%Y ",
+            "%C%C%C%C%C%C%C%C",
+        ];
+
+        for pattern in unoffered {
+            let original = ColumnMapping {
+                date_format: pattern.to_string(),
+                ..mapping()
+            };
+
+            let restored = ColumnMappingDto::from_domain(&original).into_domain(';');
+
+            assert_eq!(
+                restored.date_format, DATE_FORMATS[1].0,
+                "{pattern:?} should have fallen back to the default"
+            );
+        }
+    }
+
+    /// The fallback is day-first, matching the European bank exports this app
+    /// is built around — reading `03/07` as 3 July, not 7 March.
+    #[test]
+    fn the_date_format_fallback_is_day_first() {
+        assert_eq!(DATE_FORMATS[1].0, "%d/%m/%Y");
+    }
+}

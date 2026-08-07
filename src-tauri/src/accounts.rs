@@ -220,3 +220,141 @@ pub fn delete_account(state: State<DbState>, id: String) -> Result<(), String> {
     let id = parse_id(&id)?;
     with_service(&state, |s| s.delete_account(id))
 }
+
+#[cfg(test)]
+mod tests {
+    use scrat_domain::account::{Account, AccountName, DescriptionPattern};
+    use scrat_domain::money::Money;
+
+    use super::*;
+
+    fn eur() -> Currency {
+        Currency::new("EUR").unwrap()
+    }
+
+    fn with_balance(account: Account, balance_minor_units: i64, count: u64) -> AccountWithBalance {
+        AccountWithBalance {
+            account,
+            balance: Money::from_minor_units(balance_minor_units, eur()),
+            transaction_count: count,
+        }
+    }
+
+    fn anchored(name: &str, opening_minor_units: i64) -> Account {
+        Account::new(
+            AccountId::new(),
+            AccountName::new(name).unwrap(),
+            Money::from_minor_units(opening_minor_units, eur()),
+        )
+    }
+
+    fn unanchored(name: &str) -> Account {
+        Account::without_opening_balance(AccountId::new(), AccountName::new(name).unwrap())
+    }
+
+    #[test]
+    fn an_account_dto_carries_every_field_across() {
+        let account = anchored("Checking", 10_000);
+        let id = account.id();
+
+        let dto = to_dto(with_balance(account, 15_000, 3), None);
+
+        assert_eq!(dto.id, id.as_string());
+        assert_eq!(dto.name, "Checking");
+        assert_eq!(dto.balance_minor_units, 15_000);
+        assert_eq!(dto.opening_balance_minor_units, 10_000);
+        assert!(dto.is_opening_balance_set);
+        assert!(dto.has_transactions);
+        assert_eq!(dto.currency, "EUR");
+    }
+
+    /// The distinction migration 0008 exists to preserve, carried all the way
+    /// to the UI: "we don't know where this account started" and "the user
+    /// told us it started at zero" both put 0 in `opening_balance_minor_units`,
+    /// and only `is_opening_balance_set` tells them apart. Collapsing them
+    /// here would make the app re-ask a question the user already answered,
+    /// or stop asking one it never did.
+    #[test]
+    fn an_unanchored_account_is_distinguishable_from_one_anchored_at_zero() {
+        let unset = to_dto(with_balance(unanchored("New"), 0, 0), None);
+        let set_to_zero = to_dto(with_balance(anchored("Emptied", 0), 0, 0), None);
+
+        assert_eq!(unset.opening_balance_minor_units, 0);
+        assert_eq!(set_to_zero.opening_balance_minor_units, 0);
+        assert!(!unset.is_opening_balance_set);
+        assert!(set_to_zero.is_opening_balance_set);
+    }
+
+    /// `has_transactions` is the "is there anything to anchor yet" flag, not
+    /// a count — a fresh account is at zero either way and shouldn't prompt.
+    #[test]
+    fn has_transactions_is_false_only_for_an_empty_ledger() {
+        assert!(!to_dto(with_balance(unanchored("New"), 0, 0), None).has_transactions);
+        assert!(to_dto(with_balance(unanchored("New"), 0, 1), None).has_transactions);
+    }
+
+    #[test]
+    fn the_dto_reports_the_currency_the_balance_is_denominated_in() {
+        let dto = to_dto(
+            AccountWithBalance {
+                account: unanchored("Checking"),
+                balance: Money::from_minor_units(0, Currency::new("USD").unwrap()),
+                transaction_count: 0,
+            },
+            None,
+        );
+
+        assert_eq!(dto.currency, "USD");
+    }
+
+    #[test]
+    fn the_named_default_account_is_the_only_one_flagged() {
+        let chosen = unanchored("Checking");
+        let other = unanchored("Savings");
+        let chosen_id = chosen.id();
+
+        let chosen_dto = to_dto(with_balance(chosen, 0, 0), Some(chosen_id));
+        let other_dto = to_dto(with_balance(other, 0, 0), Some(chosen_id));
+
+        assert!(chosen_dto.is_default);
+        assert!(!other_dto.is_default);
+    }
+
+    /// With no default configured, no account may claim the flag — an
+    /// `Option` compared against `Some(id)` must not treat `None` as a match.
+    #[test]
+    fn no_account_is_default_when_none_is_configured() {
+        let dto = to_dto(with_balance(unanchored("Checking"), 0, 0), None);
+
+        assert!(!dto.is_default);
+    }
+
+    /// Patterns reach the UI in their normalized (lowercased, trimmed) stored
+    /// form and in the order they were added — that's the list the user edits.
+    #[test]
+    fn description_patterns_cross_the_wire_in_stored_order() {
+        let mut account = unanchored("Checking");
+        account.add_description_pattern(DescriptionPattern::new("  Whole FOODS ").unwrap());
+        account.add_description_pattern(DescriptionPattern::new("Trader Joes").unwrap());
+
+        let dto = to_dto(with_balance(account, 0, 0), None);
+
+        assert_eq!(dto.description_patterns, ["whole foods", "trader joes"]);
+    }
+
+    #[test]
+    fn an_account_with_no_patterns_reports_an_empty_list() {
+        let dto = to_dto(with_balance(unanchored("Checking"), 0, 0), None);
+
+        assert!(dto.description_patterns.is_empty());
+    }
+
+    /// A negative balance is a real state (an overdrawn account) and must
+    /// survive intact rather than being clamped or made absolute.
+    #[test]
+    fn an_overdrawn_balance_keeps_its_sign() {
+        let dto = to_dto(with_balance(anchored("Checking", 0), -4_250, 2), None);
+
+        assert_eq!(dto.balance_minor_units, -4_250);
+    }
+}

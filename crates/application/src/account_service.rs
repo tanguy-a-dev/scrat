@@ -51,7 +51,7 @@ impl<'a> AccountService<'a> {
     /// next step is importing months of history, which moves the starting
     /// point back to before the first imported row. Whatever the user typed
     /// here would be wrong the moment they imported. The anchor is
-    /// established afterwards instead, by [`Self::set_opening_balance`],
+    /// established afterwards instead, by [`Self::establish_opening_balance`],
     /// back-solved from a balance they can actually read off their bank.
     pub fn create_account(&self, name: &str) -> Result<Account, ApplicationError> {
         let name = AccountName::new(name)?;
@@ -63,17 +63,6 @@ impl<'a> AccountService<'a> {
     pub fn rename_account(&self, id: AccountId, new_name: &str) -> Result<(), ApplicationError> {
         let mut account = self.get(id)?;
         account.rename(AccountName::new(new_name)?);
-        self.repo.update(&account)?;
-        Ok(())
-    }
-
-    pub fn set_opening_balance(
-        &self,
-        id: AccountId,
-        minor_units: i64,
-    ) -> Result<(), ApplicationError> {
-        let mut account = self.get(id)?;
-        account.set_opening_balance(Money::from_minor_units(minor_units, self.currency.clone()));
         self.repo.update(&account)?;
         Ok(())
     }
@@ -462,5 +451,179 @@ mod tests {
         let total = total_available(&accounts).unwrap();
 
         assert_eq!(total.minor_units(), 7_000);
+    }
+
+    fn patterns_of(repo: &FakeAccountRepository, id: AccountId) -> Vec<String> {
+        repo.find_by_id(id)
+            .unwrap()
+            .unwrap()
+            .description_patterns()
+            .iter()
+            .map(|p| p.as_str().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn add_description_pattern_persists_it_on_the_account() {
+        let repo = FakeAccountRepository::default();
+        let service = AccountService::new(&repo, Currency::new("USD").unwrap());
+        let account = service.create_account("Checking").unwrap();
+
+        service
+            .add_description_pattern(account.id(), "Whole Foods")
+            .unwrap();
+
+        assert_eq!(patterns_of(&repo, account.id()), ["whole foods"]);
+    }
+
+    /// The pattern is normalized on the way in, so what lands in the
+    /// repository is the lowercased, trimmed form — not whatever spacing the
+    /// user happened to type.
+    #[test]
+    fn add_description_pattern_stores_the_normalized_form() {
+        let repo = FakeAccountRepository::default();
+        let service = AccountService::new(&repo, Currency::new("USD").unwrap());
+        let account = service.create_account("Checking").unwrap();
+
+        service
+            .add_description_pattern(account.id(), "  Whole FOODS  ")
+            .unwrap();
+
+        assert_eq!(patterns_of(&repo, account.id()), ["whole foods"]);
+    }
+
+    /// Removal normalizes its argument the same way adding does. It has to:
+    /// the stored form is already lowercased and trimmed, so comparing the
+    /// raw input against it would make removing "Whole Foods" a silent no-op
+    /// against a pattern stored as "whole foods" — the row would stay on
+    /// screen with nothing to explain why the delete did nothing.
+    #[test]
+    fn remove_description_pattern_matches_regardless_of_how_it_is_typed() {
+        let repo = FakeAccountRepository::default();
+        let service = AccountService::new(&repo, Currency::new("USD").unwrap());
+        let account = service.create_account("Checking").unwrap();
+        service
+            .add_description_pattern(account.id(), "whole foods")
+            .unwrap();
+
+        service
+            .remove_description_pattern(account.id(), "  Whole FOODS ")
+            .unwrap();
+
+        assert!(patterns_of(&repo, account.id()).is_empty());
+    }
+
+    #[test]
+    fn adding_the_same_pattern_twice_keeps_one_copy() {
+        let repo = FakeAccountRepository::default();
+        let service = AccountService::new(&repo, Currency::new("USD").unwrap());
+        let account = service.create_account("Checking").unwrap();
+
+        service
+            .add_description_pattern(account.id(), "Whole Foods")
+            .unwrap();
+        service
+            .add_description_pattern(account.id(), "WHOLE FOODS")
+            .unwrap();
+
+        assert_eq!(patterns_of(&repo, account.id()), ["whole foods"]);
+    }
+
+    #[test]
+    fn removing_a_pattern_that_was_never_added_is_not_an_error() {
+        let repo = FakeAccountRepository::default();
+        let service = AccountService::new(&repo, Currency::new("USD").unwrap());
+        let account = service.create_account("Checking").unwrap();
+        service
+            .add_description_pattern(account.id(), "whole foods")
+            .unwrap();
+
+        service
+            .remove_description_pattern(account.id(), "trader joes")
+            .unwrap();
+
+        assert_eq!(patterns_of(&repo, account.id()), ["whole foods"]);
+    }
+
+    /// An all-whitespace pattern normalizes to the empty string, which would
+    /// match every description ever imported and quietly claim the whole
+    /// ledger for one account. It's rejected at the value object.
+    #[test]
+    fn a_blank_description_pattern_is_rejected() {
+        let repo = FakeAccountRepository::default();
+        let service = AccountService::new(&repo, Currency::new("USD").unwrap());
+        let account = service.create_account("Checking").unwrap();
+
+        let error = service
+            .add_description_pattern(account.id(), "   ")
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ApplicationError::Account(AccountError::EmptyPattern)
+        ));
+        assert!(patterns_of(&repo, account.id()).is_empty());
+    }
+
+    #[test]
+    fn adding_a_pattern_to_a_missing_account_reports_it_as_missing() {
+        let repo = FakeAccountRepository::default();
+        let service = AccountService::new(&repo, Currency::new("USD").unwrap());
+
+        let error = service
+            .add_description_pattern(AccountId::new(), "whole foods")
+            .unwrap_err();
+
+        assert!(matches!(error, ApplicationError::AccountNotFound));
+    }
+
+    #[test]
+    fn removing_a_pattern_from_a_missing_account_reports_it_as_missing() {
+        let repo = FakeAccountRepository::default();
+        let service = AccountService::new(&repo, Currency::new("USD").unwrap());
+
+        let error = service
+            .remove_description_pattern(AccountId::new(), "whole foods")
+            .unwrap_err();
+
+        assert!(matches!(error, ApplicationError::AccountNotFound));
+    }
+
+    #[test]
+    fn rename_account_persists_the_new_name() {
+        let repo = FakeAccountRepository::default();
+        let service = AccountService::new(&repo, Currency::new("USD").unwrap());
+        let account = service.create_account("Checking").unwrap();
+
+        service.rename_account(account.id(), "Everyday").unwrap();
+
+        let reloaded = repo.find_by_id(account.id()).unwrap().unwrap();
+        assert_eq!(reloaded.name().as_str(), "Everyday");
+    }
+
+    /// A rejected rename must leave the stored name alone rather than
+    /// half-applying — validation happens before the repository is touched.
+    #[test]
+    fn rename_account_to_a_blank_name_is_rejected_and_changes_nothing() {
+        let repo = FakeAccountRepository::default();
+        let service = AccountService::new(&repo, Currency::new("USD").unwrap());
+        let account = service.create_account("Checking").unwrap();
+
+        assert!(service.rename_account(account.id(), "   ").is_err());
+
+        let reloaded = repo.find_by_id(account.id()).unwrap().unwrap();
+        assert_eq!(reloaded.name().as_str(), "Checking");
+    }
+
+    #[test]
+    fn renaming_a_missing_account_reports_it_as_missing() {
+        let repo = FakeAccountRepository::default();
+        let service = AccountService::new(&repo, Currency::new("USD").unwrap());
+
+        let error = service
+            .rename_account(AccountId::new(), "Everyday")
+            .unwrap_err();
+
+        assert!(matches!(error, ApplicationError::AccountNotFound));
     }
 }

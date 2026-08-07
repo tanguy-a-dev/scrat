@@ -241,3 +241,111 @@ pub trait TransferRuleRepository {
     fn delete(&self, id: TransferRuleId) -> Result<(), RepositoryError>;
     fn list_all(&self) -> Result<Vec<TransferRule>, RepositoryError>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every sort field, listed once so the tests below can be exhaustive.
+    /// The `match` in `spelling_of` is what keeps this array honest: adding a
+    /// variant without adding it here stops compiling, rather than silently
+    /// leaving the new one untested.
+    const ALL_SORT_FIELDS: [TransactionSortField; 6] = [
+        TransactionSortField::Date,
+        TransactionSortField::Amount,
+        TransactionSortField::Description,
+        TransactionSortField::OperationKind,
+        TransactionSortField::Category,
+        TransactionSortField::Account,
+    ];
+
+    const ALL_SORT_DIRECTIONS: [SortDirection; 2] = [SortDirection::Asc, SortDirection::Desc];
+
+    fn spelling_of(field: TransactionSortField) -> &'static str {
+        match field {
+            TransactionSortField::Date => "date",
+            TransactionSortField::Amount => "amount",
+            TransactionSortField::Description => "description",
+            TransactionSortField::OperationKind => "operation_kind",
+            TransactionSortField::Category => "category",
+            TransactionSortField::Account => "account",
+        }
+    }
+
+    /// `as_str` and `parse` are two hand-written matches over the same set of
+    /// spellings, and nothing but this test ties them together — a variant
+    /// renamed in one and not the other compiles fine and only fails when a
+    /// user clicks that column header.
+    #[test]
+    fn every_sort_field_survives_a_string_round_trip() {
+        for field in ALL_SORT_FIELDS {
+            assert_eq!(TransactionSortField::parse(field.as_str()).unwrap(), field);
+        }
+    }
+
+    #[test]
+    fn every_sort_direction_survives_a_string_round_trip() {
+        for dir in ALL_SORT_DIRECTIONS {
+            assert_eq!(SortDirection::parse(dir.as_str()).unwrap(), dir);
+        }
+    }
+
+    /// The wire contract with the frontend. `TransactionSortField` in
+    /// `frontend/src/lib/api.ts` is a string union that gets sent straight
+    /// into `parse` with no translation step, so these exact spellings are
+    /// load-bearing — renaming one here is a breaking change to the UI, not
+    /// an internal refactor, and this test is where that shows up.
+    #[test]
+    fn sort_field_spellings_match_the_frontend_union() {
+        for field in ALL_SORT_FIELDS {
+            assert_eq!(field.as_str(), spelling_of(field));
+        }
+        assert_eq!(SortDirection::Asc.as_str(), "asc");
+        assert_eq!(SortDirection::Desc.as_str(), "desc");
+    }
+
+    #[test]
+    fn an_unknown_sort_field_is_rejected_and_named() {
+        let error = TransactionSortField::parse("Date").unwrap_err();
+        assert!(
+            error.to_string().contains("Date"),
+            "the error should quote the offending input, got: {error}"
+        );
+        assert!(TransactionSortField::parse("").is_err());
+        assert!(TransactionSortField::parse("amount desc").is_err());
+    }
+
+    #[test]
+    fn an_unknown_sort_direction_is_rejected_and_named() {
+        let error = SortDirection::parse("ascending").unwrap_err();
+        assert!(
+            error.to_string().contains("ascending"),
+            "the error should quote the offending input, got: {error}"
+        );
+        assert!(SortDirection::parse("ASC").is_err());
+    }
+
+    /// An unsorted listing is newest-first. This is a user-visible default,
+    /// not an arbitrary one — a ledger that opened in oldest-first order
+    /// would show the user a screen of history instead of what they just
+    /// spent.
+    #[test]
+    fn the_default_sort_is_newest_first() {
+        assert_eq!(TransactionSortField::default(), TransactionSortField::Date);
+        assert_eq!(SortDirection::default(), SortDirection::Desc);
+    }
+
+    /// `None` everywhere means "match everything", not "match nothing" —
+    /// the difference between an unfiltered ledger and a blank screen.
+    #[test]
+    fn default_filters_are_empty_rather_than_exclusive() {
+        let filters = TransactionFilters::default();
+        assert!(filters.category_id.is_none());
+        assert!(filters.description_contains.is_none());
+        assert!(filters.is_income.is_none());
+        assert!(filters.account_id.is_none());
+        assert!(filters.operation_kind.is_none());
+        assert!(filters.min_amount_minor_units.is_none());
+        assert!(filters.max_amount_minor_units.is_none());
+    }
+}

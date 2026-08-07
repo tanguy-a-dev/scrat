@@ -15,6 +15,21 @@
   import SearchSelect from "$lib/SearchSelect.svelte";
   import { EllipsisVertical } from "@lucide/svelte";
   import { toast } from "$lib/toasts.svelte";
+  import {
+    MONTH_LABELS,
+    buildMonthlyTotals as buildMonthlyTotalsFor,
+    buildScale as buildScaleWith,
+    formatShortDate,
+    isoDate,
+    meanOf,
+    monthKey,
+    monthKeyOffsetFrom,
+    scaleY as scaleYWith,
+    spendDeltaPercent as spendDeltaPercentOf,
+    spentInMonth,
+    spentUpToDayOfMonth,
+    type Scale,
+  } from "$lib/monthly";
 
   // Matches .bar.income / .dot.savings / etc in the stylesheet below — kept
   // in sync by hand since the tooltip needs the same colors as swatch values.
@@ -28,20 +43,6 @@
    * better with more points, and the extra months are free — both charts are
    * fed by the same single fetch. */
   const BALANCE_MONTHS_SHOWN = 12;
-  const MONTH_LABELS = [
-    "Jan",
-    "Feb",
-    "Mar",
-    "Apr",
-    "May",
-    "Jun",
-    "Jul",
-    "Aug",
-    "Sep",
-    "Oct",
-    "Nov",
-    "Dec",
-  ];
 
   let accounts = $state<AccountDto[]>([]);
   let transactions = $state<TransactionDto[]>([]);
@@ -60,23 +61,8 @@
   const today = new Date();
   const dayOfMonth = today.getDate();
 
-  function pad2(n: number): string {
-    return String(n).padStart(2, "0");
-  }
-
-  /** Local-calendar YYYY-MM-DD. Deliberately not `toISOString()`, which
-   * converts to UTC first and so rolls a local midnight back to the previous
-   * day anywhere east of Greenwich. */
-  function isoDate(d: Date): string {
-    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-  }
-
-  function monthKey(d: Date): string {
-    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
-  }
-
   const currentMonthKey = monthKey(today);
-  const previousMonthKey = monthKey(new Date(today.getFullYear(), today.getMonth() - 1, 1));
+  const previousMonthKey = monthKeyOffsetFrom(today, -1);
 
   onMount(load);
 
@@ -166,46 +152,9 @@
     };
   });
 
-  /** The last `monthsCount` months (oldest first), zero-filled so a month with
-   * no transactions still shows up as an empty bar rather than a gap.
-   * `expenseWithoutRent` tracks the same spend minus anything filed under a
-   * "Rent" category, so the mean-spend card can show both figures. */
-  function buildMonthlyTotals(monthsCount: number) {
-    const months: {
-      key: string;
-      label: string;
-      income: number;
-      expense: number;
-      expenseWithoutRent: number;
-      savings: number;
-    }[] = [];
-    for (let i = monthsCount - 1; i >= 0; i--) {
-      const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
-      months.push({
-        key: monthKey(d),
-        label: MONTH_LABELS[d.getMonth()],
-        income: 0,
-        expense: 0,
-        expenseWithoutRent: 0,
-        savings: 0,
-      });
-    }
-    const byKey = new Map(months.map((m) => [m.key, m]));
-    for (const t of reportableTransactions) {
-      const bucket = byKey.get(t.date.slice(0, 7));
-      if (!bucket) continue;
-      if (t.amount_minor_units < 0) {
-        bucket.expense += -t.amount_minor_units;
-        if (!rentCategoryIds.has(t.category_id)) bucket.expenseWithoutRent += -t.amount_minor_units;
-      } else {
-        bucket.income += t.amount_minor_units;
-      }
-    }
-    for (const m of months) m.savings = m.income - m.expense;
-    return months;
-  }
-
-  let monthlyTotals = $derived.by(() => buildMonthlyTotals(MONTHS_SHOWN));
+  let monthlyTotals = $derived.by(() =>
+    buildMonthlyTotalsFor(reportableTransactions, today, MONTHS_SHOWN, rentCategoryIds),
+  );
 
   // ---------------------------------------------------------------------------
   // Per-account movement this month — the "since the 1st" figure on each tile.
@@ -230,48 +179,20 @@
   // "This month" strip.
   // ---------------------------------------------------------------------------
 
-  let spentThisMonth = $derived(
-    reportableTransactions.reduce(
-      (sum, t) =>
-        t.amount_minor_units < 0 && t.date.slice(0, 7) === currentMonthKey
-          ? sum - t.amount_minor_units
-          : sum,
-      0,
-    ),
-  );
+  let spentThisMonth = $derived(spentInMonth(reportableTransactions, currentMonthKey));
 
-  /** Last month's spending counted only up to the same day-of-month, so a
-   * comparison made on the 3rd isn't measured against a whole month. Days past
-   * the end of a shorter month simply contribute nothing. */
   let spentLastMonthToDate = $derived(
-    reportableTransactions.reduce((sum, t) => {
-      if (t.amount_minor_units >= 0) return sum;
-      if (t.date.slice(0, 7) !== previousMonthKey) return sum;
-      if (Number(t.date.slice(8, 10)) > dayOfMonth) return sum;
-      return sum - t.amount_minor_units;
-    }, 0),
+    spentUpToDayOfMonth(reportableTransactions, previousMonthKey, dayOfMonth),
   );
 
   let spendDelta = $derived(spentThisMonth - spentLastMonthToDate);
-  let spendDeltaPercent = $derived(
-    spentLastMonthToDate > 0 ? Math.round((spendDelta / spentLastMonthToDate) * 100) : null,
-  );
+  let spendDeltaPercent = $derived(spendDeltaPercentOf(spentThisMonth, spentLastMonthToDate));
 
   /** Mean expense/savings over the full `MONTHS_SHOWN`-month window — the same
    * months the bar chart plots, current partial month included. */
-  let meanSpendWithRent = $derived(
-    Math.round(monthlyTotals.reduce((sum, m) => sum + m.expense, 0) / monthlyTotals.length),
-  );
-
-  let meanSpendWithoutRent = $derived(
-    Math.round(
-      monthlyTotals.reduce((sum, m) => sum + m.expenseWithoutRent, 0) / monthlyTotals.length,
-    ),
-  );
-
-  let meanSavings = $derived(
-    Math.round(monthlyTotals.reduce((sum, m) => sum + m.savings, 0) / monthlyTotals.length),
-  );
+  let meanSpendWithRent = $derived(meanOf(monthlyTotals, "expense"));
+  let meanSpendWithoutRent = $derived(meanOf(monthlyTotals, "expenseWithoutRent"));
+  let meanSavings = $derived(meanOf(monthlyTotals, "savings"));
 
   // ---------------------------------------------------------------------------
   // Recurring commitments.
@@ -299,15 +220,6 @@
 
   let recurringCurrency = $derived(recurring[0]?.currency ?? currency);
 
-  /** "12 Aug". Parsed by splitting the ISO string rather than via `new Date`,
-   * which reads a bare YYYY-MM-DD as UTC midnight and so renders the previous
-   * day for anyone west of Greenwich. */
-  function formatShortDate(iso: string): string {
-    const [, month, day] = iso.split("-");
-    const label = MONTH_LABELS[Number(month) - 1];
-    return label ? `${Number(day)} ${label}` : iso;
-  }
-
   // ---------------------------------------------------------------------------
   // Shared chart scaffolding.
   // ---------------------------------------------------------------------------
@@ -323,37 +235,12 @@
   const plotHeight = CHART_HEIGHT - PADDING_TOP - PADDING_BOTTOM;
   const plotBottom = CHART_HEIGHT - PADDING_BOTTOM;
 
-  /** Rounds a raw axis step up to a "nice" 1/2/5 × 10^n value, so the scale
-   * reads as round numbers (e.g. 500, 1000) rather than awkward fractions. */
-  function niceStep(rawStep: number): number {
-    if (rawStep <= 0) return 1;
-    const magnitude = 10 ** Math.floor(Math.log10(rawStep));
-    const residual = rawStep / magnitude;
-    const niceResidual = residual <= 1 ? 1 : residual <= 2 ? 2 : residual <= 5 ? 5 : 10;
-    return niceResidual * magnitude;
-  }
-
-  type Scale = { min: number; max: number; ticks: number[] };
-
-  /** A nice-rounded [min, max] domain covering `values`, in minor units.
-   * `includeZero` forces the baseline into the domain — needed by the bar
-   * chart (bars grow from zero) and by any series that crosses into negative. */
   function buildScale(values: number[], includeZero: boolean): Scale {
-    if (values.length === 0) return { min: 0, max: 1, ticks: [0, 1] };
-    const rawMax = Math.max(...values, ...(includeZero ? [0] : []));
-    const rawMin = Math.min(...values, ...(includeZero ? [0] : []));
-    // A step below one minor unit is meaningless — amounts are integers.
-    const step = Math.max(1, niceStep(Math.max(rawMax - rawMin, 1) / AXIS_TICK_COUNT));
-    const min = Math.floor(rawMin / step) * step;
-    const max = Math.ceil(rawMax / step) * step;
-    const ticks: number[] = [];
-    for (let v = min; v <= max + step * 0.001; v += step) ticks.push(Math.round(v));
-    return { min, max, ticks };
+    return buildScaleWith(values, includeZero, AXIS_TICK_COUNT);
   }
 
   function scaleY(value: number, scaleDef: Scale): number {
-    const span = scaleDef.max - scaleDef.min || 1;
-    return plotBottom - ((value - scaleDef.min) / span) * plotHeight;
+    return scaleYWith(value, scaleDef, plotBottom, plotHeight);
   }
 
   // ---------------------------------------------------------------------------

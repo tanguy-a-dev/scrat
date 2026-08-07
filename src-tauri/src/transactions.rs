@@ -763,3 +763,229 @@ mod tests {
         assert_eq!(csv_field("crlf\r\nline"), "\"crlf\r\nline\"");
     }
 }
+
+#[cfg(test)]
+mod filter_and_dto_tests {
+    use scrat_domain::recurring::Cadence;
+
+    use super::*;
+
+    /// A named category, account and kind all arrive as strings from the
+    /// frontend and are parsed here exactly once, so the page and the count
+    /// beneath it can't disagree about what the filter meant.
+    #[test]
+    fn every_filter_field_is_parsed_and_carried_through() {
+        let category_id = CategoryId::new();
+        let account_id = AccountId::new();
+
+        let filters = parse_transaction_filters(
+            Some(category_id.as_string()),
+            Some("whole foods".to_string()),
+            Some(false),
+            Some(account_id.as_string()),
+            Some("card".to_string()),
+            Some(500),
+            Some(10_000),
+        )
+        .unwrap();
+
+        assert_eq!(filters.category_id, Some(category_id));
+        assert_eq!(filters.account_id, Some(account_id));
+        assert_eq!(filters.operation_kind, Some(OperationKind::Card));
+        assert_eq!(filters.description_contains.as_deref(), Some("whole foods"));
+        assert_eq!(filters.is_income, Some(false));
+        assert_eq!(filters.min_amount_minor_units, Some(500));
+        assert_eq!(filters.max_amount_minor_units, Some(10_000));
+    }
+
+    /// No filters means an unfiltered ledger, not an empty one.
+    #[test]
+    fn absent_filters_produce_an_empty_filter_set() {
+        let filters = parse_transaction_filters(None, None, None, None, None, None, None).unwrap();
+
+        assert!(filters.category_id.is_none());
+        assert!(filters.account_id.is_none());
+        assert!(filters.operation_kind.is_none());
+        assert!(filters.description_contains.is_none());
+        assert!(filters.is_income.is_none());
+        assert!(filters.min_amount_minor_units.is_none());
+        assert!(filters.max_amount_minor_units.is_none());
+    }
+
+    /// A malformed id has to fail loudly. Swallowing it into `None` would
+    /// turn "show me this category" into "show me everything" — the user
+    /// would be reading someone else's totals under their category's heading.
+    #[test]
+    fn a_malformed_category_id_is_rejected_rather_than_ignored() {
+        let error = parse_transaction_filters(
+            Some("not-a-uuid".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+
+        assert!(!error.is_empty());
+    }
+
+    #[test]
+    fn a_malformed_account_id_is_rejected_rather_than_ignored() {
+        assert!(
+            parse_transaction_filters(
+                None,
+                None,
+                None,
+                Some("not-a-uuid".to_string()),
+                None,
+                None,
+                None
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn an_unknown_operation_kind_is_rejected_rather_than_ignored() {
+        assert!(
+            parse_transaction_filters(
+                None,
+                None,
+                None,
+                None,
+                Some("telepathy".to_string()),
+                None,
+                None
+            )
+            .is_err()
+        );
+    }
+
+    /// An empty search box is a `Some("")`, which must not silently become
+    /// "match everything with an empty substring" *or* be dropped — it's
+    /// passed through as given and the repository's LIKE handles it.
+    #[test]
+    fn an_empty_description_filter_is_passed_through_verbatim() {
+        let filters =
+            parse_transaction_filters(None, Some(String::new()), None, None, None, None, None)
+                .unwrap();
+
+        assert_eq!(filters.description_contains.as_deref(), Some(""));
+    }
+
+    fn charge() -> RecurringCharge {
+        RecurringCharge {
+            merchant_key: "netflix".to_string(),
+            label: "NETFLIX.COM 12/03".to_string(),
+            cadence: Cadence::Monthly,
+            typical_amount_minor_units: 1_399,
+            monthly_equivalent_minor_units: 1_399,
+            occurrences: 7,
+            first_seen: NaiveDate::from_ymd_opt(2025, 9, 12).unwrap(),
+            last_seen: NaiveDate::from_ymd_opt(2026, 3, 12).unwrap(),
+            next_expected: NaiveDate::from_ymd_opt(2026, 4, 12).unwrap(),
+            category_id: CategoryId::new(),
+            is_active: true,
+        }
+    }
+
+    #[test]
+    fn a_recurring_charge_dto_carries_every_field_across() {
+        let domain = charge();
+        let category_id = domain.category_id;
+
+        let dto = RecurringChargeDto::from_domain(domain, "EUR");
+
+        assert_eq!(dto.label, "NETFLIX.COM 12/03");
+        assert_eq!(dto.cadence, "monthly");
+        assert_eq!(dto.typical_amount_minor_units, 1_399);
+        assert_eq!(dto.monthly_equivalent_minor_units, 1_399);
+        assert_eq!(dto.currency, "EUR");
+        assert_eq!(dto.occurrences, 7);
+        assert_eq!(dto.category_id, category_id.as_string());
+        assert!(dto.is_active);
+    }
+
+    /// ISO on the wire, always — the frontend splits these strings on `-`
+    /// rather than feeding them to `new Date`, so any other shape renders as
+    /// nonsense rather than failing loudly.
+    #[test]
+    fn recurring_charge_dates_cross_the_wire_as_iso_strings() {
+        let dto = RecurringChargeDto::from_domain(charge(), "EUR");
+
+        assert_eq!(dto.first_seen, "2025-09-12");
+        assert_eq!(dto.last_seen, "2026-03-12");
+        assert_eq!(dto.next_expected, "2026-04-12");
+    }
+
+    /// Single-digit months and days are zero-padded. Unpadded output would
+    /// break the frontend's `iso.slice(0, 7)` month bucketing and its
+    /// `MONTH_LABELS[Number(month) - 1]` lookup alike.
+    #[test]
+    fn recurring_charge_dates_are_zero_padded() {
+        let domain = RecurringCharge {
+            first_seen: NaiveDate::from_ymd_opt(2026, 1, 5).unwrap(),
+            ..charge()
+        };
+
+        let dto = RecurringChargeDto::from_domain(domain, "EUR");
+
+        assert_eq!(dto.first_seen, "2026-01-05");
+    }
+
+    /// The domain already stores the amount as a positive magnitude and the
+    /// DTO must not re-sign it — the frontend renders these as costs and
+    /// would print "-€-13,99" if a negation crept in here.
+    #[test]
+    fn a_recurring_charge_amount_stays_a_positive_magnitude() {
+        let dto = RecurringChargeDto::from_domain(charge(), "EUR");
+
+        assert!(dto.typical_amount_minor_units > 0);
+        assert!(dto.monthly_equivalent_minor_units > 0);
+    }
+
+    #[test]
+    fn every_cadence_crosses_the_wire_as_its_domain_spelling() {
+        for (cadence, expected) in [
+            (Cadence::Weekly, "weekly"),
+            (Cadence::Monthly, "monthly"),
+            (Cadence::Quarterly, "quarterly"),
+            (Cadence::Yearly, "yearly"),
+        ] {
+            let dto = RecurringChargeDto::from_domain(
+                RecurringCharge {
+                    cadence,
+                    ..charge()
+                },
+                "EUR",
+            );
+
+            assert_eq!(dto.cadence, expected);
+        }
+    }
+
+    /// A lapsed charge reaches the frontend flagged rather than dropped —
+    /// the Overview panel lists it separately and leaves it out of the
+    /// committed-per-month total.
+    #[test]
+    fn a_lapsed_charge_keeps_its_inactive_flag() {
+        let dto = RecurringChargeDto::from_domain(
+            RecurringCharge {
+                is_active: false,
+                ..charge()
+            },
+            "EUR",
+        );
+
+        assert!(!dto.is_active);
+    }
+
+    #[test]
+    fn the_dto_reports_the_currency_it_is_given_not_the_domain_default() {
+        let dto = RecurringChargeDto::from_domain(charge(), "USD");
+
+        assert_eq!(dto.currency, "USD");
+    }
+}

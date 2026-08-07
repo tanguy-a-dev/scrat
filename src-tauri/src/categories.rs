@@ -182,3 +182,87 @@ pub fn set_rent_category(state: State<DbState>, id: String) -> Result<(), String
         .ok_or_else(|| "category not found".to_string())?;
     scrat_infra_sqlite::set_rent_category_id(conn, &id.as_string()).map_err(|e| e.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use scrat_domain::category::{CategoryIcon, CategoryName};
+
+    use super::*;
+
+    fn category(name: &str, parent_id: Option<CategoryId>) -> Category {
+        Category::new(
+            CategoryId::new(),
+            CategoryName::new(name).unwrap(),
+            parent_id,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_top_level_category_dto_carries_every_field_across() {
+        let mut housing = category("Housing", None);
+        housing
+            .set_icon(Some(CategoryIcon::new("house").unwrap()))
+            .unwrap();
+        let id = housing.id();
+
+        let dto = to_dto(housing, CategoryId::new());
+
+        assert_eq!(dto.id, id.as_string());
+        assert_eq!(dto.name, "Housing");
+        assert_eq!(dto.parent_id, None);
+        assert_eq!(dto.icon.as_deref(), Some("house"));
+        assert!(!dto.is_default);
+    }
+
+    /// A subcategory carries its parent's id as a string, so the UI can nest
+    /// it. Losing this would flatten the two-level hierarchy into one list.
+    #[test]
+    fn a_subcategory_reports_its_parent() {
+        let parent_id = CategoryId::new();
+
+        let dto = to_dto(category("Rent", Some(parent_id)), CategoryId::new());
+
+        assert_eq!(dto.parent_id, Some(parent_id.as_string()));
+        assert_eq!(dto.icon, None);
+    }
+
+    /// Only the app-wide "Uncategorized" category is flagged — it's the one
+    /// the UI must refuse to rename or delete.
+    #[test]
+    fn only_the_default_category_is_flagged_as_default() {
+        let uncategorized = category("Uncategorized", None);
+        let default_id = uncategorized.id();
+
+        let default_dto = to_dto(uncategorized, default_id);
+        let other_dto = to_dto(category("Housing", None), default_id);
+
+        assert!(default_dto.is_default);
+        assert!(!other_dto.is_default);
+    }
+
+    #[test]
+    fn an_iconless_top_level_category_reports_no_icon() {
+        let dto = to_dto(category("Housing", None), CategoryId::new());
+
+        assert_eq!(dto.icon, None);
+    }
+
+    #[test]
+    fn a_valid_id_parses_and_a_malformed_one_is_rejected() {
+        let id = CategoryId::new();
+
+        assert_eq!(parse_id(&id.as_string()).unwrap(), id);
+        assert!(parse_id("not-a-uuid").is_err());
+        assert!(parse_id("").is_err());
+    }
+
+    /// `None` means "no parent" (a top-level category), which must not be
+    /// conflated with a malformed id — promoting a category to root and
+    /// failing to parse its parent are different outcomes.
+    #[test]
+    fn an_absent_optional_id_is_none_rather_than_an_error() {
+        assert_eq!(parse_optional_id(None).unwrap(), None);
+        assert!(parse_optional_id(Some("not-a-uuid".to_string())).is_err());
+    }
+}

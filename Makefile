@@ -1,5 +1,5 @@
-.PHONY: install dev build test fmt fmt-check lint check audit coverage clean kill reset-db \
-        release-test release-preview sample-db
+.PHONY: install dev build test test-frontend fmt fmt-check lint check audit coverage clean \
+        kill reset-db release-test release-preview sample-db
 
 HELP_TARGET_COLUMN_WIDTH = 40
 
@@ -25,6 +25,9 @@ build: ## Build the desktop app for release
 test: ## Run the Rust workspace test suite
 	cargo test --workspace
 
+test-frontend: ## Run the frontend (vitest) test suite
+	npm --prefix frontend test
+
 fmt: ## Format Rust code
 	cargo fmt --all
 
@@ -44,7 +47,7 @@ release-preview: ## Preview the version bump and release notes for the next rele
 	@echo
 	@bash scripts/release-notes.sh
 
-check: fmt-check lint test release-test ## Run the same checks as CI
+check: fmt-check lint test test-frontend release-test ## Run the same checks as CI
 
 # cargo-audit and cargo-llvm-cov are standalone dev tools installed via
 # `cargo install cargo-audit cargo-llvm-cov` (or the taiki-e/install-action

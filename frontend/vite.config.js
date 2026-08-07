@@ -1,7 +1,8 @@
 import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
 
-// @ts-expect-error process is a nodejs global
+// `process` is typed via @types/node, pulled in as a dev dependency for the
+// test suite (see vitest.config.ts) — it needs no suppression here.
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/

@@ -16,6 +16,7 @@
     type RangeMode,
   } from "$lib/api";
   import DateRangePicker from "$lib/DateRangePicker.svelte";
+  import * as breakdown from "$lib/breakdown";
   import { pageViewState } from "$lib/pageCache";
   import {
     ArrowUpRight,
@@ -77,6 +78,10 @@
   // never rests on the color boundary alone.
   const SLICE_GAP = 2;
 
+  // The three constants the arc math in `$lib/breakdown` needs, bundled once
+  // so no call site can pass a mismatched set.
+  const DONUT = { circumference: CIRCUMFERENCE, sliceGap: SLICE_GAP, palette: PALETTE };
+
   // The comparison period's ring, concentric inside the main one. It sits far
   // enough in to leave a clear band of background between the two — touching,
   // they would read as one thick ring with a seam rather than as two.
@@ -107,39 +112,17 @@
   const COMPARE_WIDTH_MAX = 15;
 
   function compareRingWidth(totalA: number, totalB: number): number {
-    if (totalA <= 0) return COMPARE_WIDTH;
-    const scaled = COMPARE_WIDTH * (totalB / totalA);
-    return Math.min(Math.max(scaled, COMPARE_WIDTH_MIN), COMPARE_WIDTH_MAX);
+    return breakdown.compareRingWidth(
+      totalA,
+      totalB,
+      COMPARE_WIDTH,
+      COMPARE_WIDTH_MIN,
+      COMPARE_WIDTH_MAX,
+    );
   }
 
-  /** The comparison ring's arcs, built from `percentB` the same way
-   * `withDonutSlices` + `withAnimatedSlices` build the main ring's from
-   * `percent` — its own circumference, its own cumulative walk, sharing the
-   * row order so both rings run through the categories in the same sequence
-   * and the same colours. */
   function compareArcs<T extends { percentB: number }>(rows: T[]) {
-    const circumference = 2 * Math.PI * COMPARE_RADIUS;
-    const drawnCount = rows.filter((r) => r.percentB > 0).length;
-    let cumulative = 0;
-    return rows.map((row) => {
-      const full = (row.percentB / 100) * circumference;
-      const dashoffset = -cumulative * fillProgress;
-      cumulative += full;
-      const drawn = gapped(full * fillProgress, drawnCount);
-      return {
-        ...row,
-        arcDasharray: `${drawn} ${circumference - drawn}`,
-        arcDashoffset: dashoffset,
-      };
-    });
-  }
-
-  // Shrink an arc by the gap, but never past half its own length — a very
-  // small slice should stay visible rather than be eaten by the spacer.
-  // A lone slice has nothing to be separated from, so it keeps the full ring.
-  function gapped(length: number, sliceCount: number): number {
-    if (sliceCount < 2) return length;
-    return Math.max(length - SLICE_GAP, length / 2);
+    return breakdown.compareArcs(rows, COMPARE_RADIUS, SLICE_GAP, fillProgress);
   }
 
   let categories = $state<CategoryDto[]>([]);
@@ -630,19 +613,7 @@
     return hidden.has(categoryId) || hidden.has(rootCategoryId(categoryId));
   }
 
-  let rootMap = $derived.by(() => {
-    const byId = new Map(categories.map((c) => [c.id, c]));
-    const cache = new Map<string, string>();
-    function findRoot(id: string): string {
-      if (cache.has(id)) return cache.get(id)!;
-      const cat = byId.get(id);
-      const root = cat?.parent_id ? findRoot(cat.parent_id) : id;
-      cache.set(id, root);
-      return root;
-    }
-    for (const c of categories) findRoot(c.id);
-    return cache;
-  });
+  let rootMap = $derived.by(() => breakdown.buildRootMap(categories));
 
   function rootCategoryId(categoryId: string): string {
     return rootMap.get(categoryId) ?? categoryId;
@@ -708,130 +679,36 @@
     ),
   );
 
-  // scopeRootId narrows to one root category's transactions and groups by
-  // its subcategories instead of by root — this is what powers drilldown.
   function buildBreakdown(txns: TransactionDto[], scopeRootId: string | null) {
-    const scoped = scopeRootId
-      ? txns.filter((t) => rootCategoryId(t.category_id) === scopeRootId)
-      : txns;
-    const total = scoped.reduce((sum, t) => sum + Math.abs(t.amount_minor_units), 0);
-    const sums = new Map<string, number>();
-    for (const t of scoped) {
-      const key = scopeRootId ? t.category_id : rootCategoryId(t.category_id);
-      sums.set(key, (sums.get(key) ?? 0) + Math.abs(t.amount_minor_units));
-    }
-    const totalOrOne = total || 1;
-    const breakdown = [...sums.entries()]
-      .map(([categoryId, amountMinorUnits]) => ({
-        categoryId,
-        name: categoryName(categoryId),
-        amountMinorUnits,
-        percent: (amountMinorUnits / totalOrOne) * 100,
-      }))
-      .sort((a, b) => b.amountMinorUnits - a.amountMinorUnits);
-    return { total, breakdown };
+    return breakdown.buildBreakdown(txns, scopeRootId, rootCategoryId, categoryName);
   }
 
-  // Rows for the categories this panel is currently hiding: they carry their
-  // real amount (so the user can see what they're leaving out) but no share,
-  // since by definition they're no longer part of the total the shares are of.
-  function hiddenRows(
-    panel: PanelKey,
-    txns: TransactionDto[],
-    scopeRootId: string | null,
-  ) {
-    const hidden = hiddenCategoryIds[panel];
-    const sums = new Map<string, number>();
-    for (const t of txns) {
-      const root = rootCategoryId(t.category_id);
-      if (scopeRootId !== null && root !== scopeRootId) continue;
-      const key = scopeRootId ? t.category_id : root;
-      if (!hidden.has(key)) continue;
-      sums.set(key, (sums.get(key) ?? 0) + Math.abs(t.amount_minor_units));
-    }
-    return [...sums.entries()]
-      .map(([categoryId, amountMinorUnits]) => ({
-        categoryId,
-        name: categoryName(categoryId),
-        amountMinorUnits,
-      }))
-      .sort((a, b) => b.amountMinorUnits - a.amountMinorUnits);
+  function hiddenRows(panel: PanelKey, txns: TransactionDto[], scopeRootId: string | null) {
+    return breakdown.hiddenRows(
+      txns,
+      hiddenCategoryIds[panel],
+      scopeRootId,
+      rootCategoryId,
+      categoryName,
+    );
   }
 
-  /** One category's line in a panel: always its period-A figures, plus its
-   * period-B ones when comparing (zeros when not, so one code path serves
-   * both views).
-   *
-   * `deltaRatio` is null rather than Infinity when the category had nothing in
-   * period B. "Up ∞%" is not a fact about spending, it's a division by zero
-   * wearing a percentage sign — the row says "new" instead. */
-  type PanelRow = {
-    categoryId: string;
-    name: string;
-    amountMinorUnits: number;
-    percent: number;
-    amountB: number;
-    percentB: number;
-    deltaMinor: number;
-    deltaRatio: number | null;
-  };
+  type PanelRow = breakdown.PanelRow;
 
-  /** Merges a panel's two periods into one list of rows.
-   *
-   * The union, not period A's categories: a category with €300 in June and
-   * nothing in August has to appear, or the comparison quietly omits the
-   * single biggest thing that changed. Those rows carry `amountMinorUnits: 0`,
-   * so they take no donut slice — they exist in the list, which is where the
-   * comparison actually lives.
-   *
-   * Sorting is by whichever period the category was larger in, rather than by
-   * period A. Sorting by A alone would drop every disappeared category into a
-   * silent block at the bottom, ranked below rows a hundredth their size. */
   function buildPanelRows(
     txnsA: TransactionDto[],
     txnsB: TransactionDto[],
     scopeRootId: string | null,
   ) {
-    const a = buildBreakdown(txnsA, scopeRootId);
-    const b = compareActive
-      ? buildBreakdown(txnsB, scopeRootId)
-      : { total: 0, breakdown: [] as ReturnType<typeof buildBreakdown>["breakdown"] };
-    const bById = new Map(b.breakdown.map((r) => [r.categoryId, r]));
-
-    const row = (
-      categoryId: string,
-      name: string,
-      amountMinorUnits: number,
-      percent: number,
-    ): PanelRow => {
-      const match = bById.get(categoryId);
-      const amountB = match?.amountMinorUnits ?? 0;
-      return {
-        categoryId,
-        name,
-        amountMinorUnits,
-        percent,
-        amountB,
-        percentB: match?.percent ?? 0,
-        deltaMinor: amountMinorUnits - amountB,
-        deltaRatio: amountB === 0 ? null : (amountMinorUnits - amountB) / amountB,
-      };
-    };
-
-    const rows = a.breakdown.map((r) =>
-      row(r.categoryId, r.name, r.amountMinorUnits, r.percent),
+    return breakdown.buildPanelRows(
+      txnsA,
+      txnsB,
+      scopeRootId,
+      compareActive,
+      rootCategoryId,
+      categoryName,
+      DONUT,
     );
-    if (compareActive) {
-      const inA = new Set(a.breakdown.map((r) => r.categoryId));
-      for (const r of b.breakdown) {
-        if (!inA.has(r.categoryId)) rows.push(row(r.categoryId, r.name, 0, 0));
-      }
-    }
-    rows.sort(
-      (x, y) =>
-        Math.max(y.amountMinorUnits, y.amountB) - Math.max(x.amountMinorUnits, x.amountB),
-    );
-    return { total: a.total, totalB: b.total, rows: withDonutSlices(rows) };
   }
 
   // Colored (but non-animated) breakdown of one root category's subcategories,
@@ -853,44 +730,8 @@
     }));
   }
 
-  function withDonutSlices<T extends { percent: number }>(breakdown: T[]) {
-    let cumulative = 0;
-    // Rows the comparison added for categories absent from this period draw no
-    // arc, so they must not be counted when deciding whether there is a
-    // neighbour to leave a gap against — otherwise a panel showing one real
-    // category would carve a spacer out of a ring it has entirely to itself.
-    const drawnCount = breakdown.filter((s) => s.percent > 0).length;
-    return breakdown.map((slice, i) => {
-      const length = (slice.percent / 100) * CIRCUMFERENCE;
-      const dashoffset = -cumulative;
-      cumulative += length;
-      const drawn = gapped(length, drawnCount);
-      return {
-        ...slice,
-        color: PALETTE[i % PALETTE.length],
-        dasharray: `${drawn} ${CIRCUMFERENCE - drawn}`,
-        dashoffset,
-      };
-    });
-  }
-
-  // Scales each slice's arc length/offset and each bar's width by
-  // `fillProgress`, so the whole donut sweeps in from empty together rather
-  // than each slice animating independently out of sync with the others.
   function withAnimatedSlices<T extends { percent: number; dashoffset: number }>(slices: T[]) {
-    const drawnCount = slices.filter((s) => s.percent > 0).length;
-    return slices.map((slice) => {
-      const animatedLength = gapped(
-        (slice.percent / 100) * CIRCUMFERENCE * fillProgress,
-        drawnCount,
-      );
-      return {
-        ...slice,
-        animatedLength,
-        animatedDashoffset: slice.dashoffset * fillProgress,
-        animatedPercent: slice.percent * fillProgress,
-      };
-    });
+    return breakdown.withAnimatedSlices(slices, DONUT, fillProgress);
   }
 
   let expenseData = $derived.by(() =>
