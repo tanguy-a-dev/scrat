@@ -555,6 +555,10 @@
     const daysA = elapsedIfCurrent(a);
     const daysB = elapsedIfCurrent(b);
     if (daysA === daysB) return "";
+    // A leap year's extra day is a calendar fact, not an unfair comparison —
+    // two full years a day apart in length are still "the same length" for
+    // this purpose.
+    if (rangeMode === "year" && Math.abs(daysA - daysB) === 1) return "";
     return `${daysA} days vs ${daysB} — not the same length`;
   });
 

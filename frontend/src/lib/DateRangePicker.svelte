@@ -120,7 +120,17 @@
     }
   }
 
+  // Nothing beyond today is ever selectable, so there is nothing useful to
+  // navigate to past it either — stepping forward stops at the month/year
+  // that holds today, the same way it starts nowhere before the epoch.
+  let canGoNext = $derived(
+    mode === "month"
+      ? viewYear < todayYmd.y
+      : viewYear < todayYmd.y || (viewYear === todayYmd.y && viewMonth < todayYmd.m),
+  );
+
   function nextPeriod() {
+    if (!canGoNext) return;
     if (mode === "month") {
       viewYear += 1;
     } else if (viewMonth === 11) {
@@ -144,14 +154,24 @@
     open = false;
   }
 
+  function isFutureDay(cell: Ymd): boolean {
+    return cmpDay(cell, todayYmd) > 0;
+  }
+
+  function isFutureMonth(cell: Ymd): boolean {
+    return cmpMonth(cell, todayYmd) > 0;
+  }
+
   function pickDay(y: number, m: number, d: number) {
     const clicked = { y, m, d };
+    if (isFutureDay(clicked)) return;
     if (!pendingStart) pendingStart = clicked;
     else commitRange(pendingStart, clicked, false);
   }
 
   function pickMonth(y: number, m: number) {
     const clicked = { y, m, d: 1 };
+    if (isFutureMonth(clicked)) return;
     if (!pendingStart) pendingStart = clicked;
     else commitRange(pendingStart, clicked, true);
   }
@@ -259,6 +279,7 @@
         <button
           type="button"
           class="nav-button"
+          disabled={!canGoNext}
           onclick={nextPeriod}
           aria-label="Next"
         >
@@ -281,6 +302,7 @@
               class:today={isSameDay(cell, todayYmd)}
               class:endpoint={isDayEndpoint(cell)}
               class:in-range={dayInRange(cell)}
+              disabled={isFutureDay(cell)}
               onmouseenter={() => (hovered = cell)}
               onclick={() => pickDay(cell.y, cell.m, cell.d)}
             >
@@ -298,6 +320,7 @@
               class:today={viewYear === todayYmd.y && m === todayYmd.m}
               class:endpoint={isMonthEndpoint(cell)}
               class:in-range={monthInRange(cell)}
+              disabled={isFutureMonth(cell)}
               onmouseenter={() => (hovered = cell)}
               onclick={() => pickMonth(viewYear, m)}
             >
@@ -409,6 +432,15 @@
     background-color: var(--color-shade-3);
   }
 
+  .nav-button:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+
+  .nav-button:disabled:hover {
+    background-color: transparent;
+  }
+
   .weekdays {
     display: grid;
     grid-template-columns: repeat(7, 1fr);
@@ -437,6 +469,11 @@
 
   .day-cell.dim {
     opacity: 0.35;
+  }
+
+  .day-cell:disabled {
+    opacity: 0.25;
+    cursor: not-allowed;
   }
 
   .day-cell.today {
@@ -485,6 +522,11 @@
 
   .month-cell.today {
     box-shadow: inset 0 0 0 1px var(--color-accent);
+  }
+
+  .month-cell:disabled {
+    opacity: 0.25;
+    cursor: not-allowed;
   }
 
   .month-cell.in-range {
