@@ -183,11 +183,19 @@ pub struct RecurringCharge {
 ///
 /// So the failure mode this chooses is a missed subscription (the same charge
 /// worded two different ways stays split) rather than an invented one.
+///
+/// One exception: the "cb" token (Carte Bancaire) is always dropped, the same
+/// way [`crate::transaction`]'s category-matching normalization and
+/// `normalize_description` in `transaction_service.rs` already drop it. Unlike
+/// "PRLV"/"SEPA" it isn't part of the merchant's own name — it's a fixed
+/// payment-instrument marker some banks toggle on and off over time, which
+/// would otherwise split one subscription's history into two merchant keys
+/// the moment the bank changes its formatting.
 pub fn merchant_key(description: &str) -> String {
     description
         .to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
-        .filter(|token| !token.is_empty() && !is_noise_token(token))
+        .filter(|token| !token.is_empty() && !is_noise_token(token) && *token != "cb")
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -504,6 +512,35 @@ mod tests {
     #[test]
     fn merchant_key_is_empty_when_description_is_all_noise() {
         assert_eq!(merchant_key("00219 4913 / 2026-06-12"), "");
+    }
+
+    /// "CB" (Carte Bancaire) is a payment-instrument marker, not part of the
+    /// merchant's name — some banks add or drop it over time, and without
+    /// stripping it a subscription's history would split into two merchant
+    /// keys the moment that happens. Dates are already dropped by the
+    /// digit-noise rule since each `/`-separated component is all-digit.
+    #[test]
+    fn merchant_key_ignores_cb_prefix_and_dates() {
+        assert_eq!(
+            merchant_key("CB NETFLIX.COM 12/06/26"),
+            merchant_key("NETFLIX.COM")
+        );
+    }
+
+    /// A bank that starts prefixing every card payment with "CB" partway
+    /// through the history must not split one subscription into two.
+    #[test]
+    fn groups_occurrences_despite_a_cb_prefix_appearing_partway_through() {
+        let transactions = vec![
+            expense(date(2026, 4, 12), -1349, "NETFLIX.COM 12/04/26"),
+            expense(date(2026, 5, 12), -1349, "CB NETFLIX.COM 12/05/26"),
+            expense(date(2026, 6, 12), -1349, "CB NETFLIX.COM 12/06/26"),
+        ];
+
+        let charges = detect_recurring_charges(&transactions, date(2026, 6, 20));
+
+        assert_eq!(charges.len(), 1);
+        assert_eq!(charges[0].occurrences, 3);
     }
 
     /// A description that normalizes to nothing must be skipped, not pooled with
