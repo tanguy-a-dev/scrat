@@ -530,13 +530,13 @@
   });
 
   /** Says so when the two periods are not the same length, which is the one
-   * thing that makes every number below it unfair. It fires for the obvious
-   * case — a month still in progress against a finished one — and for the
-   * quieter ones nobody thinks about, like February against January.
-   *
-   * The comparison is still shown rather than blocked. A 28-vs-31-day month is
-   * a real question people ask; it just needs saying that the answer is
-   * shorter by three days. */
+   * thing that makes every number below it unfair. It fires only for the
+   * case that's actually unfair — a month or year still in progress set
+   * beside a finished one — not for two finished periods that just happen
+   * to be different calendar lengths (February vs January, a leap year vs
+   * not). Nobody chose those lengths, so there's nothing to warn about;
+   * "31 days vs 30" for two complete months isn't a fairness problem, it's
+   * just what months are. */
   let lengthMismatch = $derived.by(() => {
     if (!compareActive) return "";
     const a = computeRange(rangeMode, {
@@ -545,20 +545,19 @@
       offset: rangeOffset,
     });
     const b = computeRangeB();
+    const today = todayIsoDate();
+    const inProgress = (r: { start: string; end: string }) => r.start <= today && today < r.end;
     // A period still running is measured by the days that have happened, not
     // by the days it will eventually hold — otherwise the six days of August
     // on screen would compare as a full month.
-    const elapsedIfCurrent = (r: { start: string; end: string }) => {
-      const today = todayIsoDate();
-      return r.start <= today && today < r.end ? spanDays(r.start, today) : spanDays(r.start, r.end);
-    };
+    const elapsedIfCurrent = (r: { start: string; end: string }) =>
+      inProgress(r) ? spanDays(r.start, today) : spanDays(r.start, r.end);
     const daysA = elapsedIfCurrent(a);
     const daysB = elapsedIfCurrent(b);
     if (daysA === daysB) return "";
-    // A leap year's extra day is a calendar fact, not an unfair comparison —
-    // two full years a day apart in length are still "the same length" for
-    // this purpose.
-    if (rangeMode === "year" && Math.abs(daysA - daysB) === 1) return "";
+    if ((rangeMode === "month" || rangeMode === "year") && !inProgress(a) && !inProgress(b)) {
+      return "";
+    }
     return `${daysA} days vs ${daysB} — not the same length`;
   });
 
