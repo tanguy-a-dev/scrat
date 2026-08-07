@@ -923,6 +923,29 @@
     }
   }
 
+  /** "All Time" fetches `expenseRows`/`incomeRows` already filtered by the
+   * backend — unlike every other range, which re-derives its filtered list
+   * from `transactions` on every change. Recategorizing there mutates
+   * `category_id` in place but never removes the row, so a transaction that
+   * no longer matches an active category filter stays visible until the
+   * list reloads. Re-applying `matchesFilters` here is what the other
+   * ranges get for free from their `$derived.by`. The offset is a backend
+   * fetch cursor, not derived from array length, so it has to shrink by
+   * however many rows were just dropped — same reasoning as the bulk-delete
+   * offset adjustment above. */
+  function pruneAllTimeRows(kind: SelectionKind) {
+    const filters = activeFilters(kind);
+    if (kind === "expense") {
+      const before = expenseRows.length;
+      expenseRows = expenseRows.filter((tx) => matchesFilters(tx, filters));
+      expenseOffset -= before - expenseRows.length;
+    } else {
+      const before = incomeRows.length;
+      incomeRows = incomeRows.filter((tx) => matchesFilters(tx, filters));
+      incomeOffset -= before - incomeRows.length;
+    }
+  }
+
   async function handleCategoryChange(t: TransactionDto, categoryId: string) {
     if (categoryId === t.category_id) return;
     try {
@@ -932,9 +955,11 @@
       transactions = transactions.map(update);
       expenseRows = expenseRows.map(update);
       incomeRows = incomeRows.map(update);
+      const kind = t.amount_minor_units < 0 ? "expense" : "income";
+      if (rangeMode === "all") pruneAllTimeRows(kind);
       // Recategorizing can move this transaction in or out of an active
       // category filter's count — only ever the count for its own sign.
-      refreshCount(t.amount_minor_units < 0 ? "expense" : "income");
+      refreshCount(kind);
     } catch (e) {
       toast.error(String(e));
     }
@@ -1231,8 +1256,11 @@
       incomeRows = incomeRows.map(update);
       selectionSet(kind).clear();
       setLastClickedId(kind, null);
-      // Only matters when this list's category filter is active — the
-      // prune effect then drops whatever rows no longer match it.
+      if (rangeMode === "all") pruneAllTimeRows(kind);
+      // Only matters when this list's category filter is active — for every
+      // range but "All Time" the `$derived.by` above drops rows that no
+      // longer match it on its own; `pruneAllTimeRows` just did the same
+      // job for "All Time".
       const categoryFilter =
         kind === "expense" ? expenseCategoryFilter : incomeCategoryFilter;
       if (categoryFilter) await refreshCount(kind);
