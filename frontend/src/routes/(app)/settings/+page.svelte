@@ -139,7 +139,7 @@
   async function handleExport() {
     try {
       const destination = await save({
-        defaultPath: "scrat-export.db",
+        defaultPath: timestampedFileName("scrat-export", "db"),
         filters: [{ name: "Scrat Database", extensions: ["db"] }],
       });
       if (!destination) return;
