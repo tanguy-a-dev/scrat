@@ -18,6 +18,7 @@
   import DateRangePicker from "$lib/DateRangePicker.svelte";
   import * as breakdown from "$lib/breakdown";
   import { pageViewState } from "$lib/pageCache";
+  import { describeError, t, type MessageKey } from "$lib/i18n.svelte";
   import {
     ArrowUpRight,
     ChevronLeft,
@@ -178,6 +179,14 @@
   // Every other mode has a defensible predecessor: the previous month or year,
   // or for hand-picked dates the equally-long span ending just before them.
   let canCompare = $derived(rangeMode !== "all");
+
+  /* The stepper labels say "month"/"year" in the interface language. They
+     used to interpolate `rangeMode` itself, which is a wire value — readable
+     in English by coincidence, and untranslatable by construction. */
+  let periodNoun = $derived(t(`details.period.${rangeMode}` as MessageKey));
+  let latestPeriodNote = $derived(
+    rangeMode === "month" ? t("details.latestMonth") : t("details.latestYear"),
+  );
   let compareActive = $derived(comparing && canCompare);
 
   /** The second period's bounds. In `custom` mode it trails period A by its
@@ -365,7 +374,7 @@
       transactions = t;
       transactionsB = tb;
     } catch (e) {
-      error = String(e);
+      error = describeError(e);
     } finally {
       loading = false;
     }
@@ -514,12 +523,12 @@
     const endMs = new Date(`${r.end}T00:00:00`).getTime();
     const elapsed = Math.round((now.setHours(0, 0, 0, 0) - startMs) / dayMs) + 1;
     const total = Math.round((endMs - startMs) / dayMs) + 1;
-    return `${elapsed} of ${total} days so far`;
+    return t("details.daysSoFar", { elapsed, total });
   });
 
   let compareLabel = $derived(
     rangeMode === "custom"
-      ? "Preceding span"
+      ? t("details.precedingSpan")
       : describeRange(rangeMode, compareOffset, { start: customStart, end: customEnd }),
   );
 
@@ -558,7 +567,7 @@
     if ((rangeMode === "month" || rangeMode === "year") && !inProgress(a) && !inProgress(b)) {
       return "";
     }
-    return `${daysA} days vs ${daysB} — not the same length`;
+    return t("details.lengthMismatch", { daysA, daysB });
   });
 
   /** The Transactions page, opened on the same slice of the ledger this row
@@ -623,7 +632,7 @@
   }
 
   function categoryName(id: string): string {
-    return categories.find((c) => c.id === id)?.name ?? "Uncategorized";
+    return categories.find((c) => c.id === id)?.name ?? t("common.uncategorized");
   }
 
   /** This whole page is a breakdown of spending and income, so transfers
@@ -757,7 +766,7 @@
   });
 </script>
 
-<h1>Details</h1>
+<h1>{t("details.title")}</h1>
 
 {#if error}<p class="error">{error}</p>{/if}
 
@@ -766,22 +775,22 @@
     <button
       type="button"
       class:active={rangeMode === "month"}
-      onclick={() => setRange("month")}>Month</button
+      onclick={() => setRange("month")}>{t("details.month")}</button
     >
     <button
       type="button"
       class:active={rangeMode === "year"}
-      onclick={() => setRange("year")}>Year</button
+      onclick={() => setRange("year")}>{t("details.year")}</button
     >
     <button
       type="button"
       class:active={rangeMode === "all"}
-      onclick={() => setRange("all")}>All Time</button
+      onclick={() => setRange("all")}>{t("details.allTime")}</button
     >
     <button
       type="button"
       class:active={rangeMode === "custom"}
-      onclick={() => setRange("custom")}>Set Dates</button
+      onclick={() => setRange("custom")}>{t("details.setDates")}</button
     >
   </div>
   {#if rangeMode === "custom"}
@@ -796,8 +805,8 @@
         type="button"
         class="nav-button"
         onclick={() => stepPeriod(-1)}
-        aria-label={`Previous ${rangeMode}`}
-        title={`Previous ${rangeMode} (←)`}
+        aria-label={t("details.previousPeriod", { period: periodNoun })}
+        title={t("details.previousPeriodKey", { period: periodNoun })}
       >
         <ChevronLeft size={16} />
       </button>
@@ -823,10 +832,10 @@
         class="nav-button"
         disabled={!canStepForward}
         onclick={() => stepPeriod(1)}
-        aria-label={`Next ${rangeMode}`}
+        aria-label={t("details.nextPeriod", { period: periodNoun })}
         title={canStepForward
-          ? `Next ${rangeMode} (→)`
-          : `${rangeMode === "month" ? "This month" : "This year"} is the latest there is`}
+          ? t("details.nextPeriodKey", { period: periodNoun })
+          : latestPeriodNote}
       >
         <ChevronRight size={16} />
       </button>
@@ -842,15 +851,15 @@
   {/if}
 
   {#if compareActive}
-    <span class="vs">vs</span>
+    <span class="vs">{t("details.vs")}</span>
     <div class="period-nav compare">
       {#if steppable}
         <button
           type="button"
           class="nav-button"
           onclick={() => stepCompare(-1)}
-          aria-label={`Previous comparison ${rangeMode}`}
-          title={`Previous comparison ${rangeMode}`}
+          aria-label={t("details.previousComparison", { period: periodNoun })}
+          title={t("details.previousComparison", { period: periodNoun })}
         >
           <ChevronLeft size={16} />
         </button>
@@ -865,10 +874,10 @@
           class="nav-button"
           disabled={!canStepCompareForward}
           onclick={() => stepCompare(1)}
-          aria-label={`Next comparison ${rangeMode}`}
+          aria-label={t("details.nextComparison", { period: periodNoun })}
           title={canStepCompareForward
-            ? `Next comparison ${rangeMode}`
-            : `${rangeMode === "month" ? "This month" : "This year"} is the latest there is`}
+            ? t("details.nextComparison", { period: periodNoun })
+            : latestPeriodNote}
         >
           <ChevronRight size={16} />
         </button>
@@ -883,12 +892,10 @@
     disabled={!canCompare}
     aria-pressed={compareActive}
     onclick={toggleCompare}
-    title={canCompare
-      ? "Compare this period against another"
-      : "All Time is a single period — there is nothing to compare it against"}
+    title={canCompare ? t("details.compareTitle") : t("details.compareDisabled")}
   >
     <GitCompareArrows size={14} aria-hidden="true" />
-    Compare
+    {t("details.compare")}
   </button>
 </div>
 
@@ -910,8 +917,8 @@
   <a
     class="goto-btn"
     href={transactionsHref(panel, categoryId)}
-    title={`View ${name} transactions`}
-    aria-label={`View ${name} transactions`}
+    title={t("details.viewTransactions", { name })}
+    aria-label={t("details.viewTransactions", { name })}
   >
     <ArrowUpRight size={15} aria-hidden="true" />
   </a>
@@ -923,8 +930,8 @@
     class="eye-btn"
     class:is-hidden={hidden}
     aria-pressed={hidden}
-    title={hidden ? `Show ${name}` : `Hide ${name}`}
-    aria-label={hidden ? `Show ${name}` : `Hide ${name}`}
+    title={hidden ? t("details.show", { name }) : t("details.hide", { name })}
+    aria-label={hidden ? t("details.show", { name }) : t("details.hide", { name })}
     onclick={() => toggleHidden(panel, categoryId)}
   >
     <svg class="eye" viewBox="0 0 24 24" aria-hidden="true">
@@ -948,7 +955,7 @@
     {#if row.deltaMinor === 0}
       <!-- "= ±€0,00 0%" is three tokens agreeing that nothing happened. One
            says it. -->
-      <span class="delta-flat-text">no change</span>
+      <span class="delta-flat-text">{t("details.noChange")}</span>
     {:else}
       <!-- The arrow says up or down on its own, so the good/bad colouring is a
            second reading of the same fact rather than the only one — the
@@ -985,7 +992,13 @@
     deltaRatio: number | null;
   },
 )}
-  <div class="prior-row" title={`${compareLabel} — share of ${panelLabel.toLowerCase()}`}>
+  <div
+    class="prior-row"
+    title={t("details.shareOfPanel", {
+      period: compareLabel,
+      panel: panelLabel.toLowerCase(),
+    })}
+  >
     <!-- The period's name was printed on every row of both panels, which on a
          page with a dozen categories meant reading "July 2026" twenty times to
          learn it once. The range bar at the top already names both periods,
@@ -1315,12 +1328,12 @@
                                whole panel (what the parent row's own percent
                                means). Titles carry the wording so the row
                                stays one line. -->
-                          <span class="percent" title={`Share of ${slice.name}`}
+                          <span class="percent" title={t("details.shareOfSlice", { name: slice.name })}
                             >{sub.percent.toFixed(1)}%</span
                           >
                           <span
                             class="percent-of-total"
-                            title={`Share of total ${label.toLowerCase()}`}
+                            title={t("details.shareOfTotal", { panel: label.toLowerCase() })}
                             >· {sub.percentOfTotal.toFixed(1)}% of total</span
                           >
                         </div>
@@ -1408,11 +1421,11 @@
 {/snippet}
 
 {#if loading}
-  <p>Loading…</p>
+  <p>{t("common.loading")}</p>
 {:else}
   <div class="layout">
     {@render donutPanel({
-      label: "Expenses",
+      label: t("common.expenses"),
       panelKey: "expense",
       total: expenseData.total,
       totalB: expenseData.totalB,
@@ -1425,7 +1438,7 @@
     })}
 
     <div class="net-summary">
-      <span class="net-summary-label">Left this period</span>
+      <span class="net-summary-label">{t("details.leftThisPeriod")}</span>
       <strong>{formatCurrency(netLeftMinorUnits, currency)}</strong>
       {#if compareActive}
         {@const delta = netLeftMinorUnits - netLeftMinorUnitsB}
@@ -1435,12 +1448,14 @@
         <span class="net-delta {delta > 0 ? 'good' : delta < 0 ? 'bad' : 'flat'}">
           {formatDelta(delta, currency)}
         </span>
-        <span class="net-was">was {formatCurrency(netLeftMinorUnitsB, currency)}</span>
+        <span class="net-was">
+          {t("details.was", { amount: formatCurrency(netLeftMinorUnitsB, currency) })}
+        </span>
       {/if}
     </div>
 
     {@render donutPanel({
-      label: "Income",
+      label: t("common.income"),
       panelKey: "income",
       total: incomeData.total,
       totalB: incomeData.totalB,

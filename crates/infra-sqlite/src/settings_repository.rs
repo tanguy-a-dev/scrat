@@ -45,6 +45,18 @@ pub fn set_rent_category_id(conn: &Connection, id: &str) -> Result<(), Repositor
     set_setting(conn, "rent_category_id", id)
 }
 
+/// The interface language, stored as its `Language::as_str()` spelling
+/// (`"en"`, `"fr"`). `None` means nobody has chosen one — the app renders in
+/// `Language::default()`, which is also the language a new database's
+/// categories were seeded in.
+pub fn get_language(conn: &Connection) -> Result<Option<String>, RepositoryError> {
+    get_setting(conn, "language")
+}
+
+pub fn set_language(conn: &Connection, language: &str) -> Result<(), RepositoryError> {
+    set_setting(conn, "language", language)
+}
+
 /// Stored as the decimal string form of the minutes value (`"0"` for
 /// "never"). `None` means nobody has changed it from the app default yet.
 pub fn get_auto_lock_minutes(conn: &Connection) -> Result<Option<String>, RepositoryError> {

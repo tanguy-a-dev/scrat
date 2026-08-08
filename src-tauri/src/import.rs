@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::db::DbState;
+use crate::errors::{AppError, codes};
 use crate::transactions::{parse_date, with_service};
 
 #[derive(Debug, Serialize)]
@@ -179,13 +180,14 @@ pub fn preview_csv_import(
     state: State<DbState>,
     bytes: Vec<u8>,
     mapping: Option<ColumnMappingDto>,
-) -> Result<ImportPreviewDto, String> {
+) -> Result<ImportPreviewDto, AppError> {
     if bytes.len() > MAX_CSV_FILE_BYTES {
-        return Err(format!(
-            "This file is {:.1} MB — too large to be a CSV export (limit is {} MB).",
-            bytes.len() as f64 / (1024.0 * 1024.0),
-            MAX_CSV_FILE_BYTES / (1024 * 1024),
-        ));
+        return Err(AppError::new(codes::CSV_FILE_TOO_LARGE)
+            .with(
+                "size_mb",
+                format!("{:.1}", bytes.len() as f64 / (1024.0 * 1024.0)),
+            )
+            .with("limit_mb", MAX_CSV_FILE_BYTES / (1024 * 1024)));
     }
     let mut file = parse_file(&bytes);
     let signature = file_signature(&file);
@@ -273,22 +275,18 @@ pub fn check_duplicate_transactions(
     state: State<DbState>,
     account_id: Option<String>,
     rows: Vec<DuplicateCheckRowDto>,
-) -> Result<Vec<bool>, String> {
-    let account_id = account_id
-        .map(|id| AccountId::parse(&id).map_err(|e| e.to_string()))
-        .transpose()?;
+) -> Result<Vec<bool>, AppError> {
+    let account_id = account_id.map(|id| AccountId::parse(&id)).transpose()?;
     let parsed_rows = rows
         .into_iter()
         .map(|r| Ok((parse_date(&r.date)?, r.amount_minor_units, r.description)))
-        .collect::<Result<Vec<_>, String>>()?;
+        .collect::<Result<Vec<_>, AppError>>()?;
 
     let account_id = match account_id {
         Some(id) => id,
         None => {
             let guard = state.0.lock().unwrap();
-            let conn = guard
-                .as_ref()
-                .ok_or_else(|| "database is locked".to_string())?;
+            let conn = guard.as_ref().ok_or_else(AppError::db_locked)?;
             match crate::accounts::resolve_default_account_id(conn)? {
                 Some(id) => id,
                 // No destination account resolved yet — nothing to compare
@@ -394,13 +392,9 @@ pub fn commit_csv_import(
     // On by default; turning it off makes every row fall back to the CSV's
     // category or the chosen default, ignoring history entirely.
     detect_category_from_history: bool,
-) -> Result<ImportSummaryDto, String> {
-    let category_id = category_id
-        .map(|id| CategoryId::parse(&id).map_err(|e| e.to_string()))
-        .transpose()?;
-    let account_id = account_id
-        .map(|id| AccountId::parse(&id).map_err(|e| e.to_string()))
-        .transpose()?;
+) -> Result<ImportSummaryDto, AppError> {
+    let category_id = category_id.map(|id| CategoryId::parse(&id)).transpose()?;
+    let account_id = account_id.map(|id| AccountId::parse(&id)).transpose()?;
     let parsed_rows = rows
         .into_iter()
         .map(|row| {
@@ -417,28 +411,23 @@ pub fn commit_csv_import(
                     .unwrap_or_default(),
             })
         })
-        .collect::<Result<Vec<_>, String>>()?;
+        .collect::<Result<Vec<_>, AppError>>()?;
 
     let (default_category_id, account_id, transfer_rules) = {
         let guard = state.0.lock().unwrap();
-        let conn = guard
-            .as_ref()
-            .ok_or_else(|| "database is locked".to_string())?;
+        let conn = guard.as_ref().ok_or_else(AppError::db_locked)?;
         let default_category_id = match category_id {
             Some(id) => id,
             None => crate::categories::resolve_default_category_id(conn)?,
         };
         let account_id = match account_id {
             Some(id) => id,
-            None => crate::accounts::resolve_default_account_id(conn)?.ok_or_else(|| {
-                "no destination account chosen, and no default account is set — pick one, or set a default in Accounts".to_string()
-            })?,
+            None => crate::accounts::resolve_default_account_id(conn)?
+                .ok_or_else(|| AppError::new(codes::NO_DESTINATION_ACCOUNT))?,
         };
         // Read here rather than inside `with_service` below, which locks the
         // same mutex and would deadlock.
-        let transfer_rules = SqliteTransferRuleRepository::new(conn)
-            .list_all()
-            .map_err(|e| e.to_string())?;
+        let transfer_rules = SqliteTransferRuleRepository::new(conn).list_all()?;
         (default_category_id, account_id, transfer_rules)
     };
 

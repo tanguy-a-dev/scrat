@@ -8,21 +8,14 @@
    captured instant. */
 
 import type { TransactionDto } from "$lib/api";
+import { shortMonthNames } from "$lib/i18n.svelte";
 
-export const MONTH_LABELS = [
-  "Jan",
-  "Feb",
-  "Mar",
-  "Apr",
-  "May",
-  "Jun",
-  "Jul",
-  "Aug",
-  "Sep",
-  "Oct",
-  "Nov",
-  "Dec",
-];
+/** Chart-axis month labels in the interface language. A function rather than
+ * a constant because the language can change while the app is running, and a
+ * module-level array would be frozen at whatever it was on first import. */
+export function monthLabels(): string[] {
+  return shortMonthNames();
+}
 
 export interface MonthTotals {
   /** `YYYY-MM`, matching the prefix of a transaction's ISO date. */
@@ -67,7 +60,7 @@ export function monthKeyOffsetFrom(today: Date, offset: number): string {
  * day for anyone west of Greenwich. */
 export function formatShortDate(iso: string): string {
   const [, month, day] = iso.split("-");
-  const label = MONTH_LABELS[Number(month) - 1];
+  const label = monthLabels()[Number(month) - 1];
   return label ? `${Number(day)} ${label}` : iso;
 }
 
@@ -88,7 +81,7 @@ export function buildMonthlyTotals(
     const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
     months.push({
       key: monthKey(d),
-      label: MONTH_LABELS[d.getMonth()],
+      label: monthLabels()[d.getMonth()],
       income: 0,
       expense: 0,
       expenseWithoutRent: 0,

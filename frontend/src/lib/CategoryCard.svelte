@@ -3,6 +3,7 @@
   import DeleteButton from "./DeleteButton.svelte";
   import { CATEGORY_ICONS, iconComponentFor } from "./categoryIcons";
   import { Plus } from "@lucide/svelte";
+  import { t } from "$lib/i18n.svelte";
 
   let {
     category,
@@ -79,8 +80,8 @@
       <button
         type="button"
         class="icon-button"
-        aria-label="Change icon"
-        title="Change icon"
+        aria-label={t("categoryCard.changeIcon")}
+        title={t("categoryCard.changeIcon")}
         onclick={() => (iconPickerOpen = !iconPickerOpen)}
       >
         <CurrentIcon size={16} />
@@ -106,13 +107,13 @@
       class="name"
       value={category.name}
       readonly={category.is_default}
-      aria-label="Category name"
+      aria-label={t("categoryCard.categoryName")}
       onchange={(e) => onRename(category.id, e.currentTarget.value)}
     />
     {#if !category.is_default}
       <span class="dim">
         <DeleteButton
-          label="Delete category"
+          label={t("categoryCard.deleteCategory")}
           onConfirm={() => onDelete(category)}
         />
       </span>
@@ -127,13 +128,13 @@
           value={draftFor(child)}
           size={Math.max(draftFor(child).length + 1, 4)}
           readonly={child.is_default}
-          aria-label="Subcategory name"
+          aria-label={t("categoryCard.subcategoryName")}
           oninput={(e) => (drafts[child.id] = e.currentTarget.value)}
           onchange={(e) => onRename(child.id, e.currentTarget.value)}
         />
         {#if !child.is_default}
           <DeleteButton
-            label="Delete subcategory"
+            label={t("categoryCard.deleteSubcategory")}
             compact
             onConfirm={() => onDelete(child)}
           />
@@ -145,7 +146,7 @@
       <form class="chip add-form" onsubmit={submitChild}>
         <input
           class="chip-name"
-          placeholder="Subcategory"
+          placeholder={t("categoryCard.subcategoryPlaceholder")}
           size={Math.max(childName.length + 2, 12)}
           bind:value={childName}
           use:autofocus
@@ -156,7 +157,7 @@
             if (!childName.trim()) addingChild = false;
           }}
         />
-        <button type="submit" class="chip-action" aria-label="Add subcategory">
+        <button type="submit" class="chip-action" aria-label={t("categoryCard.addSubcategory")}>
           <Plus size={13} />
         </button>
       </form>
@@ -167,7 +168,7 @@
         onclick={() => (addingChild = true)}
       >
         <Plus size={13} />
-        Subcategory
+        {t("common.subcategory")}
       </button>
     {/if}
   </div>

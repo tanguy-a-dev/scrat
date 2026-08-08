@@ -12,6 +12,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (7, include_str!("0007_transaction_operation_kind.sql")),
     (8, include_str!("0008_account_opening_balance_set.sql")),
     (9, include_str!("0009_csv_import_mappings.sql")),
+    (10, include_str!("0010_category_seed_key.sql")),
 ];
 
 /// The version a freshly created database ends up at. Derived from
@@ -263,6 +264,105 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))
             .unwrap();
         assert_eq!(rows, 1);
+    }
+
+    /// The backfill's whole job: re-adopt the categories this database was
+    /// seeded with, and only those. A category the user renamed is theirs
+    /// now — leaving it NULL is what stops a later language change from
+    /// overwriting their wording.
+    #[test]
+    fn migration_10_backfills_seed_keys_only_for_unrenamed_seeded_categories() {
+        let mut conn = conn_at_version(9);
+        conn.execute_batch(
+            "DELETE FROM categories;
+             INSERT INTO categories (id, name, parent_id, created_at) VALUES
+                 ('h', 'Housing',   NULL, '2026-01-01'),
+                 ('r', 'Rent',      'h',  '2026-01-01'),
+                 ('m', 'My Flat',   NULL, '2026-01-01'),
+                 ('b', 'Boat Fuel', 'm',  '2026-01-01');",
+        )
+        .unwrap();
+
+        run(&mut conn).unwrap();
+
+        let mut stmt = conn
+            .prepare("SELECT id, seed_key FROM categories ORDER BY id")
+            .unwrap();
+        let rows: Vec<(String, Option<String>)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("b".to_string(), None),
+                ("h".to_string(), Some("housing".to_string())),
+                ("m".to_string(), None),
+                ("r".to_string(), Some("housing.rent".to_string())),
+            ]
+        );
+    }
+
+    /// Position is part of a subcategory's identity. `Insurance > Travel` and
+    /// the top-level `Travel` share a name and are different categories, and
+    /// a `Rent` filed under a category the app never created is not
+    /// `housing.rent` — matching on the name alone would claim all three.
+    #[test]
+    fn migration_10_does_not_claim_a_subcategory_under_the_wrong_parent() {
+        let mut conn = conn_at_version(9);
+        conn.execute_batch(
+            "DELETE FROM categories;
+             INSERT INTO categories (id, name, parent_id, created_at) VALUES
+                 ('own',   'Side Flat', NULL,  '2026-01-01'),
+                 ('rent',  'Rent',      'own', '2026-01-01'),
+                 ('ins',   'Insurance', NULL,  '2026-01-01'),
+                 ('itrav', 'Travel',    'ins', '2026-01-01'),
+                 ('trav',  'Travel',    NULL,  '2026-01-01');",
+        )
+        .unwrap();
+
+        run(&mut conn).unwrap();
+
+        let key_of = |id: &str| -> Option<String> {
+            conn.query_row(
+                "SELECT seed_key FROM categories WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(key_of("rent"), None, "not under the seeded Housing");
+        assert_eq!(key_of("itrav"), Some("insurance.travel".to_string()));
+        assert_eq!(key_of("trav"), Some("travel".to_string()));
+    }
+
+    /// A freshly created database gets its keys from the seeding code, not
+    /// from the backfill — but both paths must agree, or a new database and
+    /// an upgraded one would behave differently on a language change.
+    #[test]
+    fn migration_10_and_seeding_agree_on_the_fallback_category_key() {
+        let mut conn = conn_at_version(9);
+        conn.execute_batch(
+            "DELETE FROM categories;
+             INSERT INTO categories (id, name, parent_id, created_at)
+                 VALUES ('u', 'Uncategorized', NULL, '2026-01-01');",
+        )
+        .unwrap();
+
+        run(&mut conn).unwrap();
+
+        let key: Option<String> = conn
+            .query_row(
+                "SELECT seed_key FROM categories WHERE id = 'u'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            key.as_deref(),
+            Some(scrat_domain::default_categories::UNCATEGORIZED_KEY)
+        );
     }
 
     #[test]

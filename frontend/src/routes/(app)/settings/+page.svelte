@@ -9,6 +9,16 @@
   import { clearPageCache } from "$lib/pageCache";
   import { toast } from "$lib/toasts.svelte";
   import { session } from "$lib/session.svelte";
+  import {
+    LANGUAGES,
+    LANGUAGE_LABELS,
+    describeError,
+    i18n,
+    isLanguage,
+    t,
+    tp,
+    type Language,
+  } from "$lib/i18n.svelte";
 
   const COMMON_CURRENCIES = ["USD", "EUR", "GBP", "CAD", "AUD", "CHF", "JPY"];
 
@@ -27,12 +37,21 @@
   let loadError = $state("");
   let loadingCurrency = $state(true);
 
-  const AUTO_LOCK_OPTIONS = [
-    { minutes: 1, label: "1 minute" },
-    { minutes: 10, label: "10 minutes" },
-    { minutes: 60, label: "1 hour" },
-    { minutes: 0, label: "Never" },
-  ];
+  /* `$derived` so the labels follow a language change, rather than being
+     frozen at whatever the language was when this page first mounted. */
+  const AUTO_LOCK_OPTIONS = $derived([
+    { minutes: 1, label: t("settings.autoLock.oneMinute") },
+    { minutes: 10, label: t("settings.autoLock.tenMinutes") },
+    { minutes: 60, label: t("settings.autoLock.oneHour") },
+    { minutes: 0, label: t("settings.autoLock.never") },
+  ]);
+
+  /* The language section. `selectedLanguage` tracks the picker; `i18n.language`
+     is what the app is actually rendering in, and only the Save button moves
+     it — a select that retranslated the page on every keyboard arrow press
+     would relabel categories in the database as the user scrolled past. */
+  let selectedLanguage = $state<Language>(i18n.language);
+  let savingLanguage = $state(false);
 
   let currentAutoLockMinutes = $state(10);
   let selectedAutoLockMinutes = $state(10);
@@ -75,11 +94,15 @@
   let importFileName = $derived(importPath?.split(/[\\/]/).pop() ?? "");
 
   onMount(async () => {
+    // `session.markUnlocked` already loaded the language from this database;
+    // mirror it into the picker rather than reading it again.
+    selectedLanguage = i18n.language;
+
     try {
       currentCurrency = await api.getCurrency();
       selectedCurrency = currentCurrency;
     } catch (e) {
-      loadError = String(e);
+      loadError = describeError(e);
     } finally {
       loadingCurrency = false;
     }
@@ -88,7 +111,7 @@
       currentAutoLockMinutes = await api.getAutoLockMinutes();
       selectedAutoLockMinutes = currentAutoLockMinutes;
     } catch (e) {
-      autoLockLoadError = String(e);
+      autoLockLoadError = describeError(e);
     } finally {
       loadingAutoLock = false;
     }
@@ -101,7 +124,7 @@
       // whichever account happened to sort first.
       if (accounts.length === 1) csvAccountId = accounts[0].id;
     } catch (e) {
-      accountsLoadError = String(e);
+      accountsLoadError = describeError(e);
     }
 
     try {
@@ -117,9 +140,39 @@
     try {
       await api.setCurrency(selectedCurrency);
       currentCurrency = selectedCurrency;
-      toast.success(`Currency set to ${selectedCurrency}.`);
+      toast.success(t("settings.currencySaved", { code: selectedCurrency }));
     } catch (e) {
-      toast.error(String(e));
+      toast.error(describeError(e));
+    }
+  }
+
+  /** Saves the language, then switches the running UI to it.
+   *
+   * The order matters: `api.setLanguage` is what relabels the seeded
+   * categories in the database, and only once it has returned is the new
+   * language true of anything. Flipping `i18n` first would leave a failed
+   * save showing a French interface over an English database. */
+  async function handleSaveLanguage(event: Event) {
+    event.preventDefault();
+    savingLanguage = true;
+    try {
+      const relabelled = await api.setLanguage(selectedLanguage);
+      i18n.setLanguage(selectedLanguage);
+      // Category names are cached per page; they have just changed underneath
+      // every one of them.
+      clearPageCache();
+      toast.success(
+        relabelled > 0
+          ? `${t("settings.languageSaved", { language: LANGUAGE_LABELS[selectedLanguage] })} ${tp("settings.categoriesRelabelled", relabelled)}`
+          : t("settings.languageSaved", { language: LANGUAGE_LABELS[selectedLanguage] }),
+      );
+    } catch (e) {
+      // Put the picker back where the app actually is, so it never claims a
+      // language the database didn't accept.
+      selectedLanguage = i18n.language;
+      toast.error(describeError(e));
+    } finally {
+      savingLanguage = false;
     }
   }
 
@@ -133,10 +186,10 @@
       session.autoLockMinutes = selectedAutoLockMinutes;
       const label =
         AUTO_LOCK_OPTIONS.find((o) => o.minutes === selectedAutoLockMinutes)
-          ?.label ?? `${selectedAutoLockMinutes} minutes`;
-      toast.success(`Auto-lock set to ${label.toLowerCase()}.`);
+          ?.label ?? String(selectedAutoLockMinutes);
+      toast.success(t("settings.autoLockSaved", { label: label.toLowerCase() }));
     } catch (e) {
-      toast.error(String(e));
+      toast.error(describeError(e));
     }
   }
 
@@ -154,9 +207,9 @@
       if (!destination) return;
       exporting = true;
       await api.exportDatabase(destination);
-      toast.success(`Exported to ${destination}`);
+      toast.success(t("settings.exportedTo", { path: destination }));
     } catch (e) {
-      toast.error(String(e));
+      toast.error(describeError(e));
     } finally {
       exporting = false;
     }
@@ -197,9 +250,9 @@
       if (!destination) return;
       exportingCsv = true;
       await api.exportTransactionsCsv(csvAccountId, destination);
-      toast.success(`Exported to ${destination}`);
+      toast.success(t("settings.exportedTo", { path: destination }));
     } catch (e) {
-      toast.error(String(e));
+      toast.error(describeError(e));
     } finally {
       exportingCsv = false;
     }
@@ -214,7 +267,7 @@
       importPath = selected;
       importPassword = "";
     } catch (e) {
-      toast.error(String(e));
+      toast.error(describeError(e));
     }
   }
 
@@ -235,14 +288,19 @@
       // The imported database has its own auto-lock setting, potentially
       // different from the one just replaced.
       await session.markUnlocked();
-      toast.success("Database imported.");
+      toast.success(t("settings.databaseImported"));
       await goto("/overview");
     } catch (e) {
-      toast.error(String(e));
+      toast.error(describeError(e));
     } finally {
       importing = false;
     }
   }
+
+  /** Mirrors `MIN_PASSPHRASE_LENGTH` in `src-tauri/src/db.rs`, which is the
+   * check that actually enforces it — this one only lets the form say so
+   * without a round trip. */
+  const MIN_PASSPHRASE_LENGTH = 8;
 
   let showPassphraseForm = $state(false);
   let currentPassphrase = $state("");
@@ -266,21 +324,21 @@
   async function handleChangePassphrase(event: Event) {
     event.preventDefault();
     passphraseError = "";
-    if (newPassphrase.length < 8) {
-      passphraseError = "New passphrase must be at least 8 characters.";
+    if (newPassphrase.length < MIN_PASSPHRASE_LENGTH) {
+      passphraseError = t("settings.passphraseTooShort", { min: MIN_PASSPHRASE_LENGTH });
       return;
     }
     if (newPassphrase !== confirmNewPassphrase) {
-      passphraseError = "New passphrases do not match.";
+      passphraseError = t("settings.passphraseMismatch");
       return;
     }
     changingPassphrase = true;
     try {
       await api.changePassphrase(currentPassphrase, newPassphrase);
-      toast.success("Passphrase changed.");
+      toast.success(t("settings.passphraseChanged"));
       cancelPassphraseChange();
     } catch (e) {
-      passphraseError = String(e);
+      passphraseError = describeError(e);
     } finally {
       changingPassphrase = false;
     }
@@ -317,7 +375,7 @@
     try {
       await openUrl(contactMailto);
     } catch {
-      toast.error(`Couldn't open your mail app — write to ${CONTACT_EMAIL}.`);
+      toast.error(t("settings.mailAppFailed", { address: CONTACT_EMAIL }));
     }
   }
 
@@ -346,52 +404,75 @@
       // clearPageCache.
       clearPageCache();
       session.markLocked();
-      toast.success("Your data has been deleted.");
+      toast.success(t("settings.dataDeleted"));
       await goto("/");
     } catch (e) {
-      toast.error(String(e));
+      toast.error(describeError(e));
       deleting = false;
     }
   }
 </script>
 
-<h1>Settings</h1>
+<h1>{t("settings.title")}</h1>
 
 <section>
-  <h2>Currency</h2>
-  <p class="hint">Relabels amounts only — past transactions aren't converted.</p>
+  <h2>{t("settings.language")}</h2>
+  <p class="hint">{t("settings.languageHelp")}</p>
+  <form onsubmit={handleSaveLanguage}>
+    <label class="visually-hidden" for="language">{t("settings.language")}</label>
+    <select
+      id="language"
+      value={selectedLanguage}
+      onchange={(e) => {
+        const chosen = e.currentTarget.value;
+        if (isLanguage(chosen)) selectedLanguage = chosen;
+      }}
+    >
+      {#each LANGUAGES as code (code)}
+        <option value={code}>{LANGUAGE_LABELS[code]}</option>
+      {/each}
+    </select>
+    <button
+      type="submit"
+      disabled={savingLanguage || selectedLanguage === i18n.language}
+    >
+      {t("common.save")}
+    </button>
+  </form>
+</section>
+
+<section>
+  <h2>{t("settings.currency")}</h2>
+  <p class="hint">{t("settings.currencyHint")}</p>
   {#if loadingCurrency}
-    <p>Loading…</p>
+    <p>{t("common.loading")}</p>
   {:else if loadError}
     <p class="error" role="alert">{loadError}</p>
   {:else}
     <form onsubmit={handleSaveCurrency}>
-      <label class="visually-hidden" for="currency">Currency</label>
+      <label class="visually-hidden" for="currency">{t("settings.currency")}</label>
       <select id="currency" bind:value={selectedCurrency}>
         {#each currencyOptions as code (code)}
           <option value={code}>{code}</option>
         {/each}
       </select>
-      <button type="submit" disabled={selectedCurrency === currentCurrency}
-        >Save</button
-      >
+      <button type="submit" disabled={selectedCurrency === currentCurrency}>
+        {t("common.save")}
+      </button>
     </form>
   {/if}
 </section>
 
 <section>
-  <h2>Auto-lock</h2>
-  <p class="hint">
-    Locks the app and asks for your passphrase again after this much time
-    without mouse or keyboard activity.
-  </p>
+  <h2>{t("settings.autoLock")}</h2>
+  <p class="hint">{t("settings.autoLockHint")}</p>
   {#if loadingAutoLock}
-    <p>Loading…</p>
+    <p>{t("common.loading")}</p>
   {:else if autoLockLoadError}
     <p class="error" role="alert">{autoLockLoadError}</p>
   {:else}
     <form onsubmit={handleSaveAutoLock}>
-      <label class="visually-hidden" for="auto-lock">Auto-lock</label>
+      <label class="visually-hidden" for="auto-lock">{t("settings.autoLock")}</label>
       <select id="auto-lock" bind:value={selectedAutoLockMinutes}>
         {#each AUTO_LOCK_OPTIONS as option (option.minutes)}
           <option value={option.minutes}>{option.label}</option>
@@ -401,26 +482,24 @@
         type="submit"
         disabled={selectedAutoLockMinutes === currentAutoLockMinutes}
       >
-        Save
+        {t("common.save")}
       </button>
     </form>
   {/if}
 </section>
 
 <section>
-  <h2>Passphrase</h2>
+  <h2>{t("settings.passphrase")}</h2>
   {#if !showPassphraseForm}
-    <p class="hint">Change the passphrase used to encrypt your database.</p>
+    <p class="hint">{t("settings.passphraseHint")}</p>
     <button type="button" onclick={startPassphraseChange}>
-      Change passphrase
+      {t("settings.changePassphrase")}
     </button>
   {:else}
-    <p class="hint">
-      No recovery — if you lose the new passphrase, your data is unreadable.
-    </p>
+    <p class="hint">{t("settings.passphraseNoRecovery")}</p>
     <form class="passphrase-form" onsubmit={handleChangePassphrase}>
       <div class="field">
-        <label for="current-passphrase">Current passphrase</label>
+        <label for="current-passphrase">{t("settings.currentPassphrase")}</label>
         <input
           id="current-passphrase"
           type="password"
@@ -431,22 +510,22 @@
         />
       </div>
       <div class="field">
-        <label for="new-passphrase">New passphrase</label>
+        <label for="new-passphrase">{t("settings.newPassphrase")}</label>
         <input
           id="new-passphrase"
           type="password"
           bind:value={newPassphrase}
           autocomplete="new-password"
-          minlength="8"
+          minlength={MIN_PASSPHRASE_LENGTH}
           aria-describedby="new-passphrase-hint"
           required
         />
         <p id="new-passphrase-hint" class="hint field-hint">
-          At least 8 characters.
+          {t("settings.passphraseMinimum", { min: MIN_PASSPHRASE_LENGTH })}
         </p>
       </div>
       <div class="field">
-        <label for="confirm-passphrase">Confirm new passphrase</label>
+        <label for="confirm-passphrase">{t("settings.confirmNewPassphrase")}</label>
         <input
           id="confirm-passphrase"
           type="password"
@@ -460,14 +539,14 @@
         </p>{/if}
       <div class="button-row">
         <button type="submit" disabled={changingPassphrase}>
-          {changingPassphrase ? "Changing…" : "Save"}
+          {changingPassphrase ? t("settings.changing") : t("common.save")}
         </button>
         <button
           type="button"
           onclick={cancelPassphraseChange}
           disabled={changingPassphrase}
         >
-          Cancel
+          {t("common.cancel")}
         </button>
       </div>
     </form>
@@ -475,60 +554,58 @@
 </section>
 
 <section>
-  <h2>Export database</h2>
-  <p class="hint">Saves an encrypted copy of your database file.</p>
+  <h2>{t("settings.exportDatabase")}</h2>
+  <p class="hint">{t("settings.exportDatabaseHint")}</p>
   <button type="button" onclick={handleExport} disabled={exporting}>
-    {exporting ? "Exporting…" : "Export"}
+    {exporting ? t("settings.exporting") : t("settings.export")}
   </button>
 </section>
 
 <section>
-  <h2>Export transaction CSV</h2>
-  <p class="hint">
-    Saves one account's transactions as a CSV file, readable outside Scrat.
-  </p>
+  <h2>{t("settings.exportCsv")}</h2>
+  <p class="hint">{t("settings.exportCsvHint")}</p>
   {#if accountsLoadError}
     <p class="error">{accountsLoadError}</p>
   {:else if accounts.length === 0}
-    <p class="hint">Add an account first — there's nothing to export yet.</p>
+    <p class="hint">{t("settings.noAccountsToExport")}</p>
   {:else}
     <div class="csv-export">
       <SearchSelect
         options={csvAccountOptions}
         value={csvAccountId}
         onChange={(id) => (csvAccountId = id)}
-        placeholder="Choose an account…"
-        searchPlaceholder="Search account…"
+        placeholder={t("settings.chooseAccount")}
+        searchPlaceholder={t("settings.searchAccount")}
       />
       <button
         type="button"
         onclick={handleExportCsv}
         disabled={exportingCsv || !csvAccountId}
       >
-        {exportingCsv ? "Exporting…" : "Export CSV"}
+        {exportingCsv ? t("settings.exporting") : t("settings.exportCsvButton")}
       </button>
     </div>
   {/if}
 </section>
 
 <section>
-  <h2>Import database</h2>
-  <p class="hint">Replaces everything in Scrat with another encrypted database file.</p>
+  <h2>{t("settings.importDatabase")}</h2>
+  <p class="hint">{t("settings.importDatabaseHint")}</p>
   {#if !importPath}
     <button type="button" onclick={handleChooseImportFile}>
-      Choose file to import
+      {t("settings.chooseFileToImport")}
     </button>
   {:else}
     <div class="confirm-panel">
       <p id="import-warning">
-        <strong>This will permanently replace your current database</strong>
-        with <code>{importFileName}</code>. This cannot be undone — export
-        your current database first if you want to keep a copy.
+        <strong>{t("settings.importWarningStrong")}</strong>
+        {t("settings.importWarningRest", { file: importFileName })}
       </p>
       <form onsubmit={handleConfirmImport}>
         <div class="field">
-          <label for="import-passphrase">Passphrase for the imported file</label
-          >
+          <label for="import-passphrase">
+            {t("settings.importPassphrase")}
+          </label>
           <input
             id="import-passphrase"
             type="password"
@@ -541,10 +618,10 @@
         </div>
         <div class="button-row">
           <button type="submit" class="danger" disabled={importing}>
-            {importing ? "Importing…" : "Replace database"}
+            {importing ? t("settings.importing") : t("settings.replaceDatabase")}
           </button>
           <button type="button" onclick={cancelImport} disabled={importing}>
-            Cancel
+            {t("common.cancel")}
           </button>
         </div>
       </form>
@@ -553,35 +630,34 @@
 </section>
 
 <section>
-  <h2>Report a bug or contact the maintainer</h2>
+  <h2>{t("settings.contactTitle")}</h2>
   <p class="hint">
-    Found a bug, or have a question? Write to
+    {t("settings.contactHint")}
     <span class="contact-address">{CONTACT_EMAIL}</span>.
   </p>
-  <button type="button" onclick={handleContact}>Send an email</button>
+  <button type="button" onclick={handleContact}>{t("settings.sendEmail")}</button>
   {#if appVersion}
     <p class="hint version">Scrat {appVersion}</p>
   {/if}
 </section>
 
 <section>
-  <h2>Delete my data</h2>
-  <p class="hint">Permanently deletes your local database. No backup is made.</p>
+  <h2>{t("settings.deleteTitle")}</h2>
+  <p class="hint">{t("settings.deleteHint")}</p>
   {#if !deleteRequested}
     <button type="button" class="danger" onclick={startDelete}>
-      Delete my data
+      {t("settings.deleteTitle")}
     </button>
   {:else}
     <div class="confirm-panel">
       <p id="delete-warning">
-        <strong>This will permanently delete all of your data.</strong>
-        There is no undo and no backup. Type
-        <code>{DELETE_CONFIRM_WORD}</code> below to confirm.
+        <strong>{t("settings.deleteWarningStrong")}</strong>
+        {t("settings.deleteWarningRest", { word: DELETE_CONFIRM_WORD })}
       </p>
       <form onsubmit={handleConfirmDelete}>
         <div class="field">
           <label class="visually-hidden" for="delete-confirm">
-            Type {DELETE_CONFIRM_WORD} to confirm
+            {t("settings.deleteConfirmLabel", { word: DELETE_CONFIRM_WORD })}
           </label>
           <input
             id="delete-confirm"
@@ -600,10 +676,10 @@
             class="danger"
             disabled={deleting || deleteConfirmText !== DELETE_CONFIRM_WORD}
           >
-            {deleting ? "Deleting…" : "Permanently delete"}
+            {deleting ? t("settings.deleting") : t("settings.deletePermanently")}
           </button>
           <button type="button" onclick={cancelDelete} disabled={deleting}>
-            Cancel
+            {t("common.cancel")}
           </button>
         </div>
       </form>

@@ -1,6 +1,7 @@
 mod accounts;
 mod categories;
 mod db;
+mod errors;
 mod import;
 mod settings;
 mod transactions;
@@ -58,6 +59,8 @@ pub fn run() {
             import::commit_csv_import,
             settings::get_currency,
             settings::set_currency,
+            settings::get_language,
+            settings::set_language,
             settings::get_auto_lock_minutes,
             settings::set_auto_lock_minutes,
             settings::export_database,

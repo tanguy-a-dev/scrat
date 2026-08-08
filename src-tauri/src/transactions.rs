@@ -17,6 +17,7 @@ use tauri::State;
 
 use crate::accounts::app_currency;
 use crate::db::DbState;
+use crate::errors::{AppError, codes};
 
 #[derive(Debug, Serialize)]
 pub struct TransactionDto {
@@ -59,8 +60,9 @@ impl From<Transaction> for TransactionDto {
     }
 }
 
-pub(crate) fn parse_date(raw: &str) -> Result<NaiveDate, String> {
-    NaiveDate::parse_from_str(raw, "%Y-%m-%d").map_err(|e| e.to_string())
+pub(crate) fn parse_date(raw: &str) -> Result<NaiveDate, AppError> {
+    NaiveDate::parse_from_str(raw, "%Y-%m-%d")
+        .map_err(|_| AppError::new(codes::INVALID_DATE).with("value", raw))
 }
 
 pub(crate) fn with_service<T>(
@@ -68,17 +70,15 @@ pub(crate) fn with_service<T>(
     f: impl FnOnce(
         &TransactionService,
     ) -> Result<T, scrat_application::transaction_service::ApplicationError>,
-) -> Result<T, String> {
+) -> Result<T, AppError> {
     let guard = state.0.lock().unwrap();
-    let conn = guard
-        .as_ref()
-        .ok_or_else(|| "database is locked".to_string())?;
+    let conn = guard.as_ref().ok_or_else(AppError::db_locked)?;
     let currency = app_currency(conn);
     let transactions = SqliteTransactionRepository::new(conn, currency.clone());
     let accounts = SqliteAccountRepository::new(conn, currency.clone());
     let categories = SqliteCategoryRepository::new(conn);
     let service = TransactionService::new(&transactions, &accounts, &categories, currency);
-    f(&service).map_err(|e| e.to_string())
+    Ok(f(&service)?)
 }
 
 #[tauri::command]
@@ -86,7 +86,7 @@ pub fn list_transactions(
     state: State<DbState>,
     start: String,
     end: String,
-) -> Result<Vec<TransactionDto>, String> {
+) -> Result<Vec<TransactionDto>, AppError> {
     let start = parse_date(&start)?;
     let end = parse_date(&end)?;
     with_service(&state, |s| s.list_in_range(start, end))
@@ -105,19 +105,12 @@ fn parse_transaction_filters(
     operation_kind: Option<String>,
     min_amount_minor_units: Option<i64>,
     max_amount_minor_units: Option<i64>,
-) -> Result<TransactionFilters, String> {
-    let category_id = category_id
-        .map(|id| CategoryId::parse(&id))
-        .transpose()
-        .map_err(|e| e.to_string())?;
-    let account_id = account_id
-        .map(|id| AccountId::parse(&id))
-        .transpose()
-        .map_err(|e| e.to_string())?;
+) -> Result<TransactionFilters, AppError> {
+    let category_id = category_id.map(|id| CategoryId::parse(&id)).transpose()?;
+    let account_id = account_id.map(|id| AccountId::parse(&id)).transpose()?;
     let operation_kind = operation_kind
         .map(|k| OperationKind::parse(&k))
-        .transpose()
-        .map_err(|e| e.to_string())?;
+        .transpose()?;
     Ok(TransactionFilters {
         category_id,
         description_contains,
@@ -154,7 +147,7 @@ pub fn list_transactions_page(
     max_amount_minor_units: Option<i64>,
     sort_field: String,
     sort_dir: String,
-) -> Result<Vec<TransactionDto>, String> {
+) -> Result<Vec<TransactionDto>, AppError> {
     let filters = parse_transaction_filters(
         category_id,
         description_contains,
@@ -164,8 +157,8 @@ pub fn list_transactions_page(
         min_amount_minor_units,
         max_amount_minor_units,
     )?;
-    let sort_field = TransactionSortField::parse(&sort_field).map_err(|e| e.to_string())?;
-    let sort_dir = SortDirection::parse(&sort_dir).map_err(|e| e.to_string())?;
+    let sort_field = TransactionSortField::parse(&sort_field)?;
+    let sort_dir = SortDirection::parse(&sort_dir)?;
     with_service(&state, |s| {
         s.list_page(offset, limit, &filters, sort_field, sort_dir)
     })
@@ -189,7 +182,7 @@ pub fn count_transactions(
     operation_kind: Option<String>,
     min_amount_minor_units: Option<i64>,
     max_amount_minor_units: Option<i64>,
-) -> Result<i64, String> {
+) -> Result<i64, AppError> {
     let start = parse_date(&start)?;
     let end = parse_date(&end)?;
     let filters = parse_transaction_filters(
@@ -212,10 +205,10 @@ pub fn create_transaction(
     description: String,
     category_id: String,
     account_id: String,
-) -> Result<TransactionDto, String> {
+) -> Result<TransactionDto, AppError> {
     let date = parse_date(&date)?;
-    let category_id = CategoryId::parse(&category_id).map_err(|e| e.to_string())?;
-    let account_id = AccountId::parse(&account_id).map_err(|e| e.to_string())?;
+    let category_id = CategoryId::parse(&category_id)?;
+    let account_id = AccountId::parse(&account_id)?;
     with_service(&state, |s| {
         s.create_transaction(
             date,
@@ -229,8 +222,8 @@ pub fn create_transaction(
 }
 
 #[tauri::command]
-pub fn delete_transaction(state: State<DbState>, id: String) -> Result<(), String> {
-    let id = TransactionId::parse(&id).map_err(|e| e.to_string())?;
+pub fn delete_transaction(state: State<DbState>, id: String) -> Result<(), AppError> {
+    let id = TransactionId::parse(&id)?;
     with_service(&state, |s| s.delete_transaction(id))
 }
 
@@ -254,17 +247,14 @@ pub struct BulkDeleteDto {
 pub fn delete_transactions(
     state: State<DbState>,
     ids: Vec<String>,
-) -> Result<BulkDeleteDto, String> {
+) -> Result<BulkDeleteDto, AppError> {
     if ids.len() > MAX_BULK_IDS {
-        return Err(format!(
-            "too many transactions selected (max {MAX_BULK_IDS})"
-        ));
+        return Err(AppError::new(codes::TOO_MANY_SELECTED).with("max", MAX_BULK_IDS));
     }
     let ids = ids
         .into_iter()
         .map(|id| TransactionId::parse(&id))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+        .collect::<Result<Vec<_>, _>>()?;
     with_service(&state, |s| s.delete_transactions(&ids)).map(|outcome| BulkDeleteDto {
         deleted: outcome.deleted,
         transfer_groups: outcome.transfer_groups,
@@ -276,18 +266,15 @@ pub fn set_transactions_category(
     state: State<DbState>,
     ids: Vec<String>,
     category_id: String,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     if ids.len() > MAX_BULK_IDS {
-        return Err(format!(
-            "too many transactions selected (max {MAX_BULK_IDS})"
-        ));
+        return Err(AppError::new(codes::TOO_MANY_SELECTED).with("max", MAX_BULK_IDS));
     }
     let ids = ids
         .into_iter()
         .map(|id| TransactionId::parse(&id))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
-    let category_id = CategoryId::parse(&category_id).map_err(|e| e.to_string())?;
+        .collect::<Result<Vec<_>, _>>()?;
+    let category_id = CategoryId::parse(&category_id)?;
     with_service(&state, |s| s.set_category_many(&ids, category_id))
 }
 
@@ -304,8 +291,8 @@ pub fn reconcile_account(
     account_id: String,
     observed_balance_minor_units: i64,
     date: String,
-) -> Result<Option<TransactionDto>, String> {
-    let account_id = AccountId::parse(&account_id).map_err(|e| e.to_string())?;
+) -> Result<Option<TransactionDto>, AppError> {
+    let account_id = AccountId::parse(&account_id)?;
     let date = parse_date(&date)?;
     with_service(&state, |s| {
         // Adjustments get their own category, created on first use, so they
@@ -323,9 +310,9 @@ pub fn set_transaction_category(
     state: State<DbState>,
     id: String,
     category_id: String,
-) -> Result<(), String> {
-    let id = TransactionId::parse(&id).map_err(|e| e.to_string())?;
-    let category_id = CategoryId::parse(&category_id).map_err(|e| e.to_string())?;
+) -> Result<(), AppError> {
+    let id = TransactionId::parse(&id)?;
+    let category_id = CategoryId::parse(&category_id)?;
     with_service(&state, |s| s.set_category(id, category_id))
 }
 
@@ -333,7 +320,7 @@ pub fn set_transaction_category(
 pub fn suggest_account_for_description(
     state: State<DbState>,
     description: String,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, AppError> {
     with_service(&state, |s| s.find_account_by_description(&description))
         .map(|found| found.map(|id| id.as_string()))
 }
@@ -342,7 +329,7 @@ pub fn suggest_account_for_description(
 pub fn suggest_category_for_description(
     state: State<DbState>,
     description: String,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, AppError> {
     with_service(&state, |s| s.suggest_category_for_description(&description))
         .map(|found| found.map(|id| id.as_string()))
 }
@@ -389,7 +376,7 @@ impl RecurringChargeDto {
 const RECURRING_LOOKBACK_MONTHS: u32 = 24;
 
 #[tauri::command]
-pub fn list_recurring_charges(state: State<DbState>) -> Result<Vec<RecurringChargeDto>, String> {
+pub fn list_recurring_charges(state: State<DbState>) -> Result<Vec<RecurringChargeDto>, AppError> {
     let today = Local::now().date_naive();
     let start = today
         .checked_sub_months(Months::new(RECURRING_LOOKBACK_MONTHS))
@@ -400,18 +387,14 @@ pub fn list_recurring_charges(state: State<DbState>) -> Result<Vec<RecurringChar
     // they're denominated in — and taking the lock a second time to read it
     // is how a non-reentrant Mutex turns into a deadlock.
     let guard = state.0.lock().unwrap();
-    let conn = guard
-        .as_ref()
-        .ok_or_else(|| "database is locked".to_string())?;
+    let conn = guard.as_ref().ok_or_else(AppError::db_locked)?;
     let currency = app_currency(conn);
     let transactions = SqliteTransactionRepository::new(conn, currency.clone());
     let accounts = SqliteAccountRepository::new(conn, currency.clone());
     let categories = SqliteCategoryRepository::new(conn);
     let service = TransactionService::new(&transactions, &accounts, &categories, currency.clone());
 
-    let charges = service
-        .detect_recurring_charges(start, today)
-        .map_err(|e| e.to_string())?;
+    let charges = service.detect_recurring_charges(start, today)?;
 
     Ok(charges
         .into_iter()
@@ -556,27 +539,25 @@ pub fn export_transactions_csv(
     state: State<DbState>,
     account_id: String,
     destination: String,
-) -> Result<(), String> {
-    let account_id = AccountId::parse(&account_id).map_err(|e| e.to_string())?;
+) -> Result<(), AppError> {
+    let account_id = AccountId::parse(&account_id)?;
     let guard = state.0.lock().unwrap();
-    let conn = guard
-        .as_ref()
-        .ok_or_else(|| "database is locked".to_string())?;
+    let conn = guard.as_ref().ok_or_else(AppError::db_locked)?;
     let currency = app_currency(conn);
     let transactions = SqliteTransactionRepository::new(conn, currency.clone());
     let accounts = SqliteAccountRepository::new(conn, currency.clone());
     let categories = SqliteCategoryRepository::new(conn);
     let service = TransactionService::new(&transactions, &accounts, &categories, currency);
 
-    let rows = service
-        .list_for_account(account_id)
-        .map_err(|e| e.to_string())?;
-    let all_accounts = accounts.list_all().map_err(|e| e.to_string())?;
-    let all_categories = categories.list_all().map_err(|e| e.to_string())?;
+    let rows = service.list_for_account(account_id)?;
+    let all_accounts = accounts.list_all()?;
+    let all_categories = categories.list_all()?;
 
     let csv = build_csv(&rows, &all_accounts, &all_categories);
 
-    std::fs::write(&destination, csv).map_err(|e| e.to_string())
+    std::fs::write(&destination, csv)
+        .map_err(|e| AppError::new(codes::FILESYSTEM_ERROR).with("detail", e))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -828,7 +809,10 @@ mod filter_and_dto_tests {
         )
         .unwrap_err();
 
-        assert!(!error.is_empty());
+        // The code, not prose: the frontend translates this, so what matters
+        // is that the failure arrives as something the dictionary can name.
+        assert_eq!(error.code, codes::INVALID_ID);
+        assert_eq!(error.params.get("value"), Some(&"not-a-uuid".to_string()));
     }
 
     #[test]

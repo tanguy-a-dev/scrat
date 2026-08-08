@@ -7,6 +7,7 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::db::DbState;
+use crate::errors::{AppError, codes};
 
 #[derive(Debug, Serialize)]
 pub struct AccountDto {
@@ -69,22 +70,20 @@ pub(crate) fn app_currency(conn: &Connection) -> Currency {
         .unwrap_or_else(|| Currency::new("EUR").expect("EUR is a valid currency code"))
 }
 
-fn parse_id(id: &str) -> Result<AccountId, String> {
-    AccountId::parse(id).map_err(|e| e.to_string())
+fn parse_id(id: &str) -> Result<AccountId, AppError> {
+    Ok(AccountId::parse(id)?)
 }
 
 fn with_service<T>(
     state: &State<DbState>,
     f: impl FnOnce(&AccountService) -> Result<T, ApplicationError>,
-) -> Result<T, String> {
+) -> Result<T, AppError> {
     let guard = state.0.lock().unwrap();
-    let conn = guard
-        .as_ref()
-        .ok_or_else(|| "database is locked".to_string())?;
+    let conn = guard.as_ref().ok_or_else(AppError::db_locked)?;
     let currency = app_currency(conn);
     let repo = SqliteAccountRepository::new(conn, currency.clone());
     let service = AccountService::new(&repo, currency);
-    f(&service).map_err(|e| e.to_string())
+    Ok(f(&service)?)
 }
 
 /// Resolves the app-wide default account id: whatever's configured in
@@ -93,13 +92,12 @@ fn with_service<T>(
 /// reads are stable). Returns `None` when nothing can be resolved (no
 /// accounts yet, or several with nothing chosen) — callers that need a hard
 /// default (CSV import) must handle that case explicitly.
-pub(crate) fn resolve_default_account_id(conn: &Connection) -> Result<Option<AccountId>, String> {
+pub(crate) fn resolve_default_account_id(conn: &Connection) -> Result<Option<AccountId>, AppError> {
     let currency = app_currency(conn);
     let repo = SqliteAccountRepository::new(conn, currency);
-    let accounts = repo.list_all().map_err(|e| e.to_string())?;
+    let accounts = repo.list_all()?;
 
-    if let Some(id_str) =
-        scrat_infra_sqlite::get_default_account_id(conn).map_err(|e| e.to_string())?
+    if let Some(id_str) = scrat_infra_sqlite::get_default_account_id(conn)?
         && let Ok(id) = AccountId::parse(&id_str)
         && accounts.iter().any(|a| a.id() == id)
     {
@@ -111,22 +109,18 @@ pub(crate) fn resolve_default_account_id(conn: &Connection) -> Result<Option<Acc
         return Ok(None);
     };
     let id = only.id();
-    scrat_infra_sqlite::set_default_account_id(conn, &id.as_string()).map_err(|e| e.to_string())?;
+    scrat_infra_sqlite::set_default_account_id(conn, &id.as_string())?;
     Ok(Some(id))
 }
 
 #[tauri::command]
-pub fn list_accounts(state: State<DbState>) -> Result<Vec<AccountDto>, String> {
+pub fn list_accounts(state: State<DbState>) -> Result<Vec<AccountDto>, AppError> {
     let guard = state.0.lock().unwrap();
-    let conn = guard
-        .as_ref()
-        .ok_or_else(|| "database is locked".to_string())?;
+    let conn = guard.as_ref().ok_or_else(AppError::db_locked)?;
     let currency = app_currency(conn);
     let repo = SqliteAccountRepository::new(conn, currency.clone());
     let service = AccountService::new(&repo, currency);
-    let accounts = service
-        .list_accounts_with_balance()
-        .map_err(|e| e.to_string())?;
+    let accounts = service.list_accounts_with_balance()?;
     let default_account_id = resolve_default_account_id(conn)?;
     Ok(accounts
         .into_iter()
@@ -135,15 +129,13 @@ pub fn list_accounts(state: State<DbState>) -> Result<Vec<AccountDto>, String> {
 }
 
 #[tauri::command]
-pub fn create_account(state: State<DbState>, name: String) -> Result<AccountDto, String> {
+pub fn create_account(state: State<DbState>, name: String) -> Result<AccountDto, AppError> {
     let guard = state.0.lock().unwrap();
-    let conn = guard
-        .as_ref()
-        .ok_or_else(|| "database is locked".to_string())?;
+    let conn = guard.as_ref().ok_or_else(AppError::db_locked)?;
     let currency = app_currency(conn);
     let repo = SqliteAccountRepository::new(conn, currency.clone());
     let service = AccountService::new(&repo, currency.clone());
-    let account = service.create_account(&name).map_err(|e| e.to_string())?;
+    let account = service.create_account(&name)?;
     // A brand-new account has no transactions and no starting point, so its
     // balance is zero — the one moment where that's a fact and not a guess.
     let balance = scrat_domain::money::Money::from_minor_units(0, currency);
@@ -159,22 +151,22 @@ pub fn create_account(state: State<DbState>, name: String) -> Result<AccountDto,
 }
 
 #[tauri::command]
-pub fn set_default_account(state: State<DbState>, id: String) -> Result<(), String> {
+pub fn set_default_account(state: State<DbState>, id: String) -> Result<(), AppError> {
     let id = parse_id(&id)?;
     let guard = state.0.lock().unwrap();
-    let conn = guard
-        .as_ref()
-        .ok_or_else(|| "database is locked".to_string())?;
+    let conn = guard.as_ref().ok_or_else(AppError::db_locked)?;
     let currency = app_currency(conn);
     let repo = SqliteAccountRepository::new(conn, currency);
-    repo.find_by_id(id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "account not found".to_string())?;
-    scrat_infra_sqlite::set_default_account_id(conn, &id.as_string()).map_err(|e| e.to_string())
+    repo.find_by_id(id)?
+        .ok_or_else(|| AppError::new(codes::ACCOUNT_NOT_FOUND))?;
+    Ok(scrat_infra_sqlite::set_default_account_id(
+        conn,
+        &id.as_string(),
+    )?)
 }
 
 #[tauri::command]
-pub fn rename_account(state: State<DbState>, id: String, name: String) -> Result<(), String> {
+pub fn rename_account(state: State<DbState>, id: String, name: String) -> Result<(), AppError> {
     let id = parse_id(&id)?;
     with_service(&state, |s| s.rename_account(id, &name))
 }
@@ -188,7 +180,7 @@ pub fn establish_opening_balance(
     state: State<DbState>,
     id: String,
     observed_balance_minor_units: i64,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     let id = parse_id(&id)?;
     with_service(&state, |s| {
         s.establish_opening_balance(id, observed_balance_minor_units)
@@ -200,7 +192,7 @@ pub fn add_description_pattern(
     state: State<DbState>,
     id: String,
     pattern: String,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     let id = parse_id(&id)?;
     with_service(&state, |s| s.add_description_pattern(id, &pattern))
 }
@@ -210,13 +202,13 @@ pub fn remove_description_pattern(
     state: State<DbState>,
     id: String,
     pattern: String,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     let id = parse_id(&id)?;
     with_service(&state, |s| s.remove_description_pattern(id, &pattern))
 }
 
 #[tauri::command]
-pub fn delete_account(state: State<DbState>, id: String) -> Result<(), String> {
+pub fn delete_account(state: State<DbState>, id: String) -> Result<(), AppError> {
     let id = parse_id(&id)?;
     with_service(&state, |s| s.delete_account(id))
 }

@@ -29,6 +29,7 @@
   import DatePicker from "$lib/DatePicker.svelte";
   import { pageViewState } from "$lib/pageCache";
   import { toast } from "$lib/toasts.svelte";
+  import { describeError, t, tp } from "$lib/i18n.svelte";
   import {
     ArrowUp,
     ChevronDown,
@@ -96,10 +97,8 @@
       (a) => !a.is_opening_balance_set && a.has_transactions,
     );
     if (unanchored.length === 0) return;
-    const names = unanchored.map((a) => `"${a.name}"`).join(", ");
-    toast.error(
-      `Balances for ${names} are off until you set a starting point — do it in Accounts.`,
-    );
+    const names = unanchored.map((a) => `\u201c${a.name}\u201d`).join(", ");
+    toast.error(t("transactions.unanchoredWarning", { names }));
   }
 
   let accounts = $state<AccountDto[]>([]);
@@ -558,7 +557,7 @@
         transactions = rows;
       }
     } catch (e) {
-      error = String(e);
+      error = describeError(e);
     } finally {
       loading = false;
     }
@@ -601,7 +600,7 @@
         incomeExhausted = batch.length < PAGE_SIZE;
       }
     } catch (e) {
-      error = String(e);
+      error = describeError(e);
     } finally {
       if (token === currentToken(kind)) {
         if (kind === "expense") loadingMoreExpense = false;
@@ -654,7 +653,7 @@
         if (batch.length < PAGE_SIZE) incomeExhausted = true;
       }
     } catch (e) {
-      error = String(e);
+      error = describeError(e);
     } finally {
       if (kind === "expense") loadingMoreExpense = false;
       else loadingMoreIncome = false;
@@ -824,7 +823,7 @@
 
   let categoryOptions = $derived(buildCategoryOptions(categories));
   let categoryFilterOptions = $derived([
-    { id: "", label: "All categories" },
+    { id: "", label: t("transactions.allCategories") },
     ...categoryOptions,
   ]);
 
@@ -848,7 +847,7 @@
 
   let accountOptions = $derived(accounts.map((a) => ({ id: a.id, label: a.name })));
   let accountFilterOptions = $derived([
-    { id: "", label: "All accounts" },
+    { id: "", label: t("transactions.allAccounts") },
     ...accountOptions,
   ]);
 
@@ -862,7 +861,7 @@
   }
 
   let typeFilterOptions = $derived([
-    { id: "", label: "All types" },
+    { id: "", label: t("transactions.allTypes") },
     ...OPERATION_KINDS.map((kind) => ({ id: kind, label: operationKindLabel(kind) })),
   ]);
 
@@ -983,12 +982,12 @@
     const minorUnits = parseToMinorUnits(formAmount);
     if (minorUnits === null || minorUnits === 0) {
       toast.error(
-        "Amount must be a non-zero number (negative for expense, positive for income).",
+        t("transactions.amountInvalid"),
       );
       return;
     }
     if (!formCategoryId || !formAccountId) {
-      toast.error("Choose a category and an account.");
+      toast.error(t("transactions.chooseCategoryAndAccount"));
       return;
     }
     try {
@@ -1003,7 +1002,7 @@
       formDescription = "";
       await load();
     } catch (e) {
-      toast.error(String(e));
+      toast.error(describeError(e));
     }
   }
 
@@ -1045,24 +1044,24 @@
       // category filter's count — only ever the count for its own sign.
       refreshCount(kind);
     } catch (e) {
-      toast.error(String(e));
+      toast.error(describeError(e));
     }
   }
 
-  async function handleDelete(t: TransactionDto) {
+  async function handleDelete(transaction: TransactionDto) {
     try {
-      await api.deleteTransaction(t.id);
+      await api.deleteTransaction(transaction.id);
       await load();
       // Deleting one leg of a transfer deletes the other, on an account the
       // user may not even be looking at — say so rather than let a balance
       // change somewhere else go unexplained.
       toast.success(
-        t.role === "transfer"
-          ? "Transfer deleted, on both accounts."
-          : "Transaction deleted.",
+        transaction.role === "transfer"
+          ? t("transactions.transferDeleted")
+          : t("transactions.deleted"),
       );
     } catch (e) {
-      toast.error(String(e));
+      toast.error(describeError(e));
     }
   }
 
@@ -1318,11 +1317,14 @@
       await fillViewport();
       toast.success(
         outcome.transfer_groups > 0
-          ? `${outcome.deleted} transactions deleted (${outcome.transfer_groups} transfer${outcome.transfer_groups === 1 ? "" : "s"} removed on both accounts).`
-          : `${outcome.deleted} transaction${outcome.deleted === 1 ? "" : "s"} deleted.`,
+          ? tp("transactions.bulkDeletedWithTransfers", outcome.transfer_groups, {
+              count: outcome.deleted,
+              groups: outcome.transfer_groups,
+            })
+          : tp("transactions.bulkDeleted", outcome.deleted),
       );
     } catch (e) {
-      toast.error(String(e));
+      toast.error(describeError(e));
     }
   }
 
@@ -1349,7 +1351,7 @@
         kind === "expense" ? expenseCategoryFilter : incomeCategoryFilter;
       if (categoryFilter) await refreshCount(kind);
     } catch (e) {
-      toast.error(String(e));
+      toast.error(describeError(e));
     }
   }
 </script>
@@ -1376,21 +1378,21 @@
           </th>
           <th class="date-cell"
             ><button type="button" onclick={() => toggleSort(kind, "date")}
-              >Date</button
+              >{t("common.date")}</button
             ></th
           >
           <th class="amount-cell">
             <div class="column-header" class:filtered={amountFilterActive(kind)}>
               <button type="button" onclick={() => toggleSort(kind, "amount")}
-                >Amount</button
+                >{t("common.amount")}</button
               >
               <FilterPopover
                 active={amountFilterActive(kind)}
-                ariaLabel="Filter by amount"
+                ariaLabel={t("transactions.filterByAmount")}
               >
                 <div class="amount-filter">
                   <label>
-                    Min
+                    {t("transactions.min")}
                     <input
                       type="number"
                       step="0.01"
@@ -1403,7 +1405,7 @@
                     />
                   </label>
                   <label>
-                    Max
+                    {t("transactions.max")}
                     <input
                       type="number"
                       step="0.01"
@@ -1424,18 +1426,18 @@
               class:filtered={descriptionFilterFor(kind).trim() !== ""}
             >
               <button type="button" onclick={() => toggleSort(kind, "description")}
-                >Description</button
+                >{t("common.description")}</button
               >
               <FilterPopover
                 active={descriptionFilterFor(kind).trim() !== ""}
-                ariaLabel="Filter by description"
+                ariaLabel={t("transactions.filterByDescription")}
               >
                 <input
                   value={descriptionFilterFor(kind)}
                   oninput={(e) =>
                     setDescriptionFilter(kind, (e.currentTarget as HTMLInputElement).value)}
                   use:autofocus
-                  placeholder="Search description…"
+                  placeholder={t("transactions.searchDescription")}
                   spellcheck="false"
                   autocomplete="off"
                   autocorrect="off"
@@ -1446,15 +1448,15 @@
           </th>
           <th class="kind-cell">
             <div class="column-header" class:filtered={typeFilterFor(kind) !== ""}>
-              <button type="button" onclick={() => toggleSort(kind, "type")}>Type</button>
+              <button type="button" onclick={() => toggleSort(kind, "type")}>{t("transactions.type")}</button>
               <SearchSelect
                 options={typeFilterOptions}
                 value={typeFilterFor(kind)}
                 onChange={(id) => setTypeFilter(kind, id)}
-                searchPlaceholder="Search type…"
+                searchPlaceholder={t("transactions.searchType")}
               >
                 {#snippet trigger()}
-                  <Search size={14} aria-label="Filter by type" />
+                  <Search size={14} aria-label={t("transactions.filterByType")} />
                 {/snippet}
               </SearchSelect>
             </div>
@@ -1465,16 +1467,16 @@
               class:filtered={categoryFilterFor(kind) !== ""}
             >
               <button type="button" onclick={() => toggleSort(kind, "category")}
-                >Category</button
+                >{t("common.category")}</button
               >
               <SearchSelect
                 options={categoryFilterOptions}
                 value={categoryFilterFor(kind)}
                 onChange={(id) => setCategoryFilter(kind, id)}
-                searchPlaceholder="Search category…"
+                searchPlaceholder={t("categories.searchCategory")}
               >
                 {#snippet trigger()}
-                  <Search size={14} aria-label="Filter by category" />
+                  <Search size={14} aria-label={t("transactions.filterByCategory")} />
                 {/snippet}
               </SearchSelect>
             </div>
@@ -1484,15 +1486,15 @@
               class="column-header align-right"
               class:filtered={accountFilterFor(kind) !== ""}
             >
-              <button type="button" onclick={() => toggleSort(kind, "account")}>Account</button>
+              <button type="button" onclick={() => toggleSort(kind, "account")}>{t("common.account")}</button>
               <SearchSelect
                 options={accountFilterOptions}
                 value={accountFilterFor(kind)}
                 onChange={(id) => setAccountFilter(kind, id)}
-                searchPlaceholder="Search account…"
+                searchPlaceholder={t("settings.searchAccount")}
               >
                 {#snippet trigger()}
-                  <Search size={14} aria-label="Filter by account" />
+                  <Search size={14} aria-label={t("transactions.filterByAccount")} />
                 {/snippet}
               </SearchSelect>
             </div>
@@ -1502,48 +1504,51 @@
       </thead>
       <tbody>
         {#if items.length === 0}
-          <tr><td class="empty" colspan="8">No transactions.</td></tr>
+          <tr><td class="empty" colspan="8">{t("transactions.none")}</td></tr>
         {:else}
-          {#each items as t (t.id)}
-            <tr onmouseenter={() => continueRowDrag(kind, t.id)}>
+          {#each items as row (row.id)}
+            <tr onmouseenter={() => continueRowDrag(kind, row.id)}>
               <td class="select-cell">
                 <Checkbox
-                  checked={selected.has(t.id)}
-                  ariaLabel={`Select transaction ${t.date} ${t.description}`}
-                  onpress={(event: MouseEvent) => beginRowDrag(kind, t.id, event)}
+                  checked={selected.has(row.id)}
+                  ariaLabel={t("transactions.selectTransaction", {
+                    date: row.date,
+                    description: row.description,
+                  })}
+                  onpress={(event: MouseEvent) => beginRowDrag(kind, row.id, event)}
                 />
               </td>
-              <td class="date-cell">{t.date}</td>
-              <td class="amount-cell">{formatCurrency(t.amount_minor_units, t.currency)}</td>
+              <td class="date-cell">{row.date}</td>
+              <td class="amount-cell">{formatCurrency(row.amount_minor_units, row.currency)}</td>
               <td class="description-cell">
-                {t.description}
-                {#if t.role === "transfer"}
-                  <span class="role-badge" title="Between your own accounts — not counted as spending"
-                    >transfer</span
+                {row.description}
+                {#if row.role === "transfer"}
+                  <span class="role-badge" title={t("transactions.transferBadgeTitle")}
+                    >{t("transactions.transferBadge")}</span
                   >
-                {:else if t.role === "adjustment"}
+                {:else if row.role === "adjustment"}
                   <span
                     class="role-badge"
-                    title="Balance adjustment, posted from Accounts — not counted as spending"
-                    >adjustment</span
+                    title={t("transactions.adjustmentBadgeTitle")}
+                    >{t("transactions.adjustmentBadge")}</span
                   >
                 {/if}
               </td>
-              <td class="kind-cell">{operationKindLabel(t.operation_kind)}</td>
+              <td class="kind-cell">{operationKindLabel(row.operation_kind)}</td>
               <td class="category-cell">
                 <SearchSelect
                   options={categoryOptions}
-                  value={t.category_id}
-                  onChange={(categoryId) => handleCategoryChange(t, categoryId)}
-                  searchPlaceholder="Search category…"
+                  value={row.category_id}
+                  onChange={(categoryId) => handleCategoryChange(row, categoryId)}
+                  searchPlaceholder={t("categories.searchCategory")}
                   stacked
                 />
               </td>
-              <td class="account-cell">{accountName(t.account_id)}</td>
+              <td class="account-cell">{accountName(row.account_id)}</td>
               <td class="actions-cell">
                 <DeleteButton
-                  label="Delete transaction"
-                  onConfirm={() => handleDelete(t)}
+                  label={t("transactions.deleteTransaction")}
+                  onConfirm={() => handleDelete(row)}
                 />
               </td>
             </tr>
@@ -1554,9 +1559,9 @@
 {/snippet}
 
 <div class="title">
-  <h1>Transactions</h1>
+  <h1>{t("transactions.title")}</h1>
   {#if !loading}
-    <span class="summary">{totalCount} transactions</span>
+    <span class="summary">{tp("transactions.count", totalCount)}</span>
   {/if}
 </div>
 
@@ -1567,22 +1572,22 @@
     <button
       type="button"
       class:active={rangeMode === "month"}
-      onclick={() => setRange("month")}>Month</button
+      onclick={() => setRange("month")}>{t("details.month")}</button
     >
     <button
       type="button"
       class:active={rangeMode === "year"}
-      onclick={() => setRange("year")}>Year</button
+      onclick={() => setRange("year")}>{t("details.year")}</button
     >
     <button
       type="button"
       class:active={rangeMode === "all"}
-      onclick={() => setRange("all")}>All Time</button
+      onclick={() => setRange("all")}>{t("details.allTime")}</button
     >
     <button
       type="button"
       class:active={rangeMode === "custom"}
-      onclick={() => setRange("custom")}>Set Dates</button
+      onclick={() => setRange("custom")}>{t("details.setDates")}</button
     >
   </div>
   {#if rangeMode === "custom"}
@@ -1600,8 +1605,8 @@
     <button
       type="button"
       class="icon-button add-button"
-      aria-label="Add transaction"
-      title="Add transaction"
+      aria-label={t("transactions.addTransaction")}
+      title={t("transactions.addTransaction")}
       onclick={() => (showAddForm = !showAddForm)}
     >
       <Plus size={18} />
@@ -1609,8 +1614,8 @@
     <button
       type="button"
       class="icon-button import-button"
-      aria-label="Import CSV"
-      title="Import CSV"
+      aria-label={t("transactions.importCsv")}
+      title={t("transactions.importCsv")}
       onclick={() => (showImportDialog = true)}
     >
       <FileUp size={18} />
@@ -1633,12 +1638,12 @@
     <input
       type="number"
       step="0.01"
-      placeholder="Amount (− expense / + income)"
+      placeholder={t("transactions.amountPlaceholder")}
       bind:value={formAmount}
       required
     />
     <input
-      placeholder="Description"
+      placeholder={t("common.description")}
       bind:value={formDescription}
       onblur={handleDescriptionBlur}
       required
@@ -1647,22 +1652,22 @@
       options={categoryOptions}
       value={formCategoryId}
       onChange={(id) => (formCategoryId = id)}
-      placeholder="Category…"
-      searchPlaceholder="Search category…"
+      placeholder={t("transactions.categoryPlaceholder")}
+      searchPlaceholder={t("categories.searchCategory")}
     />
     <SearchSelect
       options={accountOptions}
       value={formAccountId}
       onChange={(id) => (formAccountId = id)}
-      placeholder="Account…"
-      searchPlaceholder="Search account…"
+      placeholder={t("transactions.accountPlaceholder")}
+      searchPlaceholder={t("settings.searchAccount")}
     />
-    <button type="submit">Save transaction</button>
+    <button type="submit">{t("transactions.save")}</button>
   </form>
 {/if}
 
 {#if loading}
-  <p>Loading…</p>
+  <p>{t("common.loading")}</p>
 {:else}
   <div class="lists">
     <section>
@@ -1674,54 +1679,58 @@
               class="collapse-toggle"
               aria-expanded={!expenseCollapsed}
               aria-controls="expenses-list"
-              title={expenseCollapsed ? "Show expenses" : "Hide expenses"}
+              title={expenseCollapsed ? t("transactions.showExpenses") : t("transactions.hideExpenses")}
               onclick={() => toggleCollapsed("expense")}
             >
               <span class="chevron" class:folded={expenseCollapsed} aria-hidden="true">
                 <ChevronDown size={16} />
               </span>
-              Expenses
+              {t("common.expenses")}
             </button>
           {:else}
-            Expenses
+            {t("common.expenses")}
           {/if}
         </h2>
         {#if isCollapsed("expense")}
-          <span class="collapsed-count">{expenseCount} transactions</span>
+          <span class="collapsed-count">{tp("transactions.count", expenseCount)}</span>
         {/if}
         {#if !viewIsDefault("expense")}
           <button
             type="button"
             class="reset-view"
-            aria-label="Reset expenses sort and filters"
-            title="Reset sort and filters"
+            aria-label={t("transactions.resetExpenses")}
+            title={t("transactions.resetTitle")}
             onclick={() => resetView("expense")}
           >
             <RotateCcw size={13} aria-hidden="true" />
-            Reset
+            {t("transactions.reset")}
           </button>
         {/if}
         {#if visibleSelectedExpenseIds.length > 0}
           <div
             class="bulk-actions"
             role="toolbar"
-            aria-label="Bulk actions for expenses"
+            aria-label={t("transactions.bulkExpenses")}
             aria-live="polite"
           >
-            <span class="bulk-count">{visibleSelectedExpenseIds.length} selected</span>
+            <span class="bulk-count">
+              {t("transactions.selectedCount", { count: visibleSelectedExpenseIds.length })}
+            </span>
             <SearchSelect
               options={categoryOptions}
               value=""
               onChange={(id) => handleBulkRecategorize("expense", id)}
-              searchPlaceholder="Search category…"
+              searchPlaceholder={t("categories.searchCategory")}
             >
               {#snippet trigger()}
-                <Pencil size={14} aria-label="Recategorize selected expenses" />
+                <Pencil size={14} aria-label={t("transactions.recategorizeExpenses")} />
               {/snippet}
             </SearchSelect>
             <DeleteButton
               compact
-              label={`Delete ${visibleSelectedExpenseIds.length} transactions`}
+              label={t("transactions.deleteSelected", {
+                count: visibleSelectedExpenseIds.length,
+              })}
               onConfirm={() => handleBulkDelete("expense")}
             />
           </div>
@@ -1742,54 +1751,58 @@
               class="collapse-toggle"
               aria-expanded={!incomeCollapsed}
               aria-controls="income-list"
-              title={incomeCollapsed ? "Show income" : "Hide income"}
+              title={incomeCollapsed ? t("transactions.showIncome") : t("transactions.hideIncome")}
               onclick={() => toggleCollapsed("income")}
             >
               <span class="chevron" class:folded={incomeCollapsed} aria-hidden="true">
                 <ChevronDown size={16} />
               </span>
-              Income
+              {t("common.income")}
             </button>
           {:else}
-            Income
+            {t("common.income")}
           {/if}
         </h2>
         {#if isCollapsed("income")}
-          <span class="collapsed-count">{incomeCount} transactions</span>
+          <span class="collapsed-count">{tp("transactions.count", incomeCount)}</span>
         {/if}
         {#if !viewIsDefault("income")}
           <button
             type="button"
             class="reset-view"
-            aria-label="Reset income sort and filters"
-            title="Reset sort and filters"
+            aria-label={t("transactions.resetIncome")}
+            title={t("transactions.resetTitle")}
             onclick={() => resetView("income")}
           >
             <RotateCcw size={13} aria-hidden="true" />
-            Reset
+            {t("transactions.reset")}
           </button>
         {/if}
         {#if visibleSelectedIncomeIds.length > 0}
           <div
             class="bulk-actions"
             role="toolbar"
-            aria-label="Bulk actions for income"
+            aria-label={t("transactions.bulkIncome")}
             aria-live="polite"
           >
-            <span class="bulk-count">{visibleSelectedIncomeIds.length} selected</span>
+            <span class="bulk-count">
+              {t("transactions.selectedCount", { count: visibleSelectedIncomeIds.length })}
+            </span>
             <SearchSelect
               options={categoryOptions}
               value=""
               onChange={(id) => handleBulkRecategorize("income", id)}
-              searchPlaceholder="Search category…"
+              searchPlaceholder={t("categories.searchCategory")}
             >
               {#snippet trigger()}
-                <Pencil size={14} aria-label="Recategorize selected income" />
+                <Pencil size={14} aria-label={t("transactions.recategorizeIncome")} />
               {/snippet}
             </SearchSelect>
             <DeleteButton
               compact
-              label={`Delete ${visibleSelectedIncomeIds.length} transactions`}
+              label={t("transactions.deleteSelected", {
+                count: visibleSelectedIncomeIds.length,
+              })}
               onConfirm={() => handleBulkDelete("income")}
             />
           </div>
@@ -1805,9 +1818,9 @@
   {#if rangeMode === "all"}
     <div bind:this={sentinel} class="scroll-sentinel">
       {#if loadingMore}
-        <p class="scroll-status">Loading more…</p>
+        <p class="scroll-status">{t("transactions.loadingMore")}</p>
       {:else if allTimeExhausted}
-        <p class="scroll-status">All transactions loaded.</p>
+        <p class="scroll-status">{t("transactions.allLoaded")}</p>
       {/if}
     </div>
   {/if}
@@ -1817,8 +1830,8 @@
   <button
     type="button"
     class="icon-button scroll-top-button"
-    aria-label="Scroll to top"
-    title="Scroll to top"
+    aria-label={t("transactions.scrollToTop")}
+    title={t("transactions.scrollToTop")}
     onclick={scrollToTop}
   >
     <ArrowUp size={18} />

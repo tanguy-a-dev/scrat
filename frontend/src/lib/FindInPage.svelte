@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { afterNavigate } from "$app/navigation";
   import { ChevronUp, ChevronDown, X } from "@lucide/svelte";
+  import { t } from "$lib/i18n.svelte";
 
   const supported = typeof CSS !== "undefined" && "highlights" in CSS;
 
@@ -213,15 +214,15 @@
       bind:value={query}
       oninput={runSearch}
       onkeydown={handleInputKeydown}
-      placeholder="Find on page…"
+      placeholder={t("find.placeholder")}
     />
     <span class="count">
       {#if !supported}
-        unsupported
+        {t("find.unsupported")}
       {:else if query.trim() === ""}
         &nbsp;
       {:else if matchCount === 0}
-        No results
+        {t("find.noResults")}
       {:else}
         {currentIndex + 1} / {matchCount}
       {/if}
@@ -231,7 +232,7 @@
       class="icon-button"
       onclick={() => step(-1)}
       disabled={matchCount === 0}
-      aria-label="Previous match"
+      aria-label={t("find.previousMatch")}
     >
       <ChevronUp size={16} />
     </button>
@@ -240,7 +241,7 @@
       class="icon-button"
       onclick={() => step(1)}
       disabled={matchCount === 0}
-      aria-label="Next match"
+      aria-label={t("find.nextMatch")}
     >
       <ChevronDown size={16} />
     </button>
@@ -248,7 +249,7 @@
       type="button"
       class="icon-button"
       onclick={close}
-      aria-label="Close find bar"
+      aria-label={t("find.close")}
     >
       <X size={16} />
     </button>

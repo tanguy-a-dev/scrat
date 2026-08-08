@@ -1,7 +1,9 @@
 use scrat_domain::category::{
-    Category, CategoryError, CategoryIcon, CategoryId, CategoryName, DEFAULT_CATEGORY_NAME,
-    FALLBACK_ICON, has_subcategories,
+    Category, CategoryError, CategoryIcon, CategoryId, CategoryName, CategorySeedKey,
+    DEFAULT_CATEGORY_NAME, FALLBACK_ICON, has_subcategories,
 };
+use scrat_domain::default_categories::{UNCATEGORIZED_KEY, seeded_name};
+use scrat_domain::language::Language;
 use scrat_domain::ports::{CategoryRepository, RepositoryError};
 use thiserror::Error;
 
@@ -132,27 +134,105 @@ impl<'a> CategoryService<'a> {
         Ok(self.repo.list_all()?)
     }
 
-    /// Finds the category named "Uncategorized" (case-insensitive), creating
-    /// it if this is the first time anything has needed a fallback default —
-    /// the app's one forced default category, resolved fresh on every call
-    /// rather than cached, since it can never be renamed away from this name
-    /// (see `ensure_not_protected`).
-    pub fn get_or_create_default_category(&self) -> Result<Category, ApplicationError> {
-        if let Some(existing) = self.repo.list_all()?.into_iter().find(|c| {
+    /// Renames every seeded category that still carries the name the app gave
+    /// it in `from`, to the name it has in `to`. Returns how many were
+    /// renamed.
+    ///
+    /// The name comparison is the entire policy, and it is deliberately
+    /// exact. A category whose name is still character-for-character what the
+    /// app wrote is one the user has never expressed an opinion about, so
+    /// relabelling it is completing the language change rather than
+    /// overwriting a choice. Anything else — renamed, re-cased, or
+    /// user-created (no seed key at all) — is theirs, and a language switch
+    /// must not touch it. Getting this backwards would silently destroy
+    /// user-chosen names, which is unrecoverable; leaving a stale name is
+    /// merely untidy, and the user can fix it in one edit.
+    ///
+    /// Keys this build doesn't recognise (a database written by a newer
+    /// version) are skipped rather than cleared, and so are keys whose name is
+    /// the same in both languages — "Restaurant" needs no write.
+    pub fn relabel_seeded_categories(
+        &self,
+        from: Language,
+        to: Language,
+    ) -> Result<usize, ApplicationError> {
+        if from == to {
+            return Ok(0);
+        }
+        let mut relabelled = 0;
+        for mut category in self.repo.list_all()? {
+            let Some(key) = category.seed_key().map(|k| k.as_str().to_string()) else {
+                continue;
+            };
+            let (Some(previous), Some(next)) = (seeded_name(&key, from), seeded_name(&key, to))
+            else {
+                continue;
+            };
+            if next == previous || category.name().as_str() != previous {
+                continue;
+            }
+            category.rename(CategoryName::new(next)?);
+            self.repo.update(&category)?;
+            relabelled += 1;
+        }
+        Ok(relabelled)
+    }
+
+    /// Finds the app's one forced default category, creating it in `language`
+    /// if this is the first time anything has needed a fallback — resolved
+    /// fresh on every call rather than cached.
+    ///
+    /// `language` is only consulted on the create path. It has to be, because
+    /// a fallback conjured into a French database has to be called `Non
+    /// classé`; but a database that already has one keeps whatever it has,
+    /// including a name a language change gave it.
+    pub fn get_or_create_default_category(
+        &self,
+        language: Language,
+    ) -> Result<Category, ApplicationError> {
+        if let Some(existing) = self.find_default_category()? {
+            return Ok(existing);
+        }
+        let name = seeded_name(UNCATEGORIZED_KEY, language).unwrap_or(DEFAULT_CATEGORY_NAME);
+        let mut category = self.create_category(name, None)?;
+        // Stamped so the next lookup finds it by key, and so a later language
+        // change relabels it like any other seeded category.
+        category.set_seed_key(Some(CategorySeedKey::new(UNCATEGORIZED_KEY)?));
+        self.repo.update(&category)?;
+        Ok(category)
+    }
+
+    /// The forced default category, if this database has one.
+    ///
+    /// Identified by seed key first: the category is translatable, so its name
+    /// is no longer evidence of what it is. The name check behind it is for
+    /// databases whose fallback was created before the key existed *and* whose
+    /// migration backfill didn't reach it — without it, such a database would
+    /// grow a second "Uncategorized" the first time something needed one.
+    fn find_default_category(&self) -> Result<Option<Category>, ApplicationError> {
+        let all = self.repo.list_all()?;
+        if let Some(found) = all
+            .iter()
+            .find(|c| c.seed_key().map(CategorySeedKey::as_str) == Some(UNCATEGORIZED_KEY))
+        {
+            return Ok(Some(found.clone()));
+        }
+        Ok(all.into_iter().find(|c| {
             c.name()
                 .as_str()
                 .eq_ignore_ascii_case(DEFAULT_CATEGORY_NAME)
-        }) {
-            return Ok(existing);
-        }
-        self.create_category(DEFAULT_CATEGORY_NAME, None)
+        }))
     }
 
     /// Refuses the operation if `id` is the forced default category — it's
     /// the bucket transactions fall back to app-wide, so renaming or
     /// deleting it (even via reassignment) is never allowed.
+    ///
+    /// Looks the category up without creating it: if no fallback exists yet,
+    /// then `id` cannot be it, and conjuring one just to compare ids would
+    /// need a language this call has no business knowing.
     fn ensure_not_protected(&self, id: CategoryId) -> Result<(), ApplicationError> {
-        if self.get_or_create_default_category()?.id() == id {
+        if self.find_default_category()?.map(|c| c.id()) == Some(id) {
             return Err(ApplicationError::DefaultCategoryProtected(
                 DEFAULT_CATEGORY_NAME.to_string(),
             ));
@@ -252,9 +332,186 @@ mod tests {
         let repo = FakeCategoryRepository::default();
         let service = CategoryService::new(&repo);
 
-        let category = service.get_or_create_default_category().unwrap();
+        let category = service
+            .get_or_create_default_category(Language::En)
+            .unwrap();
 
         assert_eq!(category.name().as_str(), DEFAULT_CATEGORY_NAME);
+    }
+
+    /// A fallback conjured into a French database has to read as French. The
+    /// stamped key is what lets the *next* language change find it again.
+    #[test]
+    fn get_or_create_default_category_creates_it_in_the_given_language() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+
+        let category = service
+            .get_or_create_default_category(Language::Fr)
+            .unwrap();
+
+        assert_eq!(category.name().as_str(), "Non classé");
+        assert_eq!(
+            category.seed_key().map(CategorySeedKey::as_str),
+            Some(UNCATEGORIZED_KEY)
+        );
+    }
+
+    /// The fallback is identified by key, not by name — otherwise a French
+    /// database would fail to recognise its own `Non classé` and grow a
+    /// second one the first time anything needed a default.
+    #[test]
+    fn a_relabelled_fallback_is_still_found_by_its_key() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+        let existing = service
+            .get_or_create_default_category(Language::Fr)
+            .unwrap();
+
+        let found = service
+            .get_or_create_default_category(Language::Fr)
+            .unwrap();
+
+        assert_eq!(found.id(), existing.id());
+        assert_eq!(repo.categories.lock().unwrap().len(), 1);
+    }
+
+    /// And it stays protected once relabelled. Keying the protection off the
+    /// English name would have let a French user delete the one category the
+    /// whole app falls back to.
+    #[test]
+    fn a_relabelled_fallback_still_cannot_be_renamed_or_deleted() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+        let fallback = service
+            .get_or_create_default_category(Language::Fr)
+            .unwrap();
+
+        assert!(matches!(
+            service.rename_category(fallback.id(), "Divers"),
+            Err(ApplicationError::DefaultCategoryProtected(_))
+        ));
+        assert!(matches!(
+            service.delete_category(fallback.id(), None),
+            Err(ApplicationError::DefaultCategoryProtected(_))
+        ));
+    }
+
+    fn seeded(
+        service: &CategoryService,
+        repo: &FakeCategoryRepository,
+        key: &str,
+        name: &str,
+    ) -> CategoryId {
+        let category = service.create_category(name, None).unwrap();
+        let mut stored = category.clone();
+        stored.set_seed_key(Some(CategorySeedKey::new(key).unwrap()));
+        repo.update(&stored).unwrap();
+        category.id()
+    }
+
+    fn name_of(repo: &FakeCategoryRepository, id: CategoryId) -> String {
+        repo.find_by_id(id)
+            .unwrap()
+            .unwrap()
+            .name()
+            .as_str()
+            .to_string()
+    }
+
+    #[test]
+    fn relabelling_renames_seeded_categories_that_still_have_their_seeded_name() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+        let housing = seeded(&service, &repo, "housing", "Housing");
+
+        let count = service
+            .relabel_seeded_categories(Language::En, Language::Fr)
+            .unwrap();
+
+        assert_eq!(count, 1);
+        assert_eq!(name_of(&repo, housing), "Logement");
+    }
+
+    /// The line the whole feature turns on. A name the user chose is theirs;
+    /// a language switch relabels the app, not their data.
+    #[test]
+    fn relabelling_never_touches_a_category_the_user_renamed() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+        let renamed = seeded(&service, &repo, "housing", "Our flat");
+        let user_made = service.create_category("Boat fuel", None).unwrap();
+
+        let count = service
+            .relabel_seeded_categories(Language::En, Language::Fr)
+            .unwrap();
+
+        assert_eq!(count, 0);
+        assert_eq!(name_of(&repo, renamed), "Our flat");
+        assert_eq!(name_of(&repo, user_made.id()), "Boat fuel");
+    }
+
+    /// Switching back has to restore the English names, not strand the
+    /// database in French — the relabel has to work in both directions.
+    #[test]
+    fn relabelling_round_trips_between_languages() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+        let housing = seeded(&service, &repo, "housing", "Housing");
+
+        service
+            .relabel_seeded_categories(Language::En, Language::Fr)
+            .unwrap();
+        service
+            .relabel_seeded_categories(Language::Fr, Language::En)
+            .unwrap();
+
+        assert_eq!(name_of(&repo, housing), "Housing");
+    }
+
+    /// Names that are the same word in both languages cost no write at all —
+    /// and, more importantly, are not reported as changes the user made.
+    #[test]
+    fn relabelling_skips_categories_whose_name_is_identical_in_both_languages() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+        seeded(&service, &repo, "food_and_drink.restaurant", "Restaurant");
+
+        let count = service
+            .relabel_seeded_categories(Language::En, Language::Fr)
+            .unwrap();
+
+        assert_eq!(count, 0);
+    }
+
+    /// A key written by a newer build is data this one doesn't understand.
+    /// Leaving the name alone is the only safe answer — clearing or guessing
+    /// would corrupt a category the user can see.
+    #[test]
+    fn relabelling_leaves_an_unknown_seed_key_alone() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+        let unknown = seeded(&service, &repo, "crypto.staking_rewards", "Staking Rewards");
+
+        let count = service
+            .relabel_seeded_categories(Language::En, Language::Fr)
+            .unwrap();
+
+        assert_eq!(count, 0);
+        assert_eq!(name_of(&repo, unknown), "Staking Rewards");
+    }
+
+    #[test]
+    fn relabelling_to_the_same_language_is_a_no_op() {
+        let repo = FakeCategoryRepository::default();
+        let service = CategoryService::new(&repo);
+        seeded(&service, &repo, "housing", "Housing");
+
+        let count = service
+            .relabel_seeded_categories(Language::En, Language::En)
+            .unwrap();
+
+        assert_eq!(count, 0);
     }
 
     #[test]
@@ -263,7 +520,9 @@ mod tests {
         let service = CategoryService::new(&repo);
         let existing = service.create_category("uncategorized", None).unwrap();
 
-        let category = service.get_or_create_default_category().unwrap();
+        let category = service
+            .get_or_create_default_category(Language::En)
+            .unwrap();
 
         assert_eq!(category.id(), existing.id());
         assert_eq!(repo.categories.lock().unwrap().len(), 1);
@@ -273,7 +532,9 @@ mod tests {
     fn rename_category_rejects_the_default_category() {
         let repo = FakeCategoryRepository::default();
         let service = CategoryService::new(&repo);
-        let default_category = service.get_or_create_default_category().unwrap();
+        let default_category = service
+            .get_or_create_default_category(Language::En)
+            .unwrap();
 
         let result = service.rename_category(default_category.id(), "Renamed");
 
@@ -287,7 +548,9 @@ mod tests {
     fn delete_category_rejects_the_default_category() {
         let repo = FakeCategoryRepository::default();
         let service = CategoryService::new(&repo);
-        let default_category = service.get_or_create_default_category().unwrap();
+        let default_category = service
+            .get_or_create_default_category(Language::En)
+            .unwrap();
 
         let result = service.delete_category(default_category.id(), None);
 
@@ -368,7 +631,9 @@ mod tests {
     fn set_category_icon_is_allowed_on_the_protected_default_category() {
         let repo = FakeCategoryRepository::default();
         let service = CategoryService::new(&repo);
-        let default_category = service.get_or_create_default_category().unwrap();
+        let default_category = service
+            .get_or_create_default_category(Language::En)
+            .unwrap();
 
         let result = service.set_category_icon(default_category.id(), "house");
 

@@ -119,7 +119,19 @@ export function buildBreakdown(
 
 /** Rows for the categories a panel is currently hiding: they carry their real
  * amount (so the user can see what they're leaving out) but no share, since by
- * definition they're no longer part of the total the shares are of. */
+ * definition they're no longer part of the total the shares are of.
+ *
+ * At the top level (`scopeRootId` null), hiding a *root* rolls its
+ * subcategories up into one "Housing"-style row, same as the main breakdown
+ * rolls up a visible root. Hiding one subcategory while the root still has a
+ * visible sibling is deliberately left off this list — the expanded drilldown
+ * already shows that hidden subcategory with a working eye, and duplicating
+ * it here would just be clutter. But once every one of a root's subcategories
+ * is hidden this way, the root has nothing visible left to anchor a row in
+ * the main breakdown either, and it would vanish from the panel with no eye
+ * left anywhere to click — so that case surfaces each such subcategory here
+ * under its own name instead of the root's, which also keeps the eye button
+ * toggling the id that's actually in `hidden`. */
 export function hiddenRows(
   txns: TransactionDto[],
   hidden: ReadonlySet<string>,
@@ -127,11 +139,33 @@ export function hiddenRows(
   rootOf: RootResolver,
   nameOf: NameResolver,
 ): Omit<BreakdownRow, "percent">[] {
+  let fullyHiddenRoots = new Set<string>();
+  if (scopeRootId === null) {
+    const rootsWithVisible = new Set<string>();
+    const rootsWithHidden = new Set<string>();
+    for (const t of txns) {
+      const root = rootOf(t.category_id);
+      const isHiddenTxn = hidden.has(t.category_id) || hidden.has(root);
+      (isHiddenTxn ? rootsWithHidden : rootsWithVisible).add(root);
+    }
+    fullyHiddenRoots = new Set([...rootsWithHidden].filter((r) => !rootsWithVisible.has(r)));
+  }
+
   const sums = new Map<string, number>();
   for (const t of txns) {
     const root = rootOf(t.category_id);
     if (scopeRootId !== null && root !== scopeRootId) continue;
-    const key = scopeRootId ? t.category_id : root;
+
+    let key: string;
+    if (scopeRootId !== null) {
+      key = t.category_id;
+    } else if (hidden.has(root)) {
+      key = root;
+    } else if (hidden.has(t.category_id) && fullyHiddenRoots.has(root)) {
+      key = t.category_id;
+    } else {
+      continue;
+    }
     if (!hidden.has(key)) continue;
     sums.set(key, (sums.get(key) ?? 0) + Math.abs(t.amount_minor_units));
   }

@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use rusqlite::Connection;
+use scrat_domain::language::Language;
 use scrat_domain::ports::RepositoryError;
 use thiserror::Error;
 
@@ -41,7 +42,10 @@ pub fn create_new(path: &Path, passphrase: &str) -> Result<Connection, DbError> 
     let mut conn = Connection::open(path)?;
     key_connection(&conn, passphrase)?;
     migrations::run(&mut conn)?;
-    seed::seed_default_categories(&conn)?;
+    // Seeded in the app's default language: the language setting lives in
+    // this database, so it cannot yet say otherwise. Switching afterwards
+    // relabels these rows via `CategoryService::relabel_seeded_categories`.
+    seed::seed_default_categories(&conn, Language::default())?;
     Ok(conn)
 }
 

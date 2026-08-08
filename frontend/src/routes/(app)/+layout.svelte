@@ -5,6 +5,7 @@
   import Toast from "$lib/Toast.svelte";
   import CommandPalette from "$lib/CommandPalette.svelte";
   import { navPages } from "$lib/navigation";
+  import { t } from "$lib/i18n.svelte";
 
   let { children }: { children: Snippet } = $props();
 </script>
@@ -19,7 +20,7 @@
       {#each navPages as link (link.href)}
         <li>
           <a href={link.href} class:active={page.url.pathname === link.href}>
-            {link.label}
+            {t(link.labelKey)}
           </a>
         </li>
       {/each}

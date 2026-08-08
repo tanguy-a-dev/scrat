@@ -11,6 +11,7 @@
   } from "$lib/api";
   import DeleteButton from "$lib/DeleteButton.svelte";
   import { toast } from "$lib/toasts.svelte";
+  import { describeError, t, tp } from "$lib/i18n.svelte";
 
   let accounts = $state<AccountDto[]>([]);
   let transferRules = $state<TransferRuleDto[]>([]);
@@ -94,7 +95,7 @@
       accounts = a;
       transferRules = r;
     } catch (e) {
-      error = String(e);
+      error = describeError(e);
     } finally {
       if (!silent) loading = false;
     }
@@ -111,7 +112,7 @@
       await action();
       await load(true);
     } catch (e) {
-      toast.error(String(e));
+      toast.error(describeError(e));
     }
   }
 
@@ -124,7 +125,7 @@
       await load(true);
       toast.success(successMessage);
     } catch (e) {
-      toast.error(String(e));
+      toast.error(describeError(e));
     }
   }
 
@@ -167,7 +168,7 @@
   async function handleAnchor(account: AccountDto) {
     const minorUnits = parseToMinorUnits(anchorDraft);
     if (minorUnits === null) {
-      toast.error("Balance must be a number.");
+      toast.error(t("accounts.balanceNotANumber"));
       return;
     }
     const wasSet = account.is_opening_balance_set;
@@ -177,11 +178,11 @@
       await load(true);
       toast.success(
         wasSet
-          ? `Starting point updated for "${account.name}".`
-          : `Starting point set for "${account.name}".`,
+          ? t("accounts.startingPointUpdated", { name: account.name })
+          : t("accounts.startingPointSet", { name: account.name }),
       );
     } catch (e) {
-      toast.error(String(e));
+      toast.error(describeError(e));
     }
   }
 
@@ -201,7 +202,7 @@
   function handleDelete(account: AccountDto) {
     withDeleteConfirmation(
       () => api.deleteAccount(account.id),
-      `"${account.name}" deleted.`,
+      t("accounts.deleted", { name: account.name }),
     );
   }
 
@@ -237,11 +238,11 @@
       await load(true);
       toast.success(
         summary.converted > 0
-          ? `${summary.converted} existing transaction(s) converted to transfers.`
-          : "No matching transactions found.",
+          ? tp("accounts.converted", summary.converted)
+          : t("accounts.noMatchesFound"),
       );
     } catch (e) {
-      toast.error(String(e));
+      toast.error(describeError(e));
     }
   }
 
@@ -262,7 +263,7 @@
   async function handleReconcile(account: AccountDto) {
     const minorUnits = parseToMinorUnits(reconcileDraft);
     if (minorUnits === null) {
-      toast.error("Balance must be a number.");
+      toast.error(t("accounts.balanceNotANumber"));
       return;
     }
     try {
@@ -275,30 +276,32 @@
       await load(true);
       toast.success(
         adjustment
-          ? `Adjusted by ${formatCurrency(adjustment.amount_minor_units, account.currency)}.`
-          : `"${account.name}" already matched — nothing to adjust.`,
+          ? t("accounts.adjustedBy", {
+              amount: formatCurrency(adjustment.amount_minor_units, account.currency),
+            })
+          : t("accounts.alreadyMatched", { name: account.name }),
       );
     } catch (e) {
-      toast.error(String(e));
+      toast.error(describeError(e));
     }
   }
 </script>
 
-<h1>Accounts</h1>
+<h1>{t("accounts.title")}</h1>
 
 {#if error}
   <p class="error">{error}</p>
 {/if}
 
 <form class="create-form" onsubmit={handleCreate}>
-  <input placeholder="Account name" bind:value={newName} required />
-  <button type="submit">Add account</button>
+  <input placeholder={t("accounts.namePlaceholder")} bind:value={newName} required />
+  <button type="submit">{t("accounts.addAccount")}</button>
 </form>
 
 {#if loading}
-  <p>Loading…</p>
+  <p>{t("common.loading")}</p>
 {:else if accounts.length === 0}
-  <p class="empty">No accounts yet — add one above.</p>
+  <p class="empty">{t("accounts.empty")}</p>
 {:else}
   <ul class="accounts">
     {#each accounts as account (account.id)}
@@ -313,47 +316,47 @@
             class="computed"
             class:provisional={!account.is_opening_balance_set &&
               account.has_transactions}
-            >balance: {formatCurrency(
-              account.balance_minor_units,
-              account.currency,
-            )}</span
+            >{t("accounts.balanceLabel", {
+              amount: formatCurrency(account.balance_minor_units, account.currency),
+            })}</span
           >
           {#if account.is_default}
-            <span class="default-badge">default</span>
+            <span class="default-badge">{t("accounts.default")}</span>
           {:else}
             <button type="button" onclick={() => handleSetDefault(account)}>
-              Set as default
+              {t("accounts.setAsDefault")}
             </button>
           {/if}
           <!-- Shown whether or not the anchor is set: a mistyped starting
                point is otherwise permanent, since nothing else can move it. -->
           <button type="button" onclick={() => startAnchor(account)}>
-            {account.is_opening_balance_set ? "Edit" : "Set"} starting point
+            {account.is_opening_balance_set
+              ? t("accounts.editStartingPoint")
+              : t("accounts.setStartingPoint")}
           </button>
           <button type="button" onclick={() => startReconcile(account)}>
-            Add adjustment
+            {t("accounts.addAdjustment")}
           </button>
           <DeleteButton
-            label="Delete account"
+            label={t("accounts.deleteAccount")}
             onConfirm={() => handleDelete(account)}
           />
         </div>
         <!-- Only a problem once there are transactions to anchor: an empty
              account is at zero either way, so flagging it would be noise. -->
         {#if !account.is_opening_balance_set && account.has_transactions && anchoringAccountId !== account.id}
-          <p class="unanchored">
-            Starting point not set — this balance is only the transactions on
-            record, so it's off by whatever the account held before them.
-          </p>
+          <p class="unanchored">{t("accounts.unanchored")}</p>
         {/if}
         {#if anchoringAccountId === account.id}
           <div class="reconcile">
             <p class="panel-title">
-              {account.is_opening_balance_set ? "Edit" : "Set"} starting point
-              <span>— no entry is added to the ledger</span>
+              {account.is_opening_balance_set
+                ? t("accounts.editStartingPoint")
+                : t("accounts.setStartingPoint")}
+              <span>{t("accounts.noLedgerEntry")}</span>
             </p>
             <label for="anchor-{account.id}">
-              Balance your bank shows today
+              {t("accounts.bankBalanceToday")}
             </label>
             <input
               id="anchor-{account.id}"
@@ -370,10 +373,10 @@
               }}
             />
             <button type="button" onclick={() => handleAnchor(account)}>
-              Apply
+              {t("range.apply")}
             </button>
             <button type="button" class="secondary" onclick={cancelAnchor}>
-              Cancel
+              {t("common.cancel")}
             </button>
             <!-- The arithmetic, shown rather than explained: the user can
                  check the outcome against what they meant without having to
@@ -381,12 +384,12 @@
             {#if anchorPreview !== null}
               <dl class="preview">
                 <div>
-                  <dt>Transactions on record</dt>
+                  <dt>{t("accounts.transactionsOnRecord")}</dt>
                   <dd>{formatCurrency(ledgerSum(account), account.currency)}</dd>
                 </div>
                 {#if account.is_opening_balance_set}
                   <div>
-                    <dt>Starting point now</dt>
+                    <dt>{t("accounts.startingPointNow")}</dt>
                     <dd>
                       {formatCurrency(
                         account.opening_balance_minor_units,
@@ -396,19 +399,15 @@
                   </div>
                 {/if}
                 <div class="result">
-                  <dt>Starting point becomes</dt>
+                  <dt>{t("accounts.startingPointBecomes")}</dt>
                   <dd>{formatCurrency(anchorPreview, account.currency)}</dd>
                 </div>
               </dl>
             {/if}
             <p class="hint">
-              Use this when the balance is wrong all the way back. Works out
-              what the account held before your earliest recorded transaction,
-              correcting every past balance at once.
+              {t("accounts.anchorHint")}
               {#if account.is_opening_balance_set}
-                This replaces the starting point outright — but it won't undo
-                an adjustment posted by mistake, only absorb it. Delete that
-                entry from Transactions first if there is one.
+                {t("accounts.anchorHintReplaces")}
               {/if}
             </p>
           </div>
@@ -416,10 +415,11 @@
         {#if reconcilingAccountId === account.id}
           <div class="reconcile">
             <p class="panel-title">
-              Add adjustment <span>— one entry, dated today</span>
+              {t("accounts.addAdjustment")}
+              <span>{t("accounts.oneEntryDatedToday")}</span>
             </p>
             <label for="reconcile-{account.id}">
-              Balance your bank shows today
+              {t("accounts.bankBalanceToday")}
             </label>
             <input
               id="reconcile-{account.id}"
@@ -436,10 +436,10 @@
               }}
             />
             <button type="button" onclick={() => handleReconcile(account)}>
-              Apply
+              {t("range.apply")}
             </button>
             <button type="button" class="secondary" onclick={cancelReconcile}>
-              Cancel
+              {t("common.cancel")}
             </button>
             <!-- Same reasoning as the starting-point preview: the panels are
                  told apart by their outcome, not by their input. It also
@@ -448,7 +448,7 @@
             {#if adjustmentPreview !== null}
               <dl class="preview">
                 <div>
-                  <dt>App currently shows</dt>
+                  <dt>{t("accounts.appCurrentlyShows")}</dt>
                   <dd>
                     {formatCurrency(
                       account.balance_minor_units,
@@ -457,10 +457,10 @@
                   </dd>
                 </div>
                 <div class="result">
-                  <dt>Adjustment posted</dt>
+                  <dt>{t("accounts.adjustmentPosted")}</dt>
                   <dd>
                     {#if adjustmentPreview === 0}
-                      none — already matches
+                      {t("accounts.adjustmentNone")}
                     {:else}
                       {adjustmentPreview > 0
                         ? "+"
@@ -473,28 +473,24 @@
                 </div>
               </dl>
             {/if}
-            <p class="hint">
-              Use this when money moved that you never imported — fees,
-              interest, market movement. Past balances are left as they were,
-              and the adjustment doesn't count as spending.
-            </p>
+            <p class="hint">{t("accounts.reconcileHint")}</p>
           </div>
         {/if}
         <div class="patterns">
-          <span class="patterns-label" title="Matched against an imported row's description text to decide which account it belongs to">Belongs to this account</span>
+          <span class="patterns-label" title={t("accounts.belongsTitle")}>{t("accounts.belongsToThisAccount")}</span>
           {#each account.description_patterns as pattern (pattern)}
             <span class="chip">
               {pattern}
               <button
                 type="button"
                 onclick={() => handleRemovePattern(account, pattern)}
-                aria-label="Remove pattern">×</button
+                aria-label={t("accounts.removePattern")}>×</button
               >
             </span>
           {/each}
           <input
             class="pattern-input"
-            placeholder="Add description pattern…"
+            placeholder={t("accounts.addPatternPlaceholder")}
             value={newPatternDrafts[account.id] ?? ""}
             oninput={(e) =>
               (newPatternDrafts[account.id] = e.currentTarget.value)}
@@ -509,8 +505,8 @@
         <div class="patterns">
           <span
             class="patterns-label"
-            title="An imported row matching one of these is money you sent to this account — it's mirrored here automatically, and left out of spending totals"
-            >Transfers into this account</span
+            title={t("accounts.transfersIntoTitle")}
+            >{t("accounts.transfersInto")}</span
           >
           {#each rulesFor(account.id) as rule (rule.id)}
             <span class="chip">
@@ -518,13 +514,13 @@
               <button
                 type="button"
                 onclick={() => handleRemoveTransferRule(rule)}
-                aria-label="Remove transfer rule">×</button
+                aria-label={t("accounts.removeTransferRule")}>×</button
               >
             </span>
           {/each}
           <input
             class="pattern-input"
-            placeholder="Add transfer pattern…"
+            placeholder={t("accounts.addTransferPatternPlaceholder")}
             value={newTransferPatternDrafts[account.id] ?? ""}
             oninput={(e) =>
               (newTransferPatternDrafts[account.id] = e.currentTarget.value)}
@@ -541,30 +537,25 @@
               class="secondary"
               onclick={() => startApplyTransferRules(account)}
             >
-              Apply to past transactions
+              {t("accounts.applyToPast")}
             </button>
           {/if}
         </div>
         {#if applyingRulesAccountId === account.id}
           <div class="reconcile">
-            <p class="hint">
-              Rescans every transaction already in the ledger against this
-              account's transfer patterns above, converting any match into a
-              transfer pair — the same thing a new import would have done, for
-              rows imported before the pattern existed.
-            </p>
+            <p class="hint">{t("accounts.applyRulesHint")}</p>
             <button
               type="button"
               onclick={() => handleApplyTransferRules(account)}
             >
-              Apply
+              {t("range.apply")}
             </button>
             <button
               type="button"
               class="secondary"
               onclick={cancelApplyTransferRules}
             >
-              Cancel
+              {t("common.cancel")}
             </button>
           </div>
         {/if}

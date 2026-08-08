@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Trash2, Check, X } from "@lucide/svelte";
+  import { t } from "$lib/i18n.svelte";
 
   let {
     label,
@@ -47,11 +48,11 @@
 <span class="delete-button" class:compact bind:this={rootEl}>
   {#if confirming}
     <span class="confirm-popover">
-      <span class="confirm-text">Delete?</span>
+      <span class="confirm-text">{t("component.deleteConfirm")}</span>
       <button
         type="button"
         class="icon-button danger"
-        aria-label="Confirm delete"
+        aria-label={t("component.confirmDelete")}
         onclick={confirmDelete}
       >
         <Check size={compact ? 13 : 16} />
@@ -59,7 +60,7 @@
       <button
         type="button"
         class="icon-button"
-        aria-label="Cancel"
+        aria-label={t("common.cancel")}
         onclick={cancel}
       >
         <X size={compact ? 13 : 16} />

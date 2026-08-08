@@ -3,11 +3,13 @@
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { navPages, adjacentPageHref } from "$lib/navigation";
+  import { t } from "$lib/i18n.svelte";
 
   interface Command {
     id: string;
     label: string;
-    section: "Navigate" | "Actions";
+    /** Already translated — the section headings are rendered verbatim. */
+    section: string;
     shortcut?: string;
     action: () => void;
   }
@@ -17,40 +19,43 @@
   let selectedIndex = $state(0);
   let inputEl: HTMLInputElement | undefined = $state();
 
-  const commands: Command[] = [
+  /* Rebuilt whenever the language changes: the labels are what the user
+     types against, so a stale list would leave the palette searchable only in
+     the language the app happened to start in. */
+  const commands: Command[] = $derived([
     {
       id: "nav-next-page",
-      label: "Next page",
-      section: "Navigate",
+      label: t("palette.nextPage"),
+      section: t("palette.navigate"),
       shortcut: "⌘/⌥ ↓",
       action: () => goto(adjacentPageHref(page.url.pathname, 1)),
     },
     {
       id: "nav-previous-page",
-      label: "Previous page",
-      section: "Navigate",
+      label: t("palette.previousPage"),
+      section: t("palette.navigate"),
       shortcut: "⌘/⌥ ↑",
       action: () => goto(adjacentPageHref(page.url.pathname, -1)),
     },
     ...navPages.map((p) => ({
       id: `nav-${p.href}`,
-      label: `Go to ${p.label}`,
-      section: "Navigate" as const,
+      label: t("palette.goTo", { page: t(p.labelKey) }),
+      section: t("palette.navigate"),
       action: () => goto(p.href),
     })),
     {
       id: "action-add-transaction",
-      label: "Add transaction",
-      section: "Actions",
+      label: t("palette.addTransaction"),
+      section: t("palette.actions"),
       action: () => goto("/transactions?action=add-transaction"),
     },
     {
       id: "action-import-csv",
-      label: "Import CSV",
-      section: "Actions",
+      label: t("palette.importCsv"),
+      section: t("palette.actions"),
       action: () => goto("/transactions?action=import-csv"),
     },
-  ];
+  ]);
 
   function isEditableTarget(target: EventTarget | null): boolean {
     if (!(target instanceof HTMLElement)) return false;
@@ -135,7 +140,7 @@
         bind:this={inputEl}
         bind:value={query}
         onkeydown={handleInputKeydown}
-        placeholder="Type a command or search…"
+        placeholder={t("palette.placeholder")}
       />
       <ul class="results">
         {#each filtered as command, i (command.id)}
@@ -157,7 +162,7 @@
             </button>
           </li>
         {:else}
-          <li class="empty">No matching commands.</li>
+          <li class="empty">{t("palette.noMatches")}</li>
         {/each}
       </ul>
     </div>

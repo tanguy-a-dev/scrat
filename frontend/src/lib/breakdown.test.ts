@@ -230,6 +230,50 @@ describe("hiddenRows", () => {
 
     expect(rows.map((r) => r.categoryId)).toEqual(["housing", "food"]);
   });
+
+  /* Regression: expanding Housing, then hiding Rent — its only subcategory
+     with transactions this period — used to make Housing vanish from both
+     the main breakdown (nothing left visible under it) and this hidden list
+     (keyed by root, but "housing" itself was never added to `hidden`), with
+     no eye left anywhere to bring it back. */
+  it("surfaces a subcategory under its own name when hiding it leaves its root with nothing visible", () => {
+    const rows = hiddenRows([txn("rent", -10_000)], new Set(["rent"]), null, rootOf, nameOf);
+
+    expect(rows).toEqual([{ categoryId: "rent", name: "Rent", amountMinorUnits: 10_000 }]);
+  });
+
+  /* But when Housing still has a visible subcategory (Utilities), Rent being
+     hidden is already reachable from Housing's own expanded row — it must
+     not also appear at the top level, or the same hidden subcategory would
+     be listed twice. */
+  it("leaves a hidden subcategory off the top-level list while its root still has a visible one", () => {
+    const rows = hiddenRows(
+      [txn("rent", -10_000), txn("utilities", -2_000)],
+      new Set(["rent"]),
+      null,
+      rootOf,
+      nameOf,
+    );
+
+    expect(rows).toEqual([]);
+  });
+
+  /* Hiding every subcategory of a root individually (never the root itself)
+     has to surface all of them, each unhideable on its own — not merged into
+     one "Housing" row, since "housing" was never added to `hidden` and an
+     eye toggle on that id would hide the whole root instead of restoring
+     either child. */
+  it("surfaces every subcategory separately when all of a root's children are individually hidden", () => {
+    const rows = hiddenRows(
+      [txn("rent", -10_000), txn("utilities", -2_000)],
+      new Set(["rent", "utilities"]),
+      null,
+      rootOf,
+      nameOf,
+    );
+
+    expect(rows.map((r) => r.categoryId)).toEqual(["rent", "utilities"]);
+  });
 });
 
 describe("buildPanelRows", () => {

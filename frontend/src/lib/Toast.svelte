@@ -2,6 +2,7 @@
   import { fly } from "svelte/transition";
   import { CircleCheck, CircleX, Info, X } from "@lucide/svelte";
   import { toast } from "./toasts.svelte";
+  import { t } from "./i18n.svelte";
 </script>
 
 <div class="toast-host">
@@ -20,7 +21,7 @@
       <button
         type="button"
         class="icon-button"
-        aria-label="Dismiss"
+        aria-label={t("component.dismiss")}
         onclick={() => toast.dismiss(item.id)}
       >
         <X size={14} />

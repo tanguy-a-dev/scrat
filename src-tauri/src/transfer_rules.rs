@@ -12,6 +12,7 @@ use tauri::State;
 
 use crate::accounts::app_currency;
 use crate::db::DbState;
+use crate::errors::AppError;
 
 #[derive(Debug, Serialize)]
 pub struct TransferRuleDto {
@@ -35,20 +36,18 @@ fn with_service<T>(
     f: impl FnOnce(
         &TransferRuleService,
     ) -> Result<T, scrat_application::transfer_rule_service::ApplicationError>,
-) -> Result<T, String> {
+) -> Result<T, AppError> {
     let guard = state.0.lock().unwrap();
-    let conn = guard
-        .as_ref()
-        .ok_or_else(|| "database is locked".to_string())?;
+    let conn = guard.as_ref().ok_or_else(AppError::db_locked)?;
     let currency = app_currency(conn);
     let rules = SqliteTransferRuleRepository::new(conn);
     let accounts = SqliteAccountRepository::new(conn, currency);
     let service = TransferRuleService::new(&rules, &accounts);
-    f(&service).map_err(|e| e.to_string())
+    Ok(f(&service)?)
 }
 
 #[tauri::command]
-pub fn list_transfer_rules(state: State<DbState>) -> Result<Vec<TransferRuleDto>, String> {
+pub fn list_transfer_rules(state: State<DbState>) -> Result<Vec<TransferRuleDto>, AppError> {
     with_service(&state, |s| s.list_rules())
         .map(|rules| rules.into_iter().map(TransferRuleDto::from).collect())
 }
@@ -58,16 +57,15 @@ pub fn create_transfer_rule(
     state: State<DbState>,
     pattern: String,
     counterpart_account_id: String,
-) -> Result<TransferRuleDto, String> {
-    let counterpart_account_id =
-        AccountId::parse(&counterpart_account_id).map_err(|e| e.to_string())?;
+) -> Result<TransferRuleDto, AppError> {
+    let counterpart_account_id = AccountId::parse(&counterpart_account_id)?;
     with_service(&state, |s| s.create_rule(&pattern, counterpart_account_id))
         .map(TransferRuleDto::from)
 }
 
 #[tauri::command]
-pub fn delete_transfer_rule(state: State<DbState>, id: String) -> Result<(), String> {
-    let id = TransferRuleId::parse(&id).map_err(|e| e.to_string())?;
+pub fn delete_transfer_rule(state: State<DbState>, id: String) -> Result<(), AppError> {
+    let id = TransferRuleId::parse(&id)?;
     with_service(&state, |s| s.delete_rule(id))
 }
 
@@ -86,16 +84,13 @@ pub struct ApplyTransferRulesSummaryDto {
 pub fn apply_transfer_rules(
     state: State<DbState>,
     account_id: String,
-) -> Result<ApplyTransferRulesSummaryDto, String> {
-    let account_id = AccountId::parse(&account_id).map_err(|e| e.to_string())?;
+) -> Result<ApplyTransferRulesSummaryDto, AppError> {
+    let account_id = AccountId::parse(&account_id)?;
     let guard = state.0.lock().unwrap();
-    let conn = guard
-        .as_ref()
-        .ok_or_else(|| "database is locked".to_string())?;
+    let conn = guard.as_ref().ok_or_else(AppError::db_locked)?;
     let currency = app_currency(conn);
     let rules: Vec<TransferRule> = SqliteTransferRuleRepository::new(conn)
-        .list_all()
-        .map_err(|e| e.to_string())?
+        .list_all()?
         .into_iter()
         .filter(|rule| rule.counterpart_account_id() == account_id)
         .collect();
@@ -105,10 +100,8 @@ pub fn apply_transfer_rules(
     let categories = SqliteCategoryRepository::new(conn);
     let service = TransactionService::new(&transactions, &accounts, &categories, currency);
 
-    service
-        .apply_transfer_rules_to_existing(&rules)
-        .map(|outcome| ApplyTransferRulesSummaryDto {
-            converted: outcome.converted,
-        })
-        .map_err(|e| e.to_string())
+    let outcome = service.apply_transfer_rules_to_existing(&rules)?;
+    Ok(ApplyTransferRulesSummaryDto {
+        converted: outcome.converted,
+    })
 }

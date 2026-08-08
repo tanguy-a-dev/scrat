@@ -15,8 +15,9 @@
   import SearchSelect from "$lib/SearchSelect.svelte";
   import { EllipsisVertical } from "@lucide/svelte";
   import { toast } from "$lib/toasts.svelte";
+  import { describeError, t, tp, type MessageKey } from "$lib/i18n.svelte";
   import {
-    MONTH_LABELS,
+    monthLabels,
     buildMonthlyTotals as buildMonthlyTotalsFor,
     buildScale as buildScaleWith,
     formatShortDate,
@@ -95,7 +96,7 @@
       categories = c;
       rentCategoryId = rentId;
     } catch (e) {
-      error = String(e);
+      error = describeError(e);
     } finally {
       loading = false;
     }
@@ -124,7 +125,7 @@
       await api.setRentCategory(categoryId);
       rentCategoryId = categoryId;
     } catch (e) {
-      toast.error(String(e));
+      toast.error(describeError(e));
     }
   }
 
@@ -301,7 +302,7 @@
       const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
       months.push({
         key: monthKey(d),
-        label: MONTH_LABELS[d.getMonth()],
+        label: monthLabels()[d.getMonth()],
         year: d.getFullYear(),
         balance: 0,
       });
@@ -425,6 +426,14 @@
   function hideTooltip() {
     tooltip = null;
   }
+
+  /** The cadence badge. `charge.cadence` is one of the fixed strings
+   * `Cadence::as_str` emits, so it maps straight onto a dictionary key —
+   * anything unrecognised (a newer backend) falls back to showing the raw
+   * value rather than a blank badge. */
+  function cadenceLabel(cadence: string): string {
+    return t(`cadence.${cadence}` as MessageKey);
+  }
 </script>
 
 {#snippet chartTooltip(t: NonNullable<typeof tooltip>)}
@@ -445,29 +454,33 @@
 
 {#snippet monthDelta(minorUnits: number, currencyCode: string)}
   {#if minorUnits === 0}
-    <span class="delta flat">No movement this month</span>
+    <span class="delta flat">{t("overview.noMovement")}</span>
   {:else}
     <span class="delta" class:up={minorUnits > 0} class:down={minorUnits < 0}>
       {minorUnits > 0 ? "↑" : "↓"}
-      {formatCurrency(Math.abs(minorUnits), currencyCode)} this month
+      {t("overview.movementThisMonth", {
+        amount: formatCurrency(Math.abs(minorUnits), currencyCode),
+      })}
     </span>
   {/if}
 {/snippet}
 
-<h1>Overview</h1>
+<h1>{t("overview.title")}</h1>
 
 {#if loading}
-  <p>Loading…</p>
+  <p>{t("common.loading")}</p>
 {:else if error}
   <p class="error">{error}</p>
 {:else if accounts.length === 0}
   <p class="empty">
-    No accounts yet. Head to <a href="/accounts">Accounts</a> to add one.
+    {t("overview.noAccountsBefore")}
+    <a href="/accounts">{t("nav.accounts")}</a>
+    {t("overview.noAccountsAfter")}
   </p>
 {:else}
   <div class="grid">
     <div class="box total">
-      <span class="label">Total available</span>
+      <span class="label">{t("overview.totalAvailable")}</span>
       <span class="amount">{formatCurrency(total, currency)}</span>
       {@render monthDelta(totalCurrentMonthDelta, currency)}
     </div>
@@ -482,30 +495,36 @@
 
   <div class="stats-row">
     <div class="month-card">
-      <h2>This month</h2>
+      <h2>{t("overview.thisMonth")}</h2>
       <div class="month-stats">
         <div class="stat">
-          <span class="label">Spent so far</span>
+          <span class="label">{t("overview.spentSoFar")}</span>
           <span class="stat-amount">{formatCurrency(spentThisMonth, currency)}</span>
-          <span class="hint">Since the 1st</span>
+          <span class="hint">{t("overview.sinceTheFirst")}</span>
         </div>
 
         <div class="stat">
-          <span class="label">vs. same point last month</span>
+          <span class="label">{t("overview.vsLastMonth")}</span>
           {#if spentLastMonthToDate === 0 && spentThisMonth === 0}
             <span class="stat-amount muted">—</span>
-            <span class="hint">Nothing spent in either month yet</span>
+            <span class="hint">{t("overview.nothingSpentEither")}</span>
           {:else}
             <span class="stat-amount" class:over={spendDelta > 0} class:under={spendDelta < 0}>
               {spendDelta > 0 ? "↑ " : spendDelta < 0 ? "↓ " : ""}{formatCurrency(
                 Math.abs(spendDelta),
                 currency,
               )}
-              {spendDelta > 0 ? "more" : spendDelta < 0 ? "less" : "identical"}
+              {spendDelta > 0
+                ? t("overview.more")
+                : spendDelta < 0
+                  ? t("overview.less")
+                  : t("overview.identical")}
             </span>
             <span class="hint">
-              {formatCurrency(spentLastMonthToDate, currency)} by day {dayOfMonth} last month{spendDeltaPercent ===
-              null
+              {t("overview.lastMonthByDay", {
+                amount: formatCurrency(spentLastMonthToDate, currency),
+                day: dayOfMonth,
+              })}{spendDeltaPercent === null
                 ? ""
                 : ` · ${spendDeltaPercent > 0 ? "+" : ""}${spendDeltaPercent}%`}
             </span>
@@ -516,12 +535,12 @@
 
     <div class="month-card">
       <div class="card-header">
-        <h2>Mean monthly spend</h2>
+        <h2>{t("overview.meanMonthlySpend")}</h2>
         <span class="card-menu" bind:this={rentMenuEl}>
           <button
             type="button"
             class="icon-button"
-            aria-label="Mean monthly spend options"
+            aria-label={t("overview.meanSpendOptions")}
             onclick={() => (rentMenuState = rentMenuState === "closed" ? "menu" : "closed")}
           >
             <EllipsisVertical size={16} />
@@ -533,12 +552,12 @@
                 class="menu-item"
                 onclick={() => (rentMenuState = "edit")}
               >
-                Edit rent category
+                {t("overview.editRentCategory")}
               </button>
             </div>
           {:else if rentMenuState === "edit"}
             <div class="menu-popover menu-edit" role="menu">
-              <span class="menu-label">Edit rent category</span>
+              <span class="menu-label">{t("overview.editRentCategory")}</span>
               <SearchSelect
                 options={categoryOptions}
                 value={rentCategoryId ?? ""}
@@ -546,7 +565,7 @@
                   handleRentCategoryChange(id);
                   rentMenuState = "closed";
                 }}
-                searchPlaceholder="Search category…"
+                searchPlaceholder={t("categories.searchCategory")}
               />
             </div>
           {/if}
@@ -554,27 +573,27 @@
       </div>
       <div class="month-stats">
         <div class="stat">
-          <span class="label">With rent</span>
+          <span class="label">{t("overview.withRent")}</span>
           <span class="stat-amount">{formatCurrency(meanSpendWithRent, currency)}</span>
-          <span class="hint">Over the last {MONTHS_SHOWN} months</span>
+          <span class="hint">{t("overview.overLastMonths", { months: MONTHS_SHOWN })}</span>
         </div>
 
         <div class="stat">
-          <span class="label">Without rent</span>
+          <span class="label">{t("overview.withoutRent")}</span>
           <span class="stat-amount">{formatCurrency(meanSpendWithoutRent, currency)}</span>
-          <span class="hint">Over the last {MONTHS_SHOWN} months</span>
+          <span class="hint">{t("overview.overLastMonths", { months: MONTHS_SHOWN })}</span>
         </div>
       </div>
     </div>
 
     <div class="month-card">
-      <h2>Mean monthly savings</h2>
+      <h2>{t("overview.meanMonthlySavings")}</h2>
       <div class="month-stats">
         <div class="stat">
           <span class="stat-amount" class:over={meanSavings < 0} class:under={meanSavings >= 0}>
             {formatCurrency(meanSavings, currency)}
           </span>
-          <span class="hint">Over the last {MONTHS_SHOWN} months</span>
+          <span class="hint">{t("overview.overLastMonths", { months: MONTHS_SHOWN })}</span>
         </div>
       </div>
     </div>
@@ -583,16 +602,16 @@
   <div class="charts-row">
     <div class="chart-card">
       <div class="chart-header">
-        <h2>Income &amp; expenses by month</h2>
+        <h2>{t("overview.incomeExpensesByMonth")}</h2>
         <div class="legend">
-          <span class="legend-item"><span class="dot income"></span>Income</span>
-          <span class="legend-item"><span class="dot expense"></span>Expenses</span>
-          <span class="legend-item"><span class="dot savings"></span>Savings</span>
+          <span class="legend-item"><span class="dot income"></span>{t("common.income")}</span>
+          <span class="legend-item"><span class="dot expense"></span>{t("common.expenses")}</span>
+          <span class="legend-item"><span class="dot savings"></span>{t("overview.savings")}</span>
         </div>
       </div>
   
       {#if !hasAnyMonthlyActivity}
-        <p class="empty">No transactions in the last {MONTHS_SHOWN} months.</p>
+        <p class="empty">{t("overview.noTransactionsInMonths", { months: MONTHS_SHOWN })}</p>
       {:else}
         <div class="chart-wrap">
           <svg viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} class="monthly-chart">
@@ -623,11 +642,11 @@
                 rx="2"
                 class="bar income"
                 role="img"
-                aria-label={`${month.label} income: ${incomeText}`}
+                aria-label={t("overview.monthIncome", { month: month.label, amount: incomeText })}
                 onpointerenter={(e) =>
-                  showTooltip(e, "monthly", month.label, "Income", incomeText, INCOME_COLOR)}
+                  showTooltip(e, "monthly", month.label, t("common.income"), incomeText, INCOME_COLOR)}
                 onpointermove={(e) =>
-                  showTooltip(e, "monthly", month.label, "Income", incomeText, INCOME_COLOR)}
+                  showTooltip(e, "monthly", month.label, t("common.income"), incomeText, INCOME_COLOR)}
                 onpointerleave={hideTooltip}
               />
               <rect
@@ -638,11 +657,11 @@
                 rx="2"
                 class="bar expense"
                 role="img"
-                aria-label={`${month.label} expenses: ${expenseText}`}
+                aria-label={t("overview.monthExpenses", { month: month.label, amount: expenseText })}
                 onpointerenter={(e) =>
-                  showTooltip(e, "monthly", month.label, "Expenses", expenseText, EXPENSE_COLOR)}
+                  showTooltip(e, "monthly", month.label, t("common.expenses"), expenseText, EXPENSE_COLOR)}
                 onpointermove={(e) =>
-                  showTooltip(e, "monthly", month.label, "Expenses", expenseText, EXPENSE_COLOR)}
+                  showTooltip(e, "monthly", month.label, t("common.expenses"), expenseText, EXPENSE_COLOR)}
                 onpointerleave={hideTooltip}
               />
               <text
@@ -663,11 +682,11 @@
                 r="7"
                 class="savings-hit"
                 role="img"
-                aria-label={`${savingsMonth} savings: ${savingsText}`}
+                aria-label={t("overview.monthSavings", { month: savingsMonth, amount: savingsText })}
                 onpointerenter={(e) =>
-                  showTooltip(e, "monthly", savingsMonth, "Savings", savingsText, SAVINGS_COLOR)}
+                  showTooltip(e, "monthly", savingsMonth, t("overview.savings"), savingsText, SAVINGS_COLOR)}
                 onpointermove={(e) =>
-                  showTooltip(e, "monthly", savingsMonth, "Savings", savingsText, SAVINGS_COLOR)}
+                  showTooltip(e, "monthly", savingsMonth, t("overview.savings"), savingsText, SAVINGS_COLOR)}
                 onpointerleave={hideTooltip}
               />
               <circle cx={p.x} cy={p.y} r="3" class="savings-dot" />
@@ -683,19 +702,20 @@
   
     <div class="chart-card">
       <div class="chart-header">
-        <h2>Balance over time</h2>
+        <h2>{t("overview.balanceOverTime")}</h2>
         {#if hasBalanceHistory}
           <span class="chart-note" class:up={balanceChange > 0} class:down={balanceChange < 0}>
             {balanceChange > 0 ? "↑ " : balanceChange < 0 ? "↓ " : ""}{formatCurrency(
               Math.abs(balanceChange),
               currency,
-            )} over {balancePoints.length} months
+            )}
+            {t("overview.overMonths", { months: balancePoints.length })}
           </span>
         {/if}
       </div>
   
       {#if !hasBalanceHistory}
-        <p class="empty">Not enough history yet — balance over time needs at least two months.</p>
+        <p class="empty">{t("overview.notEnoughHistory")}</p>
       {:else}
         <div class="chart-wrap">
           <svg viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} class="monthly-chart">
@@ -727,11 +747,11 @@
                 height={plotHeight}
                 class="column-hit"
                 role="img"
-                aria-label={`End of ${balanceMonth}: ${balanceText}`}
+                aria-label={t("overview.endOfMonth", { month: balanceMonth, amount: balanceText })}
                 onpointerenter={(e) =>
-                  showTooltip(e, "balance", balanceMonth, "Balance", balanceText, BALANCE_COLOR)}
+                  showTooltip(e, "balance", balanceMonth, t("common.balance"), balanceText, BALANCE_COLOR)}
                 onpointermove={(e) =>
-                  showTooltip(e, "balance", balanceMonth, "Balance", balanceText, BALANCE_COLOR)}
+                  showTooltip(e, "balance", balanceMonth, t("common.balance"), balanceText, BALANCE_COLOR)}
                 onpointerleave={hideTooltip}
               />
               <circle cx={p.x} cy={p.y} r="3" class="balance-dot" />
@@ -754,36 +774,38 @@
 
   <div class="recurring-card">
     <div class="chart-header">
-      <h2>Recurring commitments</h2>
+      <h2>{t("overview.recurring")}</h2>
       {#if activeRecurring.length > 0}
         <span class="chart-note">
-          {formatCurrency(monthlyCommitment, recurringCurrency)} / month across
-          {activeRecurring.length}
-          {activeRecurring.length === 1 ? "charge" : "charges"}
+          {tp("overview.perMonthAcross", activeRecurring.length, {
+            amount: formatCurrency(monthlyCommitment, recurringCurrency),
+          })}
         </span>
       {/if}
     </div>
 
     {#if recurring.length === 0}
-      <p class="empty">
-        Nothing detected yet. A charge has to appear at least three times, on a steady rhythm and
-        for about the same amount, before it counts as recurring.
-      </p>
+      <p class="empty">{t("overview.noRecurring")}</p>
     {:else}
       <ul class="recurring-list">
         {#each visibleRecurring as charge (charge.label + charge.first_seen)}
           <li class="recurring-row">
             <span class="recurring-label" title={charge.label}>{charge.label}</span>
-            <span class="cadence-badge">{charge.cadence}</span>
+            <span class="cadence-badge">{cadenceLabel(charge.cadence)}</span>
             <span class="recurring-amount">
               {formatCurrency(charge.typical_amount_minor_units, charge.currency)}
             </span>
             <span class="recurring-meta">
               {#if charge.cadence === "monthly"}
-                Next {formatShortDate(charge.next_expected)}
+                {t("overview.nextOn", { date: formatShortDate(charge.next_expected) })}
               {:else}
-                ≈ {formatCurrency(charge.monthly_equivalent_minor_units, charge.currency)}/mo ·
-                next {formatShortDate(charge.next_expected)}
+                {t("overview.perMonthNext", {
+                  amount: formatCurrency(
+                    charge.monthly_equivalent_minor_units,
+                    charge.currency,
+                  ),
+                  date: formatShortDate(charge.next_expected),
+                })}
               {/if}
             </span>
           </li>
@@ -793,27 +815,26 @@
       {#if activeRecurring.length > RECURRING_PREVIEW_COUNT}
         <button class="link-button" onclick={() => (showAllRecurring = !showAllRecurring)}>
           {showAllRecurring
-            ? "Show fewer"
-            : `Show all ${activeRecurring.length} recurring charges`}
+            ? t("overview.showFewer")
+            : t("overview.showAllRecurring", { count: activeRecurring.length })}
         </button>
       {/if}
 
       {#if lapsedRecurring.length > 0}
         <div class="lapsed">
-          <h3>Not seen recently</h3>
-          <p class="hint">
-            These billed on a rhythm and then stopped. Either they were cancelled, or a payment
-            failed and is worth checking.
-          </p>
+          <h3>{t("overview.notSeenRecently")}</h3>
+          <p class="hint">{t("overview.lapsedHint")}</p>
           <ul class="recurring-list">
             {#each lapsedRecurring as charge (charge.label + charge.first_seen)}
               <li class="recurring-row lapsed-row">
                 <span class="recurring-label" title={charge.label}>{charge.label}</span>
-                <span class="cadence-badge">{charge.cadence}</span>
+                <span class="cadence-badge">{cadenceLabel(charge.cadence)}</span>
                 <span class="recurring-amount">
                   {formatCurrency(charge.typical_amount_minor_units, charge.currency)}
                 </span>
-                <span class="recurring-meta">Last seen {formatShortDate(charge.last_seen)}</span>
+                <span class="recurring-meta">
+                  {t("overview.lastSeen", { date: formatShortDate(charge.last_seen) })}
+                </span>
               </li>
             {/each}
           </ul>

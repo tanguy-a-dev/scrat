@@ -6,6 +6,7 @@
    * threading a "single value" mode through its pending-start/hover-range
    * logic would obscure both cases for the sake of one shared file. */
   import { Calendar, ChevronLeft, ChevronRight } from "@lucide/svelte";
+  import { monthNames, shortMonthNames, t, weekdayLabels } from "$lib/i18n.svelte";
 
   type Ymd = { y: number; m: number; d: number };
 
@@ -17,15 +18,11 @@
     onChange: (date: string) => void;
   } = $props();
 
-  const MONTH_LABELS = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-  ];
-  const MONTH_LABELS_FULL = [
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December",
-  ];
-  const WEEKDAY_LABELS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+  // Locale-aware, and read through `$derived` so a language change
+  // repaints an open calendar rather than leaving it in the old one.
+  const MONTH_LABELS = $derived(shortMonthNames());
+  const MONTH_LABELS_FULL = $derived(monthNames());
+  const WEEKDAY_LABELS = $derived(weekdayLabels());
 
   function pad(n: number): string {
     return String(n).padStart(2, "0");
@@ -158,7 +155,7 @@
           type="button"
           class="nav-button"
           onclick={prevMonth}
-          aria-label="Previous month"
+          aria-label={t("component.previousMonth")}
         >
           <ChevronLeft size={16} />
         </button>
@@ -167,7 +164,7 @@
           type="button"
           class="nav-button"
           onclick={nextMonth}
-          aria-label="Next month"
+          aria-label={t("component.nextMonth")}
         >
           <ChevronRight size={16} />
         </button>

@@ -1,8 +1,10 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use scrat_infra_sqlite::{Connection, DbError};
+use scrat_infra_sqlite::Connection;
 use tauri::{AppHandle, Manager, State};
+
+use crate::errors::{AppError, codes};
 
 pub struct DbState(pub Mutex<Option<Connection>>);
 
@@ -12,23 +14,11 @@ impl Default for DbState {
     }
 }
 
-pub(crate) fn db_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("could not resolve app data directory: {e}"))?;
+pub(crate) fn db_path(app: &AppHandle) -> Result<PathBuf, AppError> {
+    let dir = app.path().app_data_dir().map_err(|e| {
+        AppError::new(codes::APP_DATA_DIR_UNAVAILABLE).with("detail", e.to_string())
+    })?;
     Ok(dir.join("scrat.db"))
-}
-
-pub(crate) fn describe(err: DbError) -> String {
-    match err {
-        DbError::InvalidPassphrase => "incorrect passphrase".to_string(),
-        DbError::EmptyPassphrase => "passphrase cannot be empty".to_string(),
-        DbError::AlreadyExists(_) => "a database already exists".to_string(),
-        DbError::Sqlite(e) => format!("database error: {e}"),
-        DbError::Io(e) => format!("filesystem error: {e}"),
-        DbError::Repository(e) => format!("database error: {e}"),
-    }
 }
 
 /// The shortest passphrase that may key the database.
@@ -40,17 +30,15 @@ pub(crate) fn describe(err: DbError) -> String {
 /// [`change_passphrase`] — go through [`check_passphrase_length`].
 const MIN_PASSPHRASE_LENGTH: usize = 8;
 
-fn check_passphrase_length(passphrase: &str) -> Result<(), String> {
+fn check_passphrase_length(passphrase: &str) -> Result<(), AppError> {
     if passphrase.chars().count() < MIN_PASSPHRASE_LENGTH {
-        return Err(format!(
-            "passphrase must be at least {MIN_PASSPHRASE_LENGTH} characters"
-        ));
+        return Err(AppError::new(codes::PASSPHRASE_TOO_SHORT).with("min", MIN_PASSPHRASE_LENGTH));
     }
     Ok(())
 }
 
 #[tauri::command]
-pub fn is_db_initialized(app: AppHandle) -> Result<bool, String> {
+pub fn is_db_initialized(app: AppHandle) -> Result<bool, AppError> {
     Ok(scrat_infra_sqlite::database_exists(&db_path(&app)?))
 }
 
@@ -59,17 +47,20 @@ pub fn create_db_with_passphrase(
     app: AppHandle,
     state: State<DbState>,
     passphrase: String,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     check_passphrase_length(&passphrase)?;
-    let conn = scrat_infra_sqlite::create_new(&db_path(&app)?, &passphrase).map_err(describe)?;
+    let conn = scrat_infra_sqlite::create_new(&db_path(&app)?, &passphrase)?;
     *state.0.lock().unwrap() = Some(conn);
     Ok(())
 }
 
 #[tauri::command]
-pub fn unlock_db(app: AppHandle, state: State<DbState>, passphrase: String) -> Result<(), String> {
-    let conn =
-        scrat_infra_sqlite::unlock_existing(&db_path(&app)?, &passphrase).map_err(describe)?;
+pub fn unlock_db(
+    app: AppHandle,
+    state: State<DbState>,
+    passphrase: String,
+) -> Result<(), AppError> {
+    let conn = scrat_infra_sqlite::unlock_existing(&db_path(&app)?, &passphrase)?;
     *state.0.lock().unwrap() = Some(conn);
     Ok(())
 }
@@ -86,18 +77,16 @@ pub fn change_passphrase(
     state: State<DbState>,
     current_passphrase: String,
     new_passphrase: String,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     check_passphrase_length(&new_passphrase)?;
-    drop(
-        scrat_infra_sqlite::unlock_existing(&db_path(&app)?, &current_passphrase)
-            .map_err(describe)?,
-    );
+    drop(scrat_infra_sqlite::unlock_existing(
+        &db_path(&app)?,
+        &current_passphrase,
+    )?);
 
     let guard = state.0.lock().unwrap();
-    let conn = guard
-        .as_ref()
-        .ok_or_else(|| "database is locked".to_string())?;
-    scrat_infra_sqlite::rekey(conn, &new_passphrase).map_err(describe)
+    let conn = guard.as_ref().ok_or_else(AppError::db_locked)?;
+    Ok(scrat_infra_sqlite::rekey(conn, &new_passphrase)?)
 }
 
 /// Locks the database by dropping the live connection — the same state as
@@ -106,7 +95,7 @@ pub fn change_passphrase(
 /// Called by the frontend's idle timer; there is currently no manual "lock
 /// now" affordance.
 #[tauri::command]
-pub fn lock_db(state: State<DbState>) -> Result<(), String> {
+pub fn lock_db(state: State<DbState>) -> Result<(), AppError> {
     *state.0.lock().unwrap() = None;
     Ok(())
 }

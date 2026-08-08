@@ -4,6 +4,7 @@
   import CategoryCard from "$lib/CategoryCard.svelte";
   import SearchSelect from "$lib/SearchSelect.svelte";
   import { toast } from "$lib/toasts.svelte";
+  import { describeError, errorCode, t } from "$lib/i18n.svelte";
 
   let categories = $state<CategoryDto[]>([]);
   let loading = $state(true);
@@ -23,7 +24,7 @@
     try {
       categories = await api.listCategories();
     } catch (e) {
-      error = String(e);
+      error = describeError(e);
     } finally {
       loading = false;
     }
@@ -34,7 +35,7 @@
       await action();
       await load();
     } catch (e) {
-      toast.error(String(e));
+      toast.error(describeError(e));
     }
   }
 
@@ -64,14 +65,16 @@
     try {
       await api.deleteCategory(category.id, null);
       await load();
-      toast.success(`"${category.name}" deleted.`);
+      toast.success(t("categories.deleted", { name: category.name }));
     } catch (e) {
-      const message = String(e);
-      if (message.includes("reassign")) {
-        pendingDelete = { category, message };
+      // Branch on the code, not the wording: the message is translated, so
+      // matching on its text would work in English and quietly stop working
+      // in French — turning a recoverable prompt into a dead-end toast.
+      if (errorCode(e) === "category_requires_reassignment") {
+        pendingDelete = { category, message: describeError(e) };
         reassignTarget = "";
       } else {
-        toast.error(message);
+        toast.error(describeError(e));
       }
     }
   }
@@ -82,10 +85,10 @@
     try {
       await api.deleteCategory(category.id, reassignTarget);
       await load();
-      toast.success(`"${category.name}" deleted.`);
+      toast.success(t("categories.deleted", { name: category.name }));
       pendingDelete = null;
     } catch (e) {
-      toast.error(String(e));
+      toast.error(describeError(e));
     }
   }
 
@@ -127,25 +130,28 @@
 
 <header class="page-header">
   <div class="title">
-    <h1>Categories</h1>
+    <h1>{t("categories.title")}</h1>
     {#if !loading && rootCategories.length > 0}
       <span class="summary">
-        {rootCategories.length} categories · {subcategoryCount} subcategories
+        {t("categories.summary", {
+          categories: rootCategories.length,
+          subcategories: subcategoryCount,
+        })}
       </span>
     {/if}
   </div>
   <form class="create-form" onsubmit={handleAddRoot}>
-    <input placeholder="New category name" bind:value={newRootName} />
-    <button type="submit">Add category</button>
+    <input placeholder={t("categories.newNamePlaceholder")} bind:value={newRootName} />
+    <button type="submit">{t("categories.addCategory")}</button>
   </form>
 </header>
 
 {#if error}<p class="error">{error}</p>{/if}
 
 {#if loading}
-  <p>Loading…</p>
+  <p>{t("common.loading")}</p>
 {:else if rootCategories.length === 0}
-  <p class="empty">No categories yet — add one above.</p>
+  <p class="empty">{t("categories.empty")}</p>
 {:else}
   <div class="grid">
     {#each rootCategories as category (category.id)}
@@ -169,21 +175,18 @@
       class="reassign-panel"
       role="dialog"
       aria-modal="true"
-      aria-label="Reassign transactions before deleting"
+      aria-label={t("categories.reassignDialogLabel")}
       tabindex="-1"
       use:autofocus
     >
-      <p>
-        "{pendingDelete.category.name}" still has transactions. Choose a
-        category to move them to before deleting:
-      </p>
+      <p>{t("categories.reassignPrompt", { name: pendingDelete.category.name })}</p>
       <div class="reassign-target">
         <SearchSelect
           options={reassignOptions}
           value={reassignTarget}
           onChange={(id) => (reassignTarget = id)}
-          placeholder="Select a category…"
-          searchPlaceholder="Search category…"
+          placeholder={t("categories.selectCategory")}
+          searchPlaceholder={t("categories.searchCategory")}
         />
       </div>
       <div class="actions">
@@ -192,7 +195,7 @@
           class="ghost"
           onclick={() => (pendingDelete = null)}
         >
-          Cancel
+          {t("common.cancel")}
         </button>
         <button
           type="button"
@@ -200,7 +203,7 @@
           onclick={confirmReassignDelete}
           disabled={!reassignTarget}
         >
-          Reassign &amp; delete
+          {t("categories.reassignAndDelete")}
         </button>
       </div>
     </div>

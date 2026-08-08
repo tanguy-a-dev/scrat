@@ -1,5 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 
+import {
+  monthNames,
+  numberSeparators,
+  shortMonthNames,
+  t,
+  type MessageKey,
+} from "./i18n.svelte";
+
 export interface AccountDto {
   id: string;
   name: string;
@@ -58,24 +66,10 @@ export type OperationKind =
  * than to a guess, so a kind added on the Rust side before this map is
  * updated shows up as itself instead of silently reading as a card payment. */
 export function operationKindLabel(kind: OperationKind | string): string {
-  switch (kind) {
-    case "card":
-      return "Card";
-    case "bank_transfer":
-      return "Transfer";
-    case "direct_debit":
-      return "Direct debit";
-    case "check":
-      return "Cheque";
-    case "cash":
-      return "Cash";
-    case "fees":
-      return "Fees";
-    case "other":
-      return "Other";
-    default:
-      return kind;
-  }
+  // A kind this build doesn't know (a database written by a newer version)
+  // falls through to `t`'s own key fallback and shows the raw stored string,
+  // which beats a blank cell.
+  return t(`operationKind.${kind}` as MessageKey);
 }
 
 export interface TransactionDto {
@@ -458,6 +452,11 @@ export const api = {
     }),
 
   getCurrency: () => invoke<string>("get_currency"),
+  getLanguage: () => invoke<string>("get_language"),
+  /** Returns how many seeded categories were relabelled as a side effect —
+   * the UI reports it, because a language change quietly renaming rows the
+   * user can see should say so. */
+  setLanguage: (language: string) => invoke<number>("set_language", { language }),
   setCurrency: (code: string) => invoke<void>("set_currency", { code }),
   getAutoLockMinutes: () => invoke<number>("get_auto_lock_minutes"),
   setAutoLockMinutes: (minutes: number) =>
@@ -469,9 +468,15 @@ export const api = {
   deleteDatabase: () => invoke<void>("delete_database"),
 };
 
-/** Formats integer minor units (e.g. cents) as "12.34". */
+/** Formats integer minor units (e.g. cents) for an editable amount field —
+ * "12.34" in English, "12,34" in French, ungrouped either way.
+ *
+ * Ungrouped because this is what a user types over: a thousands separator in
+ * an input box is something they then have to delete. The decimal separator
+ * still follows the language, because a French user shown "1234.56" reads a
+ * malformed number, and `parseToMinorUnits` accepts either form back. */
 export function formatMinorUnits(minorUnits: number): string {
-  return (minorUnits / 100).toFixed(2);
+  return (minorUnits / 100).toFixed(2).replace(".", numberSeparators().decimal);
 }
 
 const CURRENCY_SYMBOLS: Record<string, string> = {
@@ -483,15 +488,17 @@ const CURRENCY_SYMBOLS: Record<string, string> = {
   JPY: "¥",
 };
 
-/** Formats non-negative minor units with a space-grouped whole part and a comma decimal, e.g. "100 123,23". */
+/** Formats non-negative minor units in the current language's conventions —
+ * "100,123.23" in English, "100 123,23" in French. */
 export function formatMoney(minorUnits: number): string {
+  const { group, decimal } = numberSeparators();
   const whole = Math.floor(minorUnits / 100);
   const cents = minorUnits % 100;
-  const grouped = whole.toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ");
-  return `${grouped},${cents.toString().padStart(2, "0")}`;
+  const grouped = whole.toString().replace(/\B(?=(\d{3})+(?!\d))/g, group);
+  return `${grouped}${decimal}${cents.toString().padStart(2, "0")}`;
 }
 
-/** Formats integer minor units with a leading currency symbol, e.g. "€100 123,23" or "-$5,00". */
+/** Formats integer minor units with a leading currency symbol, e.g. "€100 123,23" or "-$5.00". */
 export function formatCurrency(minorUnits: number, currencyCode: string): string {
   const symbol = CURRENCY_SYMBOLS[currencyCode] ?? `${currencyCode} `;
   const sign = minorUnits < 0 ? "-" : "";
@@ -507,13 +514,27 @@ export function formatCurrencyRounded(minorUnits: number, currencyCode: string):
   const sign = whole < 0 ? "-" : "";
   const grouped = Math.abs(whole)
     .toString()
-    .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+    .replace(/\B(?=(\d{3})+(?!\d))/g, numberSeparators().group);
   return `${sign}${symbol}${grouped}`;
 }
 
-/** Parses a user-typed decimal amount ("12.34") into integer minor units. */
+/** Parses a user-typed decimal amount into integer minor units.
+ *
+ * Accepts both "12.34" and "12,34" whatever the interface language, and
+ * tolerates the spaces a user may have pasted in from a grouped figure.
+ * Deliberately more forgiving than `formatMinorUnits` is strict: a French
+ * user typing a comma on their numeric keypad was silently losing the
+ * decimals to `parseFloat`, which stops at the first character it doesn't
+ * recognise and returned 12 for "12,34".
+ *
+ * Still rejects anything with a second separator ("1,234.56"), because there
+ * is no reading of that which is safe to guess at — one of the two is a
+ * thousands separator and which one depends on a convention this function
+ * cannot see. */
 export function parseToMinorUnits(input: string): number | null {
-  const value = Number.parseFloat(input);
+  const cleaned = input.replace(/[\s\u00a0\u202f]/g, "");
+  if ((cleaned.match(/[.,]/g) ?? []).length > 1) return null;
+  const value = Number.parseFloat(cleaned.replace(",", "."));
   if (Number.isNaN(value)) return null;
   return Math.round(value * 100);
 }
@@ -622,21 +643,6 @@ export function computeRange(
     : { start: toIsoDate(now), end: toIsoDate(now) };
 }
 
-const MONTH_NAMES = [
-  "January",
-  "February",
-  "March",
-  "April",
-  "May",
-  "June",
-  "July",
-  "August",
-  "September",
-  "October",
-  "November",
-  "December",
-];
-
 /** Human name for the period a mode and offset select — "August 2026", "2025",
  * "All time", "1–6 Aug 2026".
  *
@@ -653,11 +659,11 @@ export function describeRange(
   const now = new Date();
   if (mode === "month") {
     const d = new Date(now.getFullYear(), now.getMonth() + offset, 1);
-    return `${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`;
+    return `${monthNames()[d.getMonth()]} ${d.getFullYear()}`;
   }
   if (mode === "year") return String(now.getFullYear() + offset);
-  if (mode === "all") return "All time";
-  if (!custom) return "Custom";
+  if (mode === "all") return t("range.allTime");
+  if (!custom) return t("range.custom");
   return formatDateSpan(custom.start, custom.end);
 }
 
@@ -694,7 +700,7 @@ export function spanDays(start: string, end: string): number {
 export function formatDateSpan(start: string, end: string): string {
   const a = new Date(`${start}T00:00:00`);
   const b = new Date(`${end}T00:00:00`);
-  const shortMonth = (d: Date) => MONTH_NAMES[d.getMonth()].slice(0, 3);
+  const shortMonth = (d: Date) => shortMonthNames()[d.getMonth()];
   if (a.getFullYear() === b.getFullYear()) {
     if (a.getMonth() === b.getMonth()) {
       return `${a.getDate()}–${b.getDate()} ${shortMonth(b)} ${b.getFullYear()}`;

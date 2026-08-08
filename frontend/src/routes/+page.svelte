@@ -3,6 +3,7 @@
   import { onMount } from "svelte";
   import { api } from "$lib/api";
   import { session } from "$lib/session.svelte";
+  import { describeError, i18n, t } from "$lib/i18n.svelte";
 
   type Screen = "loading" | "create" | "unlock" | "fatal";
 
@@ -12,12 +13,20 @@
   let error = $state("");
   let submitting = $state(false);
 
+  /** The minimum the backend enforces (`MIN_PASSPHRASE_LENGTH` in
+   * `src-tauri/src/db.rs`). Repeated here only so the form can say so before
+   * a round trip — the backend check is the one that counts. */
+  const MIN_PASSPHRASE_LENGTH = 8;
+
   onMount(async () => {
+    // There is no database open yet, so the language can only come from the
+    // cache. Whatever this database actually says replaces it on unlock.
+    i18n.restoreCached();
     try {
       const initialized = await api.isDbInitialized();
       screen = initialized ? "unlock" : "create";
     } catch (e) {
-      error = String(e);
+      error = describeError(e);
       screen = "fatal";
     }
   });
@@ -25,12 +34,12 @@
   async function handleCreate(event: Event) {
     event.preventDefault();
     error = "";
-    if (passphrase.length < 8) {
-      error = "Passphrase must be at least 8 characters.";
+    if (passphrase.length < MIN_PASSPHRASE_LENGTH) {
+      error = t("unlock.tooShort", { min: MIN_PASSPHRASE_LENGTH });
       return;
     }
     if (passphrase !== confirmPassphrase) {
-      error = "Passphrases do not match.";
+      error = t("unlock.mismatch");
       return;
     }
     submitting = true;
@@ -39,7 +48,7 @@
       await session.markUnlocked();
       await goto("/overview");
     } catch (e) {
-      error = String(e);
+      error = describeError(e);
     } finally {
       submitting = false;
     }
@@ -49,7 +58,7 @@
     event.preventDefault();
     error = "";
     if (!passphrase) {
-      error = "Passphrase cannot be empty.";
+      error = t("unlock.empty");
       return;
     }
     submitting = true;
@@ -58,7 +67,7 @@
       await session.markUnlocked();
       await goto("/overview");
     } catch (e) {
-      error = String(e);
+      error = describeError(e);
     } finally {
       submitting = false;
     }
@@ -70,20 +79,17 @@
   <h1>Scrat</h1>
 
   {#if screen === "loading"}
-    <p class="subtitle">Loading…</p>
+    <p class="subtitle">{t("common.loading")}</p>
   {:else if screen === "fatal"}
     <p class="error">{error}</p>
   {:else if screen === "create"}
-    <p class="subtitle">
-      Set a passphrase to encrypt your local data. There is no recovery —
-      if you lose it, your data is unreadable.
-    </p>
+    <p class="subtitle">{t("unlock.tagline")}</p>
     <form onsubmit={handleCreate}>
       <input
         type="password"
         id="new-passphrase"
         name="new-password"
-        placeholder="Passphrase"
+        placeholder={t("unlock.passphrase")}
         bind:value={passphrase}
         autocomplete="new-password"
       />
@@ -91,28 +97,28 @@
         type="password"
         id="confirm-passphrase"
         name="confirm-password"
-        placeholder="Confirm passphrase"
+        placeholder={t("unlock.confirmPassphrase")}
         bind:value={confirmPassphrase}
         autocomplete="new-password"
       />
       {#if error}<p class="error">{error}</p>{/if}
       <button type="submit" disabled={submitting}>
-        Create encrypted database
+        {t("unlock.create")}
       </button>
     </form>
   {:else if screen === "unlock"}
-    <p class="subtitle">Enter your passphrase to unlock your data.</p>
+    <p class="subtitle">{t("unlock.enterPassphrase")}</p>
     <form onsubmit={handleUnlock}>
       <input
         type="password"
         id="passphrase"
         name="password"
-        placeholder="Passphrase"
+        placeholder={t("unlock.passphrase")}
         bind:value={passphrase}
         autocomplete="current-password"
       />
       {#if error}<p class="error">{error}</p>{/if}
-      <button type="submit" disabled={submitting}>Unlock</button>
+      <button type="submit" disabled={submitting}>{t("unlock.unlock")}</button>
     </form>
   {/if}
 </main>

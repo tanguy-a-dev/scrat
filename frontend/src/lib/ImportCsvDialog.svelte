@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { message } from "@tauri-apps/plugin-dialog";
   import { toast } from "$lib/toasts.svelte";
+  import { describeError, t, tp } from "$lib/i18n.svelte";
   import Checkbox from "$lib/Checkbox.svelte";
   import SearchSelect from "$lib/SearchSelect.svelte";
   import { LoaderCircle, Pencil, Tags } from "@lucide/svelte";
@@ -74,14 +75,14 @@
    * for its category filter — without one, there'd be no way to navigate
    * the searchable dropdown back to "no fallback" once something is picked. */
   let fallbackCategoryOptions = $derived([
-    { id: "", label: "Uncategorized (default)" },
+    { id: "", label: t("import.uncategorizedDefault") },
     ...categoryOptions,
   ]);
   let accountOptions = $derived([
-    { id: "", label: "Default account" },
+    { id: "", label: t("import.defaultAccount") },
     ...accounts.map((a) => ({
       id: a.id,
-      label: `${a.name}${a.is_default ? " (default)" : ""}`,
+      label: a.is_default ? t("import.accountIsDefault", { name: a.name }) : a.name,
     })),
   ]);
 
@@ -156,9 +157,9 @@
    * are what make a column recognizable in a headerless export, where there
    * is no name to go on at all. */
   function columnLabel(column: ColumnSummaryDto): string {
-    const name = column.header || `Column ${column.index + 1}`;
+    const name = column.header || t("import.columnLabel", { number: column.index + 1 });
     const samples = column.samples.slice(0, 2).join(", ");
-    return samples ? `${column.index + 1} · ${name} — ${samples}` : `${column.index + 1} · ${name}`;
+    return samples ? t("import.columnWithSamples", { number: column.index + 1, name, samples }) : t("import.columnWithName", { number: column.index + 1, name });
   }
 
   /** Above this, a file is almost certainly not a bank's CSV export — a
@@ -220,8 +221,11 @@
   async function loadBytes(bytes: number[]) {
     if (bytes.length > MAX_CSV_FILE_BYTES) {
       await message(
-        `This file is ${(bytes.length / (1024 * 1024)).toFixed(1)} MB — too large to be a CSV export (limit is ${MAX_CSV_FILE_BYTES / (1024 * 1024)} MB).`,
-        { title: "Import CSV", kind: "error" },
+        t("import.fileTooLarge", {
+          size: (bytes.length / (1024 * 1024)).toFixed(1),
+          limit: MAX_CSV_FILE_BYTES / (1024 * 1024),
+        }),
+        { title: t("import.dialogTitle"), kind: "error" },
       );
       return;
     }
@@ -244,7 +248,7 @@
       }
       await refreshDuplicateFlags();
     } catch (e) {
-      await message(String(e), { title: "Import CSV", kind: "error" });
+      await message(describeError(e), { title: t("import.dialogTitle"), kind: "error" });
     }
   }
 
@@ -261,7 +265,7 @@
       included = result.rows.map((r) => r.include_by_default);
       await refreshDuplicateFlags();
     } catch (e) {
-      await message(String(e), { title: "Import CSV", kind: "error" });
+      await message(describeError(e), { title: t("import.dialogTitle"), kind: "error" });
     } finally {
       remapping = false;
     }
@@ -342,8 +346,11 @@
     // gets pulled into memory as an array buffer just to be rejected below.
     if (file.size > MAX_CSV_FILE_BYTES) {
       await message(
-        `This file is ${(file.size / (1024 * 1024)).toFixed(1)} MB — too large to be a CSV export (limit is ${MAX_CSV_FILE_BYTES / (1024 * 1024)} MB).`,
-        { title: "Import CSV", kind: "error" },
+        t("import.fileTooLarge", {
+          size: (file.size / (1024 * 1024)).toFixed(1),
+          limit: MAX_CSV_FILE_BYTES / (1024 * 1024),
+        }),
+        { title: t("import.dialogTitle"), kind: "error" },
       );
       return;
     }
@@ -444,11 +451,14 @@
       // plainly rather than let them find it later and wonder.
       if (summary.mirrored > 0) {
         toast.success(
-          `${summary.imported} imported, ${summary.mirrored} recognized as transfers and mirrored onto the other account.`,
+          t("import.mirroredSummary", {
+            imported: summary.imported,
+            mirrored: summary.mirrored,
+          }),
         );
       }
     } catch (e) {
-      await message(String(e), { title: "Import CSV", kind: "error" });
+      await message(describeError(e), { title: t("import.dialogTitle"), kind: "error" });
     } finally {
       importing = false;
     }
@@ -460,54 +470,55 @@
 
 <div class="backdrop">
   <div class="dialog">
-    <h2>Import transactions from CSV</h2>
+    <h2>{t("import.title")}</h2>
 
     {#if !preview}
       <div
         class="dropzone"
         class:drag-over={dragOver}
         role="group"
-        aria-label="CSV file drop zone"
+        aria-label={t("import.dropzone")}
         ondragover={handleDragOver}
         ondragleave={handleDragLeave}
         ondrop={handleDrop}
       >
         <input type="file" accept=".csv,text/csv" onchange={handleFileChange} />
-        <p class="dropzone-hint">or drop a file here, or paste ⌘V</p>
+        <p class="dropzone-hint">{t("import.dropHint")}</p>
       </div>
       <div class="actions">
-        <button type="button" onclick={onClose}>Cancel</button>
+        <button type="button" onclick={onClose}>{t("common.cancel")}</button>
       </div>
     {:else}
       {#if mappingLooksWrong}
         <p class="warning">
-          Only {Math.round(preview.date_confidence * 100)}% of dates and {Math.round(
-            preview.amount_confidence * 100,
-          )}% of amounts could be read — the columns seem wrongly set.
+          {t("import.mappingLooksWrong", {
+            dates: Math.round(preview.date_confidence * 100),
+            amounts: Math.round(preview.amount_confidence * 100),
+          })}
         </p>
       {/if}
 
       <details class="mapping" bind:open={mappingOpen}>
         <summary>
           <Pencil size={13} aria-hidden="true" />
-          <span>Edit columns</span>
+          <span>{t("import.editColumns")}</span>
           {#if preview.remembered}
-            <span class="badge" title="Reused from the last import of this file layout"
-              >Saved</span
+            <span class="badge" title={t("import.savedBadgeTitle")}
+              >{t("import.savedBadge")}</span
             >
           {/if}
-          {#if remapping}<span class="badge muted">Re-reading…</span>{/if}
+          {#if remapping}<span class="badge muted">{t("import.rereading")}</span>{/if}
         </summary>
 
         <div class="mapping-grid">
           <label>
-            Date
+            {t("common.date")}
             <select
               value={preview.mapping.date_column ?? ""}
               onchange={(e) =>
                 updateMapping({ date_column: toColumn(e.currentTarget.value) })}
             >
-              <option value="">Not set</option>
+              <option value="">{t("import.notSet")}</option>
               {#each preview.columns as c (c.index)}
                 <option value={c.index}>{columnLabel(c)}</option>
               {/each}
@@ -515,7 +526,7 @@
           </label>
 
           <label>
-            Date format
+            {t("import.dateFormat")}
             <select
               value={preview.mapping.date_format}
               onchange={(e) => updateMapping({ date_format: e.currentTarget.value })}
@@ -527,12 +538,12 @@
           </label>
 
           <label>
-            Money out (debit)
+            {t("import.moneyOut")}
             <select
               value={debitColumn ?? ""}
               onchange={(e) => setDebitColumn(e.currentTarget.value)}
             >
-              <option value="">Not set</option>
+              <option value="">{t("import.notSet")}</option>
               {#each preview.columns as c (c.index)}
                 <option value={c.index}>{columnLabel(c)}</option>
               {/each}
@@ -540,29 +551,27 @@
           </label>
 
           <label>
-            Money in (credit)
+            {t("import.moneyIn")}
             <select
               value={creditColumn ?? ""}
               onchange={(e) => setCreditColumn(e.currentTarget.value)}
             >
-              <option value="">Not set</option>
+              <option value="">{t("import.notSet")}</option>
               {#each preview.columns as c (c.index)}
                 <option value={c.index}>{columnLabel(c)}</option>
               {/each}
             </select>
-            <span class="field-hint">
-              Same column as money out when one signed column holds both.
-            </span>
+            <span class="field-hint">{t("import.moneyInHint")}</span>
           </label>
 
           <label>
-            Type
+            {t("transactions.type")}
             <select
               value={preview.mapping.operation_kind_column ?? ""}
               onchange={(e) =>
                 updateMapping({ operation_kind_column: toColumn(e.currentTarget.value) })}
             >
-              <option value="">Read from the description</option>
+              <option value="">{t("import.readFromDescription")}</option>
               {#each preview.columns as c (c.index)}
                 <option value={c.index}>{columnLabel(c)}</option>
               {/each}
@@ -570,13 +579,13 @@
           </label>
 
           <label>
-            Category
+            {t("common.category")}
             <select
               value={preview.mapping.category_column ?? ""}
               onchange={(e) =>
                 updateMapping({ category_column: toColumn(e.currentTarget.value) })}
             >
-              <option value="">None</option>
+              <option value="">{t("common.none")}</option>
               {#each preview.columns as c (c.index)}
                 <option value={c.index}>{columnLabel(c)}</option>
               {/each}
@@ -584,13 +593,13 @@
           </label>
 
           <label>
-            Subcategory
+            {t("common.subcategory")}
             <select
               value={preview.mapping.subcategory_column ?? ""}
               onchange={(e) =>
                 updateMapping({ subcategory_column: toColumn(e.currentTarget.value) })}
             >
-              <option value="">None</option>
+              <option value="">{t("common.none")}</option>
               {#each preview.columns as c (c.index)}
                 <option value={c.index}>{columnLabel(c)}</option>
               {/each}
@@ -599,7 +608,7 @@
         </div>
 
         <fieldset class="description-source">
-          <legend>Description</legend>
+          <legend>{t("common.description")}</legend>
           <p class="description-hint">
             {#if descriptionColumns.length === 0}
               Pick at least one column — without it every row imports with a
@@ -628,27 +637,27 @@
           <Checkbox
             size="sm"
             checked={preview.mapping.has_header}
-            ariaLabel="First row is a header"
+            ariaLabel={t("import.firstRowHeader")}
             onpress={toggleHasHeader}
           />
-          First row is a header
+          {t("import.firstRowHeader")}
         </span>
       </details>
 
       <details class="mapping" bind:open={categoriesOpen}>
         <summary>
           <Tags size={13} aria-hidden="true" />
-          <span>Categories settings</span>
+          <span>{t("import.categoriesSettings")}</span>
         </summary>
 
         <label class="default-category">
-          <span class="caption">Default category</span>
+          <span class="caption">{t("import.defaultCategory")}</span>
           <SearchSelect
             options={fallbackCategoryOptions}
             value={selectedCategoryId}
             onChange={(id) => (selectedCategoryId = id)}
-            placeholder="Uncategorized (default)…"
-            searchPlaceholder="Search category…"
+            placeholder={t("import.uncategorizedDefaultPlaceholder")}
+            searchPlaceholder={t("categories.searchCategory")}
           />
         </label>
 
@@ -656,10 +665,10 @@
           <Checkbox
             size="sm"
             checked={detectCategoryFromHistory}
-            ariaLabel="Reuse categories from similar past transactions"
+            ariaLabel={t("import.reusePastCategories")}
             onpress={() => (detectCategoryFromHistory = !detectCategoryFromHistory)}
           />
-          Reuse categories from similar past transactions
+          {t("import.reusePastCategories")}
         </span>
 
         <span class="inline">
@@ -667,10 +676,10 @@
             size="sm"
             checked={prioritizeHistoricalCategory}
             disabled={!detectCategoryFromHistory}
-            ariaLabel="Let past categories override the file's category column"
+            ariaLabel={t("import.pastCategoriesOverride")}
             onpress={() => (prioritizeHistoricalCategory = !prioritizeHistoricalCategory)}
           />
-          Let past categories override the file's category column
+          {t("import.pastCategoriesOverride")}
         </span>
       </details>
 
@@ -679,8 +688,8 @@
           options={accountOptions}
           value={selectedAccountId}
           onChange={handleAccountChange}
-          placeholder="Destination account (optional)…"
-          searchPlaceholder="Search account…"
+          placeholder={t("import.destinationAccount")}
+          searchPlaceholder={t("settings.searchAccount")}
         />
       </div>
 
@@ -693,16 +702,16 @@
                 <Checkbox
                   checked={allSelected}
                   indeterminate={anySelected && !allSelected}
-                  ariaLabel="Select all rows"
+                  ariaLabel={t("import.selectAllRows")}
                   onpress={toggleSelectAll}
                 />
               </th>
-              <th>Date</th>
-              <th class="amount">Amount</th>
-              <th>Description</th>
-              <th>Type</th>
-              <th>Category</th>
-              <th>Subcategory</th>
+              <th>{t("common.date")}</th>
+              <th class="amount">{t("common.amount")}</th>
+              <th>{t("common.description")}</th>
+              <th>{t("transactions.type")}</th>
+              <th>{t("common.category")}</th>
+              <th>{t("common.subcategory")}</th>
             </tr>
           </thead>
           <tbody>
@@ -718,7 +727,12 @@
                   <Checkbox
                     checked={included[i]}
                     disabled={invalid}
-                    ariaLabel={`Import row ${i + 1}${row.description ? `: ${row.description}` : ""}`}
+                    ariaLabel={row.description
+                      ? t("import.importRowWithDescription", {
+                          number: i + 1,
+                          description: row.description,
+                        })
+                      : t("import.importRow", { number: i + 1 })}
                     onpress={(event) => handleRowPress(i, event)}
                   />
                 </td>
@@ -731,11 +745,11 @@
                 <td>
                   {row.description || "—"}
                   {#if row.is_likely_balance_row}
-                    <span class="balance-hint">balance line?</span>
+                    <span class="balance-hint">{t("import.balanceLine")}</span>
                   {/if}
                   {#if duplicateFlags[i]}
                     <span class="balance-hint"
-                      >already in this account — unticked</span
+                      >{t("import.alreadyInAccount")}</span
                     >
                   {/if}
                 </td>
@@ -750,12 +764,15 @@
 
       <div class="actions">
         <span class="actions-note">
-          {includableCount} of {preview.rows.length} rows selected
+          {t("import.rowsSelected", {
+            count: includableCount,
+            total: preview.rows.length,
+          })}
           {#if visibleRowCount < preview.rows.length}
-            · showing {visibleRowCount} — scroll for more
+            {t("import.showingCount", { count: visibleRowCount })}
           {/if}
         </span>
-        <button type="button" onclick={onClose}>Cancel</button>
+        <button type="button" onclick={onClose}>{t("common.cancel")}</button>
         <button
           type="button"
           class="import-button"
@@ -765,7 +782,7 @@
           {#if importing}
             <LoaderCircle class="spinner" size={14} aria-hidden="true" />
           {/if}
-          Import {includableCount} transaction{includableCount === 1 ? "" : "s"}
+          {tp("import.importCount", includableCount)}
         </button>
       </div>
     {/if}

@@ -8,6 +8,7 @@
    * of name-that-lies this codebase avoids elsewhere.
    */
   import type { Snippet } from "svelte";
+  import { t } from "$lib/i18n.svelte";
 
   interface Option {
     id: string;
@@ -22,8 +23,8 @@
     options,
     value,
     onChange,
-    placeholder = "Select…",
-    searchPlaceholder = "Search…",
+    placeholder = t("component.select"),
+    searchPlaceholder = t("component.searchPlaceholder"),
     stacked = false,
     trigger,
   }: {
@@ -168,7 +169,7 @@
       />
       <ul class="options" bind:this={listEl}>
         {#if filtered.length === 0}
-          <li class="empty">No matches.</li>
+          <li class="empty">{t("component.noMatches")}</li>
         {:else}
           {#each filtered as option, i (option.id)}
             <li>

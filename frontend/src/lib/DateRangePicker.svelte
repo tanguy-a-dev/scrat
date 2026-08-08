@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Calendar, ChevronLeft, ChevronRight } from "@lucide/svelte";
+  import { monthNames, shortMonthNames, t, weekdayLabels } from "$lib/i18n.svelte";
 
   type Mode = "day" | "month";
   type Ymd = { y: number; m: number; d: number };
@@ -14,15 +15,11 @@
     onChange: (start: string, end: string) => void;
   } = $props();
 
-  const MONTH_LABELS = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-  ];
-  const MONTH_LABELS_FULL = [
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December",
-  ];
-  const WEEKDAY_LABELS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+  // Locale-aware, and read through `$derived` so a language change
+  // repaints an open calendar rather than leaving it in the old one.
+  const MONTH_LABELS = $derived(shortMonthNames());
+  const MONTH_LABELS_FULL = $derived(monthNames());
+  const WEEKDAY_LABELS = $derived(weekdayLabels());
 
   function pad(n: number): string {
     return String(n).padStart(2, "0");
@@ -255,12 +252,12 @@
         <button
           type="button"
           class:active={mode === "day"}
-          onclick={() => switchMode("day")}>By date</button
+          onclick={() => switchMode("day")}>{t("component.byDate")}</button
         >
         <button
           type="button"
           class:active={mode === "month"}
-          onclick={() => switchMode("month")}>By month</button
+          onclick={() => switchMode("month")}>{t("component.byMonth")}</button
         >
       </div>
 
@@ -269,7 +266,7 @@
           type="button"
           class="nav-button"
           onclick={prevPeriod}
-          aria-label="Previous"
+          aria-label={t("component.previous")}
         >
           <ChevronLeft size={16} />
         </button>
@@ -281,7 +278,7 @@
           class="nav-button"
           disabled={!canGoNext}
           onclick={nextPeriod}
-          aria-label="Next"
+          aria-label={t("component.next")}
         >
           <ChevronRight size={16} />
         </button>

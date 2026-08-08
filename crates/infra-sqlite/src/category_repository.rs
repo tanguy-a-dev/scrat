@@ -1,6 +1,6 @@
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, params};
-use scrat_domain::category::{Category, CategoryIcon, CategoryId, CategoryName};
+use scrat_domain::category::{Category, CategoryIcon, CategoryId, CategoryName, CategorySeedKey};
 use scrat_domain::ports::{CategoryRepository, RepositoryError};
 
 pub struct SqliteCategoryRepository<'a> {
@@ -36,12 +36,22 @@ impl<'a> SqliteCategoryRepository<'a> {
                 rusqlite::Error::InvalidColumnType(0, e.to_string(), rusqlite::types::Type::Text)
             })?;
 
+        let seed_key: Option<String> = row.get("seed_key")?;
+        let seed_key = seed_key
+            .as_deref()
+            .map(CategorySeedKey::new)
+            .transpose()
+            .map_err(|e| {
+                rusqlite::Error::InvalidColumnType(0, e.to_string(), rusqlite::types::Type::Text)
+            })?;
+
         let mut category = Category::new(id, name, parent_id).map_err(|e| {
             rusqlite::Error::InvalidColumnType(0, e.to_string(), rusqlite::types::Type::Text)
         })?;
         category.set_icon(icon).map_err(|e| {
             rusqlite::Error::InvalidColumnType(0, e.to_string(), rusqlite::types::Type::Text)
         })?;
+        category.set_seed_key(seed_key);
         Ok(category)
     }
 }
@@ -54,12 +64,13 @@ impl<'a> CategoryRepository for SqliteCategoryRepository<'a> {
     fn insert(&self, category: &Category) -> Result<(), RepositoryError> {
         self.conn
             .execute(
-                "INSERT INTO categories (id, name, parent_id, icon, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO categories (id, name, parent_id, icon, seed_key, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     category.id().as_string(),
                     category.name().as_str(),
                     category.parent_id().map(|p| p.as_string()),
                     category.icon().map(|i| i.as_str()),
+                    category.seed_key().map(|k| k.as_str()),
                     Utc::now().to_rfc3339(),
                 ],
             )
@@ -70,12 +81,13 @@ impl<'a> CategoryRepository for SqliteCategoryRepository<'a> {
     fn update(&self, category: &Category) -> Result<(), RepositoryError> {
         self.conn
             .execute(
-                "UPDATE categories SET name = ?2, parent_id = ?3, icon = ?4 WHERE id = ?1",
+                "UPDATE categories SET name = ?2, parent_id = ?3, icon = ?4, seed_key = ?5 WHERE id = ?1",
                 params![
                     category.id().as_string(),
                     category.name().as_str(),
                     category.parent_id().map(|p| p.as_string()),
                     category.icon().map(|i| i.as_str()),
+                    category.seed_key().map(|k| k.as_str()),
                 ],
             )
             .map_err(sql_err)?;
@@ -95,7 +107,7 @@ impl<'a> CategoryRepository for SqliteCategoryRepository<'a> {
     fn find_by_id(&self, id: CategoryId) -> Result<Option<Category>, RepositoryError> {
         self.conn
             .query_row(
-                "SELECT id, name, parent_id, icon FROM categories WHERE id = ?1",
+                "SELECT id, name, parent_id, icon, seed_key FROM categories WHERE id = ?1",
                 params![id.as_string()],
                 Self::row_to_category,
             )
@@ -106,7 +118,7 @@ impl<'a> CategoryRepository for SqliteCategoryRepository<'a> {
     fn list_all(&self) -> Result<Vec<Category>, RepositoryError> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, name, parent_id, icon FROM categories ORDER BY name")
+            .prepare("SELECT id, name, parent_id, icon, seed_key FROM categories ORDER BY name")
             .map_err(sql_err)?;
         let rows = stmt
             .query_map([], Self::row_to_category)

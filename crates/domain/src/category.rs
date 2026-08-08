@@ -15,6 +15,8 @@ pub enum CategoryError {
     UnknownIcon(String),
     #[error("a subcategory cannot have an icon")]
     SubcategoryCannotHaveIcon,
+    #[error("a category seed key cannot be empty")]
+    EmptySeedKey,
 }
 
 const MAX_NAME_LEN: usize = 100;
@@ -28,6 +30,13 @@ const MAX_NAME_LEN: usize = 100;
 /// and only default category — forced, not user-selectable — so it can
 /// never be renamed or deleted; see `CategoryService::rename_category` and
 /// `CategoryService::delete_category`.
+///
+/// This is the *English* name, and since the interface became translatable
+/// it is no longer how the fallback is identified — that is
+/// [`crate::default_categories::UNCATEGORIZED_KEY`], which survives the
+/// category being relabelled to `Non classé`. The name remains as the
+/// spelling used when creating the fallback from scratch, and as a
+/// last-resort match for databases predating the seed-key column.
 pub const DEFAULT_CATEGORY_NAME: &str = "Uncategorized";
 
 /// Closed set of icon identifiers a top-level category can carry: plain
@@ -127,12 +136,40 @@ impl CategoryIcon {
     }
 }
 
+/// Marks a category as one the app itself created from its built-in default
+/// set, and says *which* of them it is. See
+/// [`crate::default_categories`] for the catalogue these key into and why the
+/// key exists at all.
+///
+/// Open rather than a closed enum on purpose: a database written by a newer
+/// build can carry keys this one has never heard of, and refusing to load
+/// that row would turn a forward-compatible file into an unopenable one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CategorySeedKey(String);
+
+impl CategorySeedKey {
+    pub fn new(raw: &str) -> Result<Self, CategoryError> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err(CategoryError::EmptySeedKey);
+        }
+        Ok(Self(trimmed.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Category {
     id: CategoryId,
     name: CategoryName,
     parent_id: Option<CategoryId>,
     icon: Option<CategoryIcon>,
+    /// `Some` only for categories the app seeded. User-created categories
+    /// have `None` and are never touched by a language change.
+    seed_key: Option<CategorySeedKey>,
 }
 
 impl Category {
@@ -149,6 +186,7 @@ impl Category {
             name,
             parent_id,
             icon: None,
+            seed_key: None,
         })
     }
 
@@ -166,6 +204,21 @@ impl Category {
 
     pub fn icon(&self) -> Option<&CategoryIcon> {
         self.icon.as_ref()
+    }
+
+    pub fn seed_key(&self) -> Option<&CategorySeedKey> {
+        self.seed_key.as_ref()
+    }
+
+    /// Set once, when the app seeds the category (or when a repository
+    /// rehydrates a stored row). Deliberately *not* cleared by [`rename`]:
+    /// which built-in category a row is stays true even after the user
+    /// renames it, and it is exactly what lets a later language change tell
+    /// "still called what we named it" from "the user has made this theirs".
+    ///
+    /// [`rename`]: Category::rename
+    pub fn set_seed_key(&mut self, seed_key: Option<CategorySeedKey>) {
+        self.seed_key = seed_key;
     }
 
     pub fn rename(&mut self, name: CategoryName) {
@@ -276,6 +329,43 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(root.icon().map(CategoryIcon::as_str), Some("house"));
+    }
+
+    #[test]
+    fn a_category_is_not_seeded_by_default() {
+        assert_eq!(category(CategoryId::new(), None).seed_key(), None);
+    }
+
+    /// The distinction the whole relabel feature rests on: renaming a seeded
+    /// category must not make the app forget which built-in it was. Clearing
+    /// the key on rename would mean a category could never be relabelled back
+    /// after a round trip through the user's own wording.
+    #[test]
+    fn renaming_a_seeded_category_keeps_its_seed_key() {
+        let mut cat = category(CategoryId::new(), None);
+        cat.set_seed_key(Some(CategorySeedKey::new("housing").unwrap()));
+
+        cat.rename(CategoryName::new("Chez moi").unwrap());
+
+        assert_eq!(cat.seed_key().map(CategorySeedKey::as_str), Some("housing"));
+        assert_eq!(cat.name().as_str(), "Chez moi");
+    }
+
+    #[test]
+    fn a_seed_key_cannot_be_empty() {
+        assert_eq!(
+            CategorySeedKey::new("   "),
+            Err(CategoryError::EmptySeedKey)
+        );
+        assert_eq!(CategorySeedKey::new(""), Err(CategoryError::EmptySeedKey));
+    }
+
+    /// A key from a newer build must load, not fail — the column is
+    /// forward-compatible storage, not a closed vocabulary.
+    #[test]
+    fn a_seed_key_accepts_a_key_this_build_does_not_know() {
+        let key = CategorySeedKey::new("crypto.staking_rewards").unwrap();
+        assert_eq!(key.as_str(), "crypto.staking_rewards");
     }
 
     #[test]

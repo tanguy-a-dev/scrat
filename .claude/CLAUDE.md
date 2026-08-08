@@ -201,10 +201,66 @@ two classes of bug that are easy to reintroduce if this logic is touched:
 If you change this file, add a fabricated-but-structurally-realistic regression
 test for whatever broke, the same way the existing tests do.
 
+## Interface language (English / French)
+
+The app ships in two languages, chosen in Settings. Four decisions carry the
+whole design; changing any of them touches every layer.
+
+- **No user-visible English lives in Rust.** Tauri commands return an
+  `AppError { code, params }` (`src-tauri/src/errors.rs`), never prose. The
+  frontend dictionary owns every sentence. A code is part of the IPC contract
+  exactly like a command name — `ipc-contract.test.ts` fails the build if a
+  code has no message, or a message no code.
+- **Branch on codes, never on message text.** `errorCode(e)` exists for the
+  handful of places that need to know *which* failure happened. The categories
+  page used to do `message.includes("reassign")`, which worked in English and
+  would have silently stopped working in French, downgrading a recoverable
+  prompt to a dead-end toast. If you find yourself matching on wording, that's
+  the bug.
+- **The translation layer is hand-rolled** (`frontend/src/lib/i18n.svelte.ts`),
+  same call as the hand-rolled donut chart. `t(key, params)` reads a `$state`
+  language, so every `t()` in markup re-renders on a language change with no
+  subscription and no reload. `fr` is typed `Record<MessageKey, string>`, so a
+  key added to `en` and forgotten in `fr` fails `npm run check`. Plurals go
+  through `tp` — English and French disagree on zero (*0 catégorie*), and
+  hardcoding English's rule is wrong on the count "nothing happened" messages
+  hit most.
+- **Locale formatting is written out, not taken from `Intl`.** `Intl` reads the
+  *host* locale, so a French user on an English macOS would get English month
+  names inside a French interface. Month/weekday names and number separators
+  come from the language setting alone. `1,234` means a thousand in English and
+  one-and-a-bit in French, so this is correctness, not decoration —
+  `parseToMinorUnits` accordingly accepts both separators whatever the setting.
+
+### Default categories and `seed_key`
+
+Seeded categories are app-owned until the user touches them, and theirs after.
+`categories.seed_key` (migration 0010, backfilled by English name) is what
+tells those two states apart across a rename.
+
+- A language change relabels a seeded category **only if its name is still
+  character-for-character what the app wrote** (`relabel_seeded_categories`).
+  Anything renamed, re-cased, or user-created is left alone forever. Getting
+  this backwards destroys user-chosen names irreversibly; leaving a stale name
+  is merely untidy and fixable in one edit.
+- The catalogue lives in `crates/domain/src/default_categories.rs`, not in
+  `infra-sqlite::seed`, because the application layer needs it to relabel and
+  cannot depend on an adapter. **Seed keys are storage identifiers — never
+  reword or renumber a shipped one**; adding entries is fine.
+- The forced fallback category is found by `seed_key == "uncategorized"`, not
+  by name. Keying its rename/delete protection off the English name would have
+  let a French user delete the one category the whole app falls back to.
+- A new database is always seeded in `Language::default()` — the language
+  setting lives inside the database being created, so it cannot yet say
+  otherwise. Switching afterwards is what the relabel pass is for.
+
 ## Frontend conventions
 
 - Svelte 5 runes (`$state`, `$derived`, `$derived.by`) — this is not Svelte 4/
   Vue/React, don't reach for stores or class components.
+- **Never name a local `t`.** It's the translation function, imported almost
+  everywhere. The transactions page used `t` for its row variable and for a
+  `handleDelete` parameter; both shadowed the import and had to be renamed.
 - `frontend/src/lib/api.ts` is the single typed IPC boundary — every
   `#[tauri::command]` gets one typed wrapper function here. Don't call `invoke()`
   directly from a page component.
