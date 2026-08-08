@@ -360,8 +360,8 @@
             </label>
             <input
               id="anchor-{account.id}"
-              type="number"
-              step="0.01"
+              type="text"
+              inputmode="decimal"
               bind:value={anchorDraft}
               onkeydown={(e) => {
                 if (e.key === "Enter") {
@@ -423,8 +423,8 @@
             </label>
             <input
               id="reconcile-{account.id}"
-              type="number"
-              step="0.01"
+              type="text"
+              inputmode="decimal"
               bind:value={reconcileDraft}
               onkeydown={(e) => {
                 if (e.key === "Enter") {
@@ -477,7 +477,11 @@
           </div>
         {/if}
         <div class="patterns">
-          <span class="patterns-label" title={t("accounts.belongsTitle")}>{t("accounts.belongsToThisAccount")}</span>
+          <span class="patterns-label" data-tip={t("accounts.belongsTitle")}
+            ><span class="patterns-label-text"
+              >{t("accounts.belongsToThisAccount")}</span
+            ></span
+          >
           {#each account.description_patterns as pattern (pattern)}
             <span class="chip">
               {pattern}
@@ -505,8 +509,10 @@
         <div class="patterns">
           <span
             class="patterns-label"
-            title={t("accounts.transfersIntoTitle")}
-            >{t("accounts.transfersInto")}</span
+            data-tip={t("accounts.transfersIntoTitle")}
+            ><span class="patterns-label-text"
+              >{t("accounts.transfersInto")}</span
+            ></span
           >
           {#each rulesFor(account.id) as rule (rule.id)}
             <span class="chip">
@@ -595,6 +601,11 @@
   input {
     background-color: var(--color-shade-2);
     color: inherit;
+  }
+
+  input:focus {
+    outline: none;
+    border-color: var(--color-accent);
   }
 
   button:not(.icon-button) {
@@ -694,9 +705,40 @@
   }
 
   .patterns-label {
+    position: relative;
     font-size: 0.8rem;
-    opacity: 0.7;
     min-width: 11rem;
+    cursor: default;
+  }
+
+  .patterns-label-text {
+    opacity: 0.7;
+  }
+
+  .patterns-label::after {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: calc(100% + 0.35rem);
+    left: 0;
+    width: max-content;
+    max-width: 16rem;
+    padding: 0.4rem 0.6rem;
+    border-radius: 0.4rem;
+    background-color: var(--color-shade-4);
+    color: var(--color-text);
+    font-size: 0.75rem;
+    line-height: 1.3;
+    text-align: left;
+    white-space: normal;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    z-index: 10;
+  }
+
+  .patterns-label:hover::after {
+    opacity: 1;
+    visibility: visible;
   }
 
   .reconcile {

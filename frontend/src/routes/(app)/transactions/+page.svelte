@@ -1410,9 +1410,8 @@
                   <label>
                     {t("transactions.min")}
                     <input
-                      type="number"
-                      step="0.01"
-                      min="0"
+                      type="text"
+                      inputmode="decimal"
                       value={minAmountFilterFor(kind)}
                       oninput={(e) =>
                         setMinAmountFilter(kind, (e.currentTarget as HTMLInputElement).value)}
@@ -1423,9 +1422,8 @@
                   <label>
                     {t("transactions.max")}
                     <input
-                      type="number"
-                      step="0.01"
-                      min="0"
+                      type="text"
+                      inputmode="decimal"
                       value={maxAmountFilterFor(kind)}
                       oninput={(e) =>
                         setMaxAmountFilter(kind, (e.currentTarget as HTMLInputElement).value)}
@@ -1652,8 +1650,8 @@
   <form class="create-form" onsubmit={handleCreate}>
     <DatePicker value={formDate} onChange={(d) => (formDate = d)} />
     <input
-      type="number"
-      step="0.01"
+      type="text"
+      inputmode="decimal"
       placeholder={t("transactions.amountPlaceholder")}
       bind:value={formAmount}
       required
