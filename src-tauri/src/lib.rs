@@ -29,6 +29,7 @@ pub fn run() {
             accounts::remove_description_pattern,
             accounts::delete_account,
             accounts::set_default_account,
+            accounts::reorder_accounts,
             categories::list_categories,
             categories::create_category,
             categories::rename_category,

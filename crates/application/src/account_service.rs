@@ -17,6 +17,8 @@ pub enum ApplicationError {
     HasTransactions(u64),
     #[error("that balance is too large to work a starting point back from")]
     BalanceOutOfRange,
+    #[error("reorder must list every account exactly once")]
+    InvalidReorder,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,6 +137,21 @@ impl<'a> AccountService<'a> {
         Ok(())
     }
 
+    /// Sets display order from the frontend's dragged list. `ordered_ids`
+    /// must name every existing account exactly once — a partial list would
+    /// leave the omitted accounts' positions undefined relative to the
+    /// reordered ones, so it's rejected rather than guessed at.
+    pub fn reorder_accounts(&self, ordered_ids: &[AccountId]) -> Result<(), ApplicationError> {
+        let existing = self.repo.list_all()?;
+        let matches_existing = ordered_ids.len() == existing.len()
+            && existing.iter().all(|a| ordered_ids.contains(&a.id()));
+        if !matches_existing {
+            return Err(ApplicationError::InvalidReorder);
+        }
+        self.repo.reorder(ordered_ids)?;
+        Ok(())
+    }
+
     pub fn list_accounts_with_balance(&self) -> Result<Vec<AccountWithBalance>, ApplicationError> {
         self.repo
             .list_all()?
@@ -222,6 +239,17 @@ mod tests {
 
         fn list_all(&self) -> Result<Vec<Account>, RepositoryError> {
             Ok(self.accounts.lock().unwrap().clone())
+        }
+
+        fn reorder(&self, ordered_ids: &[AccountId]) -> Result<(), RepositoryError> {
+            let mut accounts = self.accounts.lock().unwrap();
+            accounts.sort_by_key(|a| {
+                ordered_ids
+                    .iter()
+                    .position(|id| *id == a.id())
+                    .unwrap_or(usize::MAX)
+            });
+            Ok(())
         }
 
         fn transaction_count(&self, id: AccountId) -> Result<u64, RepositoryError> {
@@ -451,6 +479,33 @@ mod tests {
         let total = total_available(&accounts).unwrap();
 
         assert_eq!(total.minor_units(), 7_000);
+    }
+
+    #[test]
+    fn reorder_accounts_persists_the_new_order() {
+        let repo = FakeAccountRepository::default();
+        let service = AccountService::new(&repo, Currency::new("USD").unwrap());
+        let checking = service.create_account("Checking").unwrap();
+        let savings = service.create_account("Savings").unwrap();
+
+        service
+            .reorder_accounts(&[savings.id(), checking.id()])
+            .unwrap();
+
+        let ids: Vec<_> = repo.list_all().unwrap().iter().map(|a| a.id()).collect();
+        assert_eq!(ids, vec![savings.id(), checking.id()]);
+    }
+
+    #[test]
+    fn reorder_accounts_rejects_a_list_missing_an_existing_account() {
+        let repo = FakeAccountRepository::default();
+        let service = AccountService::new(&repo, Currency::new("USD").unwrap());
+        let checking = service.create_account("Checking").unwrap();
+        service.create_account("Savings").unwrap();
+
+        let error = service.reorder_accounts(&[checking.id()]).unwrap_err();
+
+        assert!(matches!(error, ApplicationError::InvalidReorder));
     }
 
     fn patterns_of(repo: &FakeAccountRepository, id: AccountId) -> Vec<String> {

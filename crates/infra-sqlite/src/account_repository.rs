@@ -68,8 +68,9 @@ impl<'a> AccountRepository for SqliteAccountRepository<'a> {
             .execute(
                 "INSERT INTO accounts
                      (id, name, opening_balance_minor_units, opening_balance_set,
-                      created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+                      position, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4,
+                     (SELECT COALESCE(MAX(position), -1) + 1 FROM accounts), ?5, ?5)",
                 params![
                     account.id().as_string(),
                     account.name().as_str(),
@@ -140,7 +141,7 @@ impl<'a> AccountRepository for SqliteAccountRepository<'a> {
             .conn
             .prepare(
                 "SELECT id, name, opening_balance_minor_units, opening_balance_set
-                   FROM accounts ORDER BY name",
+                   FROM accounts ORDER BY position",
             )
             .map_err(sql_err)?;
         let rows = stmt
@@ -157,6 +158,18 @@ impl<'a> AccountRepository for SqliteAccountRepository<'a> {
                 Ok(account)
             })
             .collect()
+    }
+
+    fn reorder(&self, ordered_ids: &[AccountId]) -> Result<(), RepositoryError> {
+        let mut stmt = self
+            .conn
+            .prepare("UPDATE accounts SET position = ?1 WHERE id = ?2")
+            .map_err(sql_err)?;
+        for (position, id) in ordered_ids.iter().enumerate() {
+            stmt.execute(params![position as i64, id.as_string()])
+                .map_err(sql_err)?;
+        }
+        Ok(())
     }
 
     fn transaction_count(&self, id: AccountId) -> Result<u64, RepositoryError> {
@@ -371,26 +384,39 @@ mod tests {
     }
 
     #[test]
-    fn list_all_orders_by_name() {
+    fn list_all_orders_by_insertion_then_respects_reorder() {
         let conn = test_conn();
         let repo = SqliteAccountRepository::new(&conn, usd());
-        repo.insert(&Account::new(
+        let savings = Account::new(
             AccountId::new(),
             AccountName::new("Savings").unwrap(),
             Money::zero(usd()),
-        ))
-        .unwrap();
-        repo.insert(&Account::new(
+        );
+        let checking = Account::new(
             AccountId::new(),
             AccountName::new("Checking").unwrap(),
             Money::zero(usd()),
-        ))
-        .unwrap();
-
-        let all = repo.list_all().unwrap();
+        );
+        repo.insert(&savings).unwrap();
+        repo.insert(&checking).unwrap();
 
         assert_eq!(
-            all.iter().map(|a| a.name().as_str()).collect::<Vec<_>>(),
+            repo.list_all()
+                .unwrap()
+                .iter()
+                .map(|a| a.name().as_str().to_string())
+                .collect::<Vec<_>>(),
+            vec!["Savings", "Checking"]
+        );
+
+        repo.reorder(&[checking.id(), savings.id()]).unwrap();
+
+        assert_eq!(
+            repo.list_all()
+                .unwrap()
+                .iter()
+                .map(|a| a.name().as_str().to_string())
+                .collect::<Vec<_>>(),
             vec!["Checking", "Savings"]
         );
     }

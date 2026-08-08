@@ -106,6 +106,9 @@ mod tests {
         fn list_all(&self) -> Result<Vec<Account>, RepositoryError> {
             Ok(self.accounts.lock().unwrap().clone())
         }
+        fn reorder(&self, _ordered_ids: &[AccountId]) -> Result<(), RepositoryError> {
+            Ok(())
+        }
         fn transaction_count(&self, _id: AccountId) -> Result<u64, RepositoryError> {
             Ok(0)
         }

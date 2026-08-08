@@ -213,6 +213,18 @@ pub fn delete_account(state: State<DbState>, id: String) -> Result<(), AppError>
     with_service(&state, |s| s.delete_account(id))
 }
 
+/// Persists the order the user dragged the Accounts list into. `ids` must be
+/// the full, reordered list of account ids — Overview and any other listing
+/// then simply reuse the same stored order.
+#[tauri::command]
+pub fn reorder_accounts(state: State<DbState>, ids: Vec<String>) -> Result<(), AppError> {
+    let ids = ids
+        .iter()
+        .map(|id| parse_id(id))
+        .collect::<Result<Vec<_>, _>>()?;
+    with_service(&state, |s| s.reorder_accounts(&ids))
+}
+
 #[cfg(test)]
 mod tests {
     use scrat_domain::account::{Account, AccountName, DescriptionPattern};

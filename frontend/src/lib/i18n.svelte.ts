@@ -313,6 +313,7 @@ const en = {
 
   // ---- Accounts page ----
   "accounts.title": "Accounts",
+  "accounts.dragToReorder": "Drag to reorder",
   "accounts.namePlaceholder": "Account name",
   "accounts.addAccount": "Add account",
   "accounts.empty": "No accounts yet — add one above.",
@@ -528,6 +529,7 @@ const en = {
   "error.category_has_subcategories": "This category has subcategories of its own, so it cannot become one.",
   "error.duplicate_transfer_rule": "A transfer rule for {pattern} already exists.",
   "error.balance_out_of_range": "That balance is too large to work with.",
+  "error.invalid_reorder": "Couldn't reorder accounts — try reloading the page.",
   "error.unsupported_language": "'{value}' is not a language this version speaks.",
   "error.auto_lock_invalid": "Auto-lock must be never, 1, 10, or 60 minutes.",
   "error.auto_lock_stored_invalid": "The stored auto-lock setting is invalid.",
@@ -775,6 +777,7 @@ const fr: Record<MessageKey, string> = {
 
   // ---- Accounts page ----
   "accounts.title": "Comptes",
+  "accounts.dragToReorder": "Glisser pour réorganiser",
   "accounts.namePlaceholder": "Nom du compte",
   "accounts.addAccount": "Ajouter un compte",
   "accounts.empty": "Aucun compte pour l'instant — ajoutez-en un ci-dessus.",
@@ -990,6 +993,7 @@ const fr: Record<MessageKey, string> = {
   "error.category_has_subcategories": "Cette catégorie a ses propres sous-catégories, elle ne peut donc pas en devenir une.",
   "error.duplicate_transfer_rule": "Une règle de virement pour {pattern} existe déjà.",
   "error.balance_out_of_range": "Ce solde est trop grand pour être traité.",
+  "error.invalid_reorder": "Impossible de réorganiser les comptes — essayez de recharger la page.",
   "error.unsupported_language": "« {value} » n'est pas une langue prise en charge par cette version.",
   "error.auto_lock_invalid": "Le verrouillage automatique doit être jamais, 1, 10 ou 60 minutes.",
   "error.auto_lock_stored_invalid": "Le réglage de verrouillage automatique enregistré est invalide.",

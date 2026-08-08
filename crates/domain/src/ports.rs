@@ -19,7 +19,14 @@ pub trait AccountRepository {
     fn update(&self, account: &Account) -> Result<(), RepositoryError>;
     fn delete(&self, id: AccountId) -> Result<(), RepositoryError>;
     fn find_by_id(&self, id: AccountId) -> Result<Option<Account>, RepositoryError>;
+    /// Ordered by display position — the order set by dragging in the
+    /// Accounts list, reused as-is everywhere else (e.g. Overview).
     fn list_all(&self) -> Result<Vec<Account>, RepositoryError>;
+    /// Sets display position from list order: the first id gets position 0,
+    /// the second 1, and so on. `ids` must be exactly the set of existing
+    /// account ids — the frontend always sends its whole reordered list, so
+    /// there is no partial-reorder case to define.
+    fn reorder(&self, ordered_ids: &[AccountId]) -> Result<(), RepositoryError>;
     /// Count of transactions referencing this account — used to decide
     /// whether a delete must fall back to archiving instead.
     fn transaction_count(&self, id: AccountId) -> Result<u64, RepositoryError>;

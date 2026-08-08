@@ -289,6 +289,7 @@ export const api = {
     invoke<void>("remove_description_pattern", { id, pattern }),
   deleteAccount: (id: string) => invoke<void>("delete_account", { id }),
   setDefaultAccount: (id: string) => invoke<void>("set_default_account", { id }),
+  reorderAccounts: (ids: string[]) => invoke<void>("reorder_accounts", { ids }),
 
   listCategories: () => invoke<CategoryDto[]>("list_categories"),
   createCategory: (name: string, parentId: string | null) =>

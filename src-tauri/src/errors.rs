@@ -128,6 +128,7 @@ pub mod codes {
     pub const CATEGORY_HAS_SUBCATEGORIES: &str = "category_has_subcategories";
     pub const DUPLICATE_TRANSFER_RULE: &str = "duplicate_transfer_rule";
     pub const BALANCE_OUT_OF_RANGE: &str = "balance_out_of_range";
+    pub const INVALID_REORDER: &str = "invalid_reorder";
 
     // Settings
     pub const UNSUPPORTED_LANGUAGE: &str = "unsupported_language";
@@ -252,6 +253,7 @@ impl From<scrat_application::account_service::ApplicationError> for AppError {
                 AppError::new(codes::ACCOUNT_HAS_TRANSACTIONS).with("count", count)
             }
             E::BalanceOutOfRange => AppError::new(codes::BALANCE_OUT_OF_RANGE),
+            E::InvalidReorder => AppError::new(codes::INVALID_REORDER),
         }
     }
 }

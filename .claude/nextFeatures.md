@@ -2,6 +2,8 @@
 
 ## font size
 
-## transactions page > new transaction
+## Accounts
 
-When adding a new transaction, clicking on category, border box should be cyan, not dark blue
+Drag & re order accounts:
+There will be a small icon on the left of the accounts which lets the user drag and move the accounts.
+The order they're in will be the order they're displayed in Overview. 

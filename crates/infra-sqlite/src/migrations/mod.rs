@@ -13,6 +13,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (8, include_str!("0008_account_opening_balance_set.sql")),
     (9, include_str!("0009_csv_import_mappings.sql")),
     (10, include_str!("0010_category_seed_key.sql")),
+    (11, include_str!("0011_account_position.sql")),
 ];
 
 /// The version a freshly created database ends up at. Derived from
@@ -363,6 +364,32 @@ mod tests {
             key.as_deref(),
             Some(scrat_domain::default_categories::UNCATEGORIZED_KEY)
         );
+    }
+
+    /// Existing rows must not visibly reshuffle on upgrade — the backfill
+    /// re-derives the alphabetical order `list_all` used before this
+    /// migration existed.
+    #[test]
+    fn migration_11_backfills_position_in_current_alphabetical_order() {
+        let mut conn = conn_at_version(9);
+        conn.execute_batch(
+            "INSERT INTO accounts (id, name, created_at, updated_at) VALUES
+                 ('s', 'Savings',  '2026-01-01', '2026-01-01'),
+                 ('c', 'Checking', '2026-01-01', '2026-01-01');",
+        )
+        .unwrap();
+
+        run(&mut conn).unwrap();
+
+        let mut stmt = conn
+            .prepare("SELECT id FROM accounts ORDER BY position")
+            .unwrap();
+        let ids: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(ids, vec!["c".to_string(), "s".to_string()]);
     }
 
     #[test]

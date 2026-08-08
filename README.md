@@ -17,7 +17,6 @@
 
 > Track your accounts, transactions, categories, and spending over time, all
 > in one encrypted file on your own disk, with nothing ever sent anywhere.
-> See [LICENSE.md](./LICENSE.md) for reuse terms.
 
 
 <p align="center">

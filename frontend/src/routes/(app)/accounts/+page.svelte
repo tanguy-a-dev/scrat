@@ -9,6 +9,7 @@
     type AccountDto,
     type TransferRuleDto,
   } from "$lib/api";
+  import { GripVertical } from "@lucide/svelte";
   import DeleteButton from "$lib/DeleteButton.svelte";
   import { toast } from "$lib/toasts.svelte";
   import { describeError, t, tp } from "$lib/i18n.svelte";
@@ -37,6 +38,25 @@
   let anchoringAccountId = $state<string | null>(null);
   let anchorDraft = $state("");
   let highlightId = $state<string | null>(null);
+  let draggedId = $state<string | null>(null);
+  /** The whole card is what drags — that's what makes the browser's native
+   * drag image the box itself, following the mouse for free. But a card that
+   * is `draggable` all the time can't have its name field selected with the
+   * mouse, so it only becomes draggable while the grip is held. */
+  let dragEnabledId = $state<string | null>(null);
+  let dragOverId = $state<string | null>(null);
+
+  /** Which edge of the hovered row the insertion line belongs on. Dragging
+   * downwards lands the row *after* the target — the moved row is spliced
+   * out first, so everything below it shifts up by one — and a line drawn
+   * above the target would promise the opposite of what the drop does. */
+  const dropsBelowTarget = $derived.by(() => {
+    if (!draggedId || !dragOverId) return false;
+    return (
+      accounts.findIndex((a) => a.id === dragOverId) >
+      accounts.findIndex((a) => a.id === draggedId)
+    );
+  });
 
   const anchoringAccount = $derived(
     accounts.find((a) => a.id === anchoringAccountId) ?? null,
@@ -223,6 +243,40 @@
     withErrorHandling(() => api.setDefaultAccount(account.id));
   }
 
+  function handleDragStart(event: DragEvent, id: string) {
+    draggedId = id;
+    event.dataTransfer?.setData("text/plain", id);
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+  }
+
+  function handleDragEnd() {
+    draggedId = null;
+    dragEnabledId = null;
+    dragOverId = null;
+  }
+
+  /** Reorders the local list immediately (so the drop feels instant), then
+   * persists — reverting via a reload if the backend rejects it. */
+  async function handleDrop(event: DragEvent, target: AccountDto) {
+    event.preventDefault();
+    const fromIndex = accounts.findIndex((a) => a.id === draggedId);
+    const toIndex = accounts.findIndex((a) => a.id === target.id);
+    handleDragEnd();
+    if (fromIndex === -1 || toIndex === -1 || fromIndex === toIndex) return;
+
+    const reordered = [...accounts];
+    const [moved] = reordered.splice(fromIndex, 1);
+    reordered.splice(toIndex, 0, moved);
+    accounts = reordered;
+
+    try {
+      await api.reorderAccounts(reordered.map((a) => a.id));
+    } catch (e) {
+      toast.error(describeError(e));
+      await load(true);
+    }
+  }
+
   function handleAddTransferRule(account: AccountDto) {
     const pattern = (newTransferPatternDrafts[account.id] ?? "").trim();
     if (!pattern) return;
@@ -318,8 +372,46 @@
 {:else}
   <ul class="accounts">
     {#each accounts as account (account.id)}
-      <li class="account" id="account-{account.id}" class:highlight={account.id === highlightId}>
+      <li
+        class="account"
+        id="account-{account.id}"
+        class:highlight={account.id === highlightId}
+        class:dragging={account.id === draggedId}
+        class:drag-over-above={account.id === dragOverId &&
+          account.id !== draggedId &&
+          !dropsBelowTarget}
+        class:drag-over-below={account.id === dragOverId &&
+          account.id !== draggedId &&
+          dropsBelowTarget}
+        draggable={dragEnabledId === account.id}
+        ondragstart={(e) => handleDragStart(e, account.id)}
+        ondragend={handleDragEnd}
+        ondragover={(e) => {
+          e.preventDefault();
+          dragOverId = account.id;
+        }}
+        ondragleave={(e) => {
+          // `dragleave` bubbles out of every child too, so a cursor crossing
+          // from the name field to a button inside the same card would clear
+          // the indicator and the next `dragover` would put it straight back
+          // — a visible flicker. Only a cursor that has actually left the
+          // card counts.
+          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+          if (dragOverId === account.id) dragOverId = null;
+        }}
+        ondrop={(e) => handleDrop(e, account)}
+      >
         <div class="row">
+          <span
+            class="drag-handle"
+            role="button"
+            tabindex="0"
+            onmousedown={() => (dragEnabledId = account.id)}
+            onmouseup={() => (dragEnabledId = null)}
+            aria-label={t("accounts.dragToReorder")}
+          >
+            <GripVertical size={16} />
+          </span>
           <input
             class="name"
             value={account.name}
@@ -674,6 +766,35 @@
     align-items: center;
     gap: 0.6rem;
     flex-wrap: wrap;
+  }
+
+  /* The row being carried. Faded rather than hidden so the gap it leaves is
+     still readable as "this is where it came from". */
+  .account.dragging {
+    opacity: 0.4;
+  }
+
+  /* Where it would land. An edge line rather than a filled background: a line
+     reads as an insertion point, where a highlight would read as "replace
+     this one". Which edge depends on the drag's direction — see
+     `dropsBelowTarget`. */
+  .account.drag-over-above {
+    box-shadow: inset 0 3px 0 0 var(--color-accent);
+  }
+
+  .account.drag-over-below {
+    box-shadow: inset 0 -3px 0 0 var(--color-accent);
+  }
+
+  .drag-handle {
+    display: flex;
+    align-items: center;
+    cursor: grab;
+    opacity: 0.6;
+  }
+
+  .drag-handle:active {
+    cursor: grabbing;
   }
 
   .name {
