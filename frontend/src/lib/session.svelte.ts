@@ -81,11 +81,11 @@ class Session {
     }
   }
 
-  async #checkIdle() {
-    if (this.#locking || this.autoLockMinutes <= 0) return;
-    const idleMs = Date.now() - this.#lastActivity;
-    if (idleMs < this.autoLockMinutes * 60_000) return;
-
+  /** Lock now and return to the unlock screen. Both the idle timer and the
+   * nav's lock button go through here, so a manual lock can't race a
+   * simultaneous idle lock into a double `goto`. */
+  async lock() {
+    if (this.#locking) return;
     this.#locking = true;
     try {
       await api.lockDb();
@@ -94,6 +94,14 @@ class Session {
       this.#locking = false;
       await goto("/");
     }
+  }
+
+  async #checkIdle() {
+    if (this.#locking || this.autoLockMinutes <= 0) return;
+    const idleMs = Date.now() - this.#lastActivity;
+    if (idleMs < this.autoLockMinutes * 60_000) return;
+
+    await this.lock();
   }
 }
 

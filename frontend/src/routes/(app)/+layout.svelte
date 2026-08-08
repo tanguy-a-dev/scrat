@@ -5,6 +5,7 @@
   import Toast from "$lib/Toast.svelte";
   import CommandPalette from "$lib/CommandPalette.svelte";
   import { navPages } from "$lib/navigation";
+  import { session } from "$lib/session.svelte";
   import { t } from "$lib/i18n.svelte";
 
   let { children }: { children: Snippet } = $props();
@@ -25,6 +26,7 @@
         </li>
       {/each}
     </ul>
+    <button class="lock" onclick={() => session.lock()}>{t("nav.lock")}</button>
   </nav>
   <main>
     {@render children()}
@@ -143,6 +145,33 @@
   a.active {
     background-color: var(--color-accent);
     color: var(--color-accent-contrast);
+  }
+
+  .lock {
+    margin-top: auto;
+    padding: 0.5rem 0.75rem;
+    border: none;
+    border-radius: 6px;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    white-space: nowrap;
+    cursor: pointer;
+    opacity: 0;
+    line-height: 1.2;
+    transition: opacity 0.1s ease;
+  }
+
+  nav:hover .lock,
+  nav:focus-within .lock {
+    opacity: 0.75;
+  }
+
+  nav:hover .lock:hover,
+  nav:focus-within .lock:hover {
+    opacity: 1;
+    background-color: var(--color-shade-3);
   }
 
   main {
