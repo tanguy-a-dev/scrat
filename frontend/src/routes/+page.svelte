@@ -167,6 +167,11 @@
     color: inherit;
   }
 
+  input:focus {
+    outline: none;
+    border-color: var(--color-accent);
+  }
+
   button {
     cursor: pointer;
     background-color: var(--color-accent);
