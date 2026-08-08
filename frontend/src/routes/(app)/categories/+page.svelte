@@ -18,8 +18,8 @@
 
   onMount(load);
 
-  async function load() {
-    loading = true;
+  async function load(showLoading = true) {
+    if (showLoading) loading = true;
     error = "";
     try {
       categories = await api.listCategories();
@@ -33,7 +33,7 @@
   async function withErrorHandling(action: () => Promise<unknown>) {
     try {
       await action();
-      await load();
+      await load(false);
     } catch (e) {
       toast.error(describeError(e));
     }
@@ -64,7 +64,7 @@
   async function handleDelete(category: CategoryDto) {
     try {
       await api.deleteCategory(category.id, null);
-      await load();
+      await load(false);
       toast.success(t("categories.deleted", { name: category.name }));
     } catch (e) {
       // Branch on the code, not the wording: the message is translated, so
@@ -84,7 +84,7 @@
     const { category } = pendingDelete;
     try {
       await api.deleteCategory(category.id, reassignTarget);
-      await load();
+      await load(false);
       toast.success(t("categories.deleted", { name: category.name }));
       pendingDelete = null;
     } catch (e) {
@@ -261,6 +261,11 @@
   input {
     background-color: var(--color-shade-2);
     color: inherit;
+  }
+
+  input:focus {
+    outline: none;
+    border-color: var(--color-accent);
   }
 
   .create-form button,
