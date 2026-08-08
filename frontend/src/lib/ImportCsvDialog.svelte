@@ -650,7 +650,7 @@
           <span>{t("import.categoriesSettings")}</span>
         </summary>
 
-        <label class="default-category">
+        <div class="default-category">
           <span class="caption">{t("import.defaultCategory")}</span>
           <SearchSelect
             options={fallbackCategoryOptions}
@@ -659,7 +659,7 @@
             placeholder={t("import.uncategorizedDefaultPlaceholder")}
             searchPlaceholder={t("categories.searchCategory")}
           />
-        </label>
+        </div>
 
         <span class="inline">
           <Checkbox

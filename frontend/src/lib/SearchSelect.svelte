@@ -111,6 +111,7 @@
   function handleInputKeydown(event: KeyboardEvent) {
     if (event.key === "Escape") {
       event.preventDefault();
+      event.stopPropagation();
       close();
     } else if (event.key === "ArrowDown") {
       event.preventDefault();
@@ -123,6 +124,7 @@
       moveHighlight(event.shiftKey ? -1 : 1);
     } else if (event.key === "Enter") {
       event.preventDefault();
+      event.stopPropagation();
       const option = filtered[highlighted];
       if (option) select(option.id);
     }
