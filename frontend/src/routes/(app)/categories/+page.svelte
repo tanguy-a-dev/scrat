@@ -15,6 +15,7 @@
     null,
   );
   let reassignTarget = $state("");
+  let highlightId = $state<string | null>(null);
 
   onMount(load);
 
@@ -54,6 +55,10 @@
     document
       .getElementById(`category-${created.id}`)
       ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    highlightId = created.id;
+    setTimeout(() => {
+      if (highlightId === created.id) highlightId = null;
+    }, 1500);
   }
 
   function handleRename(id: string, name: string) {
@@ -170,6 +175,7 @@
         onDelete={handleDelete}
         onAddChild={handleAddChild}
         onSetIcon={handleSetIcon}
+        highlight={category.id === highlightId}
       />
     {/each}
   </div>

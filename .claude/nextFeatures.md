@@ -2,6 +2,6 @@
 
 ## font size
 
-## Accounts page > Account
+## transactions page > new transaction
 
-Helpers of "Belongs to this account" and "Transfers into this account" use a small icon I for information next to them instead of hovering.
+When adding a new transaction, clicking on category, border box should be cyan, not dark blue

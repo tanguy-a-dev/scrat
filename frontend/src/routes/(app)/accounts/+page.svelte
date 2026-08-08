@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import {
     api,
     formatMinorUnits,
@@ -36,6 +36,7 @@
    * different things. */
   let anchoringAccountId = $state<string | null>(null);
   let anchorDraft = $state("");
+  let highlightId = $state<string | null>(null);
 
   const anchoringAccount = $derived(
     accounts.find((a) => a.id === anchoringAccountId) ?? null,
@@ -107,12 +108,14 @@
     return transferRules.filter((r) => r.counterpart_account_id === accountId);
   }
 
-  async function withErrorHandling(action: () => Promise<unknown>) {
+  async function withErrorHandling<T>(action: () => Promise<T>): Promise<T | undefined> {
     try {
-      await action();
+      const result = await action();
       await load(true);
+      return result;
     } catch (e) {
       toast.error(describeError(e));
+      return undefined;
     }
   }
 
@@ -129,16 +132,26 @@
     }
   }
 
-  function handleCreate(event: Event) {
+  async function handleCreate(event: Event) {
     event.preventDefault();
     // No balance asked for here on purpose: whatever the user typed would be
     // wrong the moment they imported history, since that moves the starting
     // point back before the first imported row. It's established afterwards,
     // from a balance they can actually read off their bank.
-    withErrorHandling(async () => {
-      await api.createAccount(newName);
+    const created = await withErrorHandling(async () => {
+      const account = await api.createAccount(newName);
       newName = "";
+      return account;
     });
+    if (!created) return;
+    await tick();
+    document
+      .getElementById(`account-${created.id}`)
+      ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    highlightId = created.id;
+    setTimeout(() => {
+      if (highlightId === created.id) highlightId = null;
+    }, 1500);
   }
 
   function handleRename(account: AccountDto, name: string) {
@@ -305,7 +318,7 @@
 {:else}
   <ul class="accounts">
     {#each accounts as account (account.id)}
-      <li class="account">
+      <li class="account" id="account-{account.id}" class:highlight={account.id === highlightId}>
         <div class="row">
           <input
             class="name"
@@ -638,7 +651,22 @@
   .account {
     padding: 1rem;
     border-radius: 10px;
+    border: 1px solid transparent;
     background-color: var(--color-shade-2);
+  }
+
+  .account.highlight {
+    animation: highlight-fade 1.5s ease-out;
+  }
+
+  @keyframes highlight-fade {
+    0%,
+    100% {
+      border-color: transparent;
+    }
+    30% {
+      border-color: var(--color-accent);
+    }
   }
 
   .row {

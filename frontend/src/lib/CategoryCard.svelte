@@ -12,6 +12,7 @@
     onDelete,
     onAddChild,
     onSetIcon,
+    highlight = false,
   }: {
     category: CategoryDto;
     /** Direct children only — the hierarchy is never deeper than two levels. */
@@ -20,6 +21,7 @@
     onDelete: (category: CategoryDto) => void;
     onAddChild: (parentId: string, name: string) => void;
     onSetIcon: (id: string, icon: string) => void;
+    highlight?: boolean;
   } = $props();
 
   let addingChild = $state(false);
@@ -74,7 +76,7 @@
   }
 </script>
 
-<section class="card" id="category-{category.id}">
+<section class="card" id="category-{category.id}" class:highlight>
   <header>
     <span class="icon-picker" bind:this={iconPickerEl}>
       <button
@@ -182,7 +184,22 @@
     gap: 0.6rem;
     padding: 0.85rem 0.9rem;
     border-radius: 12px;
+    border: 1px solid transparent;
     background-color: var(--color-shade-2);
+  }
+
+  .card.highlight {
+    animation: highlight-fade 1.5s ease-out;
+  }
+
+  @keyframes highlight-fade {
+    0%,
+    100% {
+      border-color: transparent;
+    }
+    30% {
+      border-color: var(--color-accent);
+    }
   }
 
   header {

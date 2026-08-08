@@ -1969,6 +1969,11 @@
     color: inherit;
   }
 
+  input:focus {
+    outline: none;
+    border-color: var(--color-accent);
+  }
+
   .create-form button,
   .range-buttons button {
     cursor: pointer;
