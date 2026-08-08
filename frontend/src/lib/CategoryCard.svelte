@@ -74,7 +74,7 @@
   }
 </script>
 
-<section class="card">
+<section class="card" id="category-{category.id}">
   <header>
     <span class="icon-picker" bind:this={iconPickerEl}>
       <button

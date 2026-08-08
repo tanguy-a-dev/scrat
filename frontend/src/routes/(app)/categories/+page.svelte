@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { api, buildCategoryOptions, type CategoryDto } from "$lib/api";
   import CategoryCard from "$lib/CategoryCard.svelte";
   import SearchSelect from "$lib/SearchSelect.svelte";
@@ -30,22 +30,30 @@
     }
   }
 
-  async function withErrorHandling(action: () => Promise<unknown>) {
+  async function withErrorHandling<T>(action: () => Promise<T>): Promise<T | undefined> {
     try {
-      await action();
+      const result = await action();
       await load(false);
+      return result;
     } catch (e) {
       toast.error(describeError(e));
+      return undefined;
     }
   }
 
-  function handleAddRoot(event: Event) {
+  async function handleAddRoot(event: Event) {
     event.preventDefault();
     if (!newRootName.trim()) return;
-    withErrorHandling(async () => {
-      await api.createCategory(newRootName.trim(), null);
+    const created = await withErrorHandling(async () => {
+      const category = await api.createCategory(newRootName.trim(), null);
       newRootName = "";
+      return category;
     });
+    if (!created) return;
+    await tick();
+    document
+      .getElementById(`category-${created.id}`)
+      ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
   function handleRename(id: string, name: string) {
