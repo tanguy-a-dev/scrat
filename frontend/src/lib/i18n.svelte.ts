@@ -548,7 +548,7 @@ export type MessageKey = keyof typeof en;
    reaching a French user as an English sentence. */
 const fr: Record<MessageKey, string> = {
   // ---- Navigation and chrome ----
-  "nav.overview": "Global",
+  "nav.overview": "Vue d'ensemble",
   "nav.transactions": "Transactions",
   "nav.details": "Détails",
   "nav.accounts": "Comptes",

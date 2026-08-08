@@ -120,7 +120,7 @@
     text-decoration: none;
     color: inherit;
     opacity: 0;
-    white-space: nowrap;
+    line-height: 1.2;
     transition: opacity 0.1s ease;
   }
 
