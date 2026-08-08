@@ -92,6 +92,12 @@ export interface TransactionDto {
  * arguments, mirroring `TransactionFilters` on the Rust side. Every field
  * `null` means "no filter", not "match nothing". */
 export interface TransactionFilters {
+  /** Matches the named category **and its subcategories**, not the named
+   * category alone — see `TransactionFilters::category_id` on the Rust side,
+   * which is what applies this for "All Time" and for every header count.
+   * Anything filtering rows client-side has to resolve the branch the same
+   * way (`buildCategoryBranches`), or the list and the count sitting above it
+   * answer two different questions. */
   categoryId: string | null;
   descriptionContains: string | null;
   /** `true` narrows to positive amounts, `false` to negative, `null` to
@@ -577,6 +583,50 @@ export function buildCategoryOptions(categories: CategoryDto[]): CategoryOption[
   }
   walk(null);
   return result;
+}
+
+/** For every category, the set of ids a filter naming it matches: itself plus
+ * its subcategories.
+ *
+ * The client-side counterpart to the `category_id IN (SELECT id FROM
+ * categories WHERE parent_id = ?)` branch in `list_page`/`count_in_range`.
+ * Naming a parent has to mean the whole branch everywhere, not just in the
+ * ranges that happen to be filtered by SQL: the Month/Year/Custom ranges fetch
+ * unfiltered and narrow the rows here, while their header count comes from the
+ * backend either way — so an exact-match predicate here showed "3 rows" under
+ * a header reading "12 transactions", with the nine subcategory rows the user
+ * clicked a parent to see missing.
+ *
+ * A whole map rather than a resolver called per row: the branch is the same
+ * for every transaction being tested, and the categories it's built from
+ * change only when the category list itself reloads.
+ *
+ * Built from the parent links alone, so a category naming a parent that isn't
+ * in the list contributes only itself — the same thing SQL's subselect does
+ * with a dangling reference, rather than dropping the row entirely. */
+export function buildCategoryBranches(
+  categories: CategoryDto[],
+): Map<string, Set<string>> {
+  const branches = new Map<string, Set<string>>();
+  for (const c of categories) branches.set(c.id, new Set([c.id]));
+  for (const c of categories) {
+    if (c.parent_id) branches.get(c.parent_id)?.add(c.id);
+  }
+  return branches;
+}
+
+/** Whether `categoryId` is inside the branch a filter naming `filterId`
+ * selects. Falls back to an exact match while the category list is still
+ * empty (first render, before `listCategories` resolves) — the alternative,
+ * treating an unknown filter as matching nothing, would blank a list that is
+ * about to be correct. */
+export function categoryMatchesFilter(
+  branches: Map<string, Set<string>>,
+  filterId: string,
+  categoryId: string,
+): boolean {
+  const branch = branches.get(filterId);
+  return branch ? branch.has(categoryId) : categoryId === filterId;
 }
 
 export type RangeMode = "month" | "year" | "all" | "custom";

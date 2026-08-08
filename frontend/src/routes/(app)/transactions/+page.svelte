@@ -5,7 +5,9 @@
   import { replaceState } from "$app/navigation";
   import {
     api,
+    buildCategoryBranches,
     buildCategoryOptions,
+    categoryMatchesFilter,
     formatCurrency,
     parseToMinorUnits,
     computeRange,
@@ -822,6 +824,11 @@
   }
 
   let categoryOptions = $derived(buildCategoryOptions(categories));
+  // What a category filter actually selects: the named category plus its
+  // subcategories, the same branch the backend matches. Only `matchesFilters`
+  // reads it — "All Time" never gets here, since its rows arrive already
+  // narrowed by that same rule server-side.
+  let categoryBranches = $derived(buildCategoryBranches(categories));
   let categoryFilterOptions = $derived([
     { id: "", label: t("transactions.allCategories") },
     ...categoryOptions,
@@ -1118,9 +1125,18 @@
   /** The same predicate the backend applies for "All Time", re-derived here
    * for the other ranges — those fetch the whole (unfiltered, mixed-sign)
    * range in one shot and filter it client-side, so this has to agree with
-   * `TransactionFilters` field for field rather than reimplementing it. */
+   * `TransactionFilters` field for field rather than reimplementing it. The
+   * category field is the one that isn't a plain equality: naming a parent
+   * selects its whole branch, and the header count above these rows is always
+   * the backend's, so disagreeing here is visible as a count that doesn't
+   * match the list. */
   function matchesFilters(t: TransactionDto, filters: TransactionFilters): boolean {
-    if (filters.categoryId && t.category_id !== filters.categoryId) return false;
+    if (
+      filters.categoryId &&
+      !categoryMatchesFilter(categoryBranches, filters.categoryId, t.category_id)
+    ) {
+      return false;
+    }
     if (
       filters.descriptionContains &&
       !t.description.toLowerCase().includes(filters.descriptionContains.toLowerCase())
